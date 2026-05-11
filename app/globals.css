@@ -1,0 +1,697 @@
+@import 'tailwindcss';
+@import 'tw-animate-css';
+
+@custom-variant dark (&:is(.dark *));
+
+/* LongPlay Design System */
+/* A warm, cinematic, editorial aesthetic - Mobile First */
+
+:root {
+  /* Warm charcoal background */
+  --background: oklch(0.16 0.01 60);
+  --foreground: oklch(0.92 0.02 85);
+  
+  /* Card surfaces - slightly lighter charcoal */
+  --card: oklch(0.20 0.01 60);
+  --card-foreground: oklch(0.92 0.02 85);
+  
+  /* Popover */
+  --popover: oklch(0.18 0.01 60);
+  --popover-foreground: oklch(0.92 0.02 85);
+  
+  /* Primary - faded cream */
+  --primary: oklch(0.90 0.03 85);
+  --primary-foreground: oklch(0.16 0.01 60);
+  
+  /* Secondary - midnight navy */
+  --secondary: oklch(0.22 0.04 260);
+  --secondary-foreground: oklch(0.90 0.02 85);
+  
+  /* Muted - deeper charcoal */
+  --muted: oklch(0.24 0.01 60);
+  --muted-foreground: oklch(0.60 0.02 85);
+  
+  /* Accent - dusty burgundy */
+  --accent: oklch(0.40 0.12 20);
+  --accent-foreground: oklch(0.92 0.02 85);
+  
+  /* Destructive */
+  --destructive: oklch(0.50 0.15 25);
+  --destructive-foreground: oklch(0.92 0.02 85);
+  
+  /* Borders - subtle warm */
+  --border: oklch(0.28 0.02 60);
+  --input: oklch(0.22 0.01 60);
+  --ring: oklch(0.45 0.08 20);
+  
+  /* Custom LongPlay colors */
+  --tobacco: oklch(0.50 0.08 55);
+  --burgundy: oklch(0.42 0.12 15);
+  --olive: oklch(0.52 0.06 130);
+  --cream: oklch(0.92 0.03 90);
+  --navy: oklch(0.20 0.05 260);
+  
+  --radius: 0rem;
+  
+  /* Sidebar */
+  --sidebar: oklch(0.14 0.01 60);
+  --sidebar-foreground: oklch(0.90 0.02 85);
+  --sidebar-primary: oklch(0.90 0.03 85);
+  --sidebar-primary-foreground: oklch(0.16 0.01 60);
+  --sidebar-accent: oklch(0.22 0.01 60);
+  --sidebar-accent-foreground: oklch(0.90 0.02 85);
+  --sidebar-border: oklch(0.22 0.02 60);
+  --sidebar-ring: oklch(0.45 0.08 20);
+}
+
+@theme inline {
+  --font-sans: var(--font-geist-sans), 'Geist', 'Geist Fallback', system-ui, sans-serif;
+  --font-serif: var(--font-playfair), 'Playfair Display', 'Georgia', serif;
+  --font-mono: var(--font-geist-mono), 'Geist Mono', 'Geist Mono Fallback', monospace;
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-tobacco: var(--tobacco);
+  --color-burgundy: var(--burgundy);
+  --color-olive: var(--olive);
+  --color-cream: var(--cream);
+  --color-navy: var(--navy);
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-ring: var(--sidebar-ring);
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  body {
+    @apply bg-background text-foreground antialiased;
+  }
+  
+  /* Smooth, cinematic transitions */
+  html {
+    scroll-behavior: smooth;
+    -webkit-tap-highlight-color: transparent;
+  }
+}
+
+/* Custom utility classes for LongPlay */
+@layer utilities {
+  .text-balance {
+    text-wrap: balance;
+  }
+  
+  /* Safe area padding for mobile */
+  .safe-area-pb {
+    padding-bottom: env(safe-area-inset-bottom, 0);
+  }
+  
+  /* Hide scrollbar but keep functionality */
+  .scrollbar-hide {
+    -ms-overflow-style: none;
+    scrollbar-width: none;
+  }
+  .scrollbar-hide::-webkit-scrollbar {
+    display: none;
+  }
+  
+  /* Grainy texture overlay */
+  .grain {
+    position: relative;
+  }
+  
+  .grain::before {
+    content: '';
+    position: fixed;
+    inset: 0;
+    background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noise)'/%3E%3C/svg%3E");
+    opacity: 0.025;
+    pointer-events: none;
+    z-index: 100;
+  }
+  
+  /* Radial gradient background */
+  .bg-gradient-radial {
+    background: radial-gradient(ellipse at center, var(--tw-gradient-stops));
+  }
+  
+  /* Cinematic fade animations */
+  .animate-fade-in {
+    animation: fadeIn 0.8s ease-out forwards;
+    opacity: 0;
+  }
+  
+  .animate-fade-in-slow {
+    animation: fadeIn 1.6s cubic-bezier(0.25, 0.1, 0.25, 1) forwards;
+    opacity: 0;
+  }
+  
+  .animate-fade-in-up {
+    animation: fadeInUp 0.8s ease-out forwards;
+    opacity: 0;
+  }
+  
+  .animate-fade-in-up-slow {
+    animation: fadeInUp 1.4s ease-out forwards;
+    opacity: 0;
+  }
+  
+  @keyframes fadeIn {
+    from {
+      opacity: 0;
+    }
+    to {
+      opacity: 1;
+    }
+  }
+  
+  @keyframes fadeInUp {
+    from {
+      opacity: 0;
+      transform: translateY(24px);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  }
+  
+  /* Shimmer effect for loading states */
+  .animate-shimmer {
+    animation: shimmer 2s infinite;
+  }
+  
+  @keyframes shimmer {
+    0% {
+      transform: translateX(-100%);
+    }
+    100% {
+      transform: translateX(100%);
+    }
+  }
+}
+
+/* Mobile-first viewport height fix */
+@supports (height: 100svh) {
+  :root {
+    --vh: 1svh;
+  }
+}
+
+/* ============================================ */
+/* WEEKLY CADENCE - Phase-based Visual Shifts */
+/* ============================================ */
+
+/* Monday - The Album: Darker, quieter, anticipatory */
+.phase-album {
+  --background: oklch(0.14 0.01 60);
+  --burgundy: oklch(0.38 0.10 15);
+}
+
+/* Tuesday - The Prompts: Subtle olive tint, thoughtful */
+.phase-prompts {
+  --olive: oklch(0.55 0.08 130);
+}
+
+/* Wednesday/Thursday - Annotation Room: Late-night, literary */
+.phase-annotation {
+  --background: oklch(0.15 0.015 60);
+  --olive: oklch(0.52 0.07 130);
+}
+
+/* Friday - Discussion Opens: Warmer, slightly more social */
+.phase-discussion {
+  --background: oklch(0.17 0.012 55);
+  --tobacco: oklch(0.55 0.10 50);
+}
+
+/* Saturday - Curator's Note: Editorial warmth */
+.phase-curators-note {
+  --tobacco: oklch(0.52 0.09 50);
+  --burgundy: oklch(0.45 0.13 15);
+}
+
+/* Sunday - Identity Update: Introspective, luminous */
+.phase-identity {
+  --burgundy: oklch(0.48 0.14 15);
+  --cream: oklch(0.94 0.03 90);
+}
+
+/* ============================================ */
+/* THE ROOM AFTER MIDNIGHT */
+/* ============================================ */
+
+.after-midnight {
+  --background: oklch(0.12 0.015 60);
+  --cream: oklch(0.88 0.02 90);
+  --muted-foreground: oklch(0.50 0.02 85);
+}
+
+.after-midnight .grain::before {
+  opacity: 0.04;
+}
+
+/* Subtle ambient breathing effect for late night */
+@keyframes ambientPulse {
+  0%, 100% {
+    opacity: 0.03;
+  }
+  50% {
+    opacity: 0.06;
+  }
+}
+
+.after-midnight::after {
+  content: '';
+  position: fixed;
+  inset: 0;
+  background: radial-gradient(ellipse at 50% 30%, var(--burgundy) 0%, transparent 60%);
+  opacity: 0.05;
+  pointer-events: none;
+  animation: ambientPulse 8s ease-in-out infinite;
+}
+
+/* ============================================ */
+/* ROOM THEME SYSTEMS - Distinct Cultural Worlds */
+/* ============================================ */
+
+/* 
+ * Each room should feel like entering a different publication/world.
+ * Typography rhythm, spacing, lighting, color temperature all differ.
+ */
+
+/* -------------------------------------------- */
+/* THE NOCTURNAL ROOM */
+/* Late-night, intimate, restrained, atmospheric */
+/* -------------------------------------------- */
+.room-theme-nocturnal {
+  --room-bg: oklch(0.10 0.02 250);
+  --room-accent: oklch(0.65 0.08 230);
+  --room-glow: oklch(0.25 0.12 240);
+  --room-border: oklch(0.20 0.04 250);
+  --room-text: oklch(0.75 0.03 230);
+  --room-grain: 0.035;
+  
+  /* Typography - intimate, restrained */
+  --room-heading-weight: 400;
+  --room-body-spacing: 0.01em;
+  --room-line-height: 1.8;
+  
+  /* Motion - slow, deliberate */
+  --room-transition: 800ms;
+  --room-ease: cubic-bezier(0.25, 0.1, 0.25, 1);
+}
+
+.room-theme-nocturnal .room-glow {
+  background: radial-gradient(ellipse at 50% 20%, var(--room-glow) 0%, transparent 50%);
+  opacity: 0.15;
+}
+
+/* -------------------------------------------- */
+/* ANALOG FUTURES */
+/* Synthetic warmth, tactile futurism, emotional technology */
+/* -------------------------------------------- */
+.room-theme-analog {
+  --room-bg: oklch(0.14 0.03 50);
+  --room-accent: oklch(0.70 0.15 55);
+  --room-glow: oklch(0.40 0.18 50);
+  --room-border: oklch(0.25 0.06 55);
+  --room-text: oklch(0.80 0.04 55);
+  --room-grain: 0.03;
+  
+  /* Typography - structured, analytical */
+  --room-heading-weight: 500;
+  --room-body-spacing: 0em;
+  --room-line-height: 1.6;
+  
+  /* Motion - medium, precise */
+  --room-transition: 500ms;
+  --room-ease: cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.room-theme-analog .room-glow {
+  background: 
+    radial-gradient(ellipse at 30% 30%, var(--room-glow) 0%, transparent 40%),
+    radial-gradient(ellipse at 70% 70%, oklch(0.35 0.12 60) 0%, transparent 40%);
+  opacity: 0.12;
+}
+
+/* Subtle grid overlay for structured feel */
+.room-theme-analog::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  background-image: 
+    linear-gradient(rgba(255,255,255,0.02) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255,255,255,0.02) 1px, transparent 1px);
+  background-size: 40px 40px;
+  pointer-events: none;
+  opacity: 0.3;
+}
+
+/* -------------------------------------------- */
+/* CATHEDRAL HOUR */
+/* Spiritual, expansive, transcendent, architectural */
+/* -------------------------------------------- */
+.room-theme-cathedral {
+  --room-bg: oklch(0.12 0.02 160);
+  --room-accent: oklch(0.60 0.10 160);
+  --room-glow: oklch(0.30 0.08 150);
+  --room-border: oklch(0.18 0.03 160);
+  --room-text: oklch(0.70 0.04 160);
+  --room-grain: 0.025;
+  
+  /* Typography - expansive, vertical */
+  --room-heading-weight: 300;
+  --room-body-spacing: 0.02em;
+  --room-line-height: 2;
+  
+  /* Motion - slow, reverent */
+  --room-transition: 1200ms;
+  --room-ease: cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.room-theme-cathedral .room-glow {
+  background: linear-gradient(180deg, var(--room-glow) 0%, transparent 60%);
+  opacity: 0.15;
+}
+
+/* Vertical emphasis - sacred geometry */
+.room-theme-cathedral .room-divider {
+  width: 1px;
+  height: 60px;
+  background: linear-gradient(180deg, transparent, var(--room-accent), transparent);
+}
+
+/* -------------------------------------------- */
+/* BEAUTIFUL DAMAGE */
+/* Raw, cathartic, emotionally direct, intimate */
+/* -------------------------------------------- */
+.room-theme-damage {
+  --room-bg: oklch(0.13 0.04 15);
+  --room-accent: oklch(0.65 0.18 15);
+  --room-glow: oklch(0.35 0.20 10);
+  --room-border: oklch(0.22 0.08 15);
+  --room-text: oklch(0.78 0.06 15);
+  --room-grain: 0.04;
+  
+  /* Typography - intimate, emotional */
+  --room-heading-weight: 400;
+  --room-body-spacing: 0.005em;
+  --room-line-height: 1.75;
+  
+  /* Motion - medium, breathing */
+  --room-transition: 700ms;
+  --room-ease: cubic-bezier(0.33, 1, 0.68, 1);
+}
+
+.room-theme-damage .room-glow {
+  background: radial-gradient(ellipse at 50% 60%, var(--room-glow) 0%, transparent 50%);
+  opacity: 0.18;
+  animation: damageBreath 6s ease-in-out infinite;
+}
+
+@keyframes damageBreath {
+  0%, 100% { opacity: 0.15; transform: scale(1); }
+  50% { opacity: 0.22; transform: scale(1.02); }
+}
+
+/* -------------------------------------------- */
+/* RECORDS FOR RAIN */
+/* Melancholy, reflective, fragile, intimate */
+/* -------------------------------------------- */
+.room-theme-rain {
+  --room-bg: oklch(0.14 0.01 250);
+  --room-accent: oklch(0.55 0.04 240);
+  --room-glow: oklch(0.28 0.03 250);
+  --room-border: oklch(0.20 0.02 250);
+  --room-text: oklch(0.68 0.02 250);
+  --room-grain: 0.04;
+  
+  /* Typography - soft, diffused */
+  --room-heading-weight: 400;
+  --room-body-spacing: 0.01em;
+  --room-line-height: 1.85;
+  
+  /* Motion - slow, foggy */
+  --room-transition: 900ms;
+  --room-ease: cubic-bezier(0.25, 0.46, 0.45, 0.94);
+}
+
+.room-theme-rain .room-glow {
+  background: linear-gradient(180deg, 
+    transparent 0%,
+    var(--room-glow) 30%,
+    transparent 100%
+  );
+  opacity: 0.2;
+}
+
+/* Fog/rain effect */
+.room-theme-rain::after {
+  content: '';
+  position: fixed;
+  inset: 0;
+  background: linear-gradient(180deg, transparent, rgba(128,128,128,0.03), transparent);
+  pointer-events: none;
+  animation: rainFog 12s ease-in-out infinite;
+}
+
+@keyframes rainFog {
+  0%, 100% { opacity: 0.5; transform: translateY(0); }
+  50% { opacity: 0.8; transform: translateY(-2%); }
+}
+
+/* -------------------------------------------- */
+/* WARM STATIC */
+/* Nostalgic, textural, warm, lo-fi */
+/* -------------------------------------------- */
+.room-theme-static {
+  --room-bg: oklch(0.15 0.04 55);
+  --room-accent: oklch(0.68 0.12 50);
+  --room-glow: oklch(0.38 0.14 55);
+  --room-border: oklch(0.24 0.06 55);
+  --room-text: oklch(0.75 0.05 55);
+  --room-grain: 0.05; /* Higher grain for lo-fi feel */
+  
+  /* Typography - organic, worn */
+  --room-heading-weight: 400;
+  --room-body-spacing: -0.005em;
+  --room-line-height: 1.7;
+  
+  /* Motion - medium, analog */
+  --room-transition: 600ms;
+  --room-ease: cubic-bezier(0.4, 0, 0.6, 1);
+}
+
+.room-theme-static .room-glow {
+  background: radial-gradient(ellipse at 50% 50%, var(--room-glow) 0%, transparent 60%);
+  opacity: 0.15;
+  animation: staticFlicker 8s ease-in-out infinite;
+}
+
+@keyframes staticFlicker {
+  0%, 100% { opacity: 0.15; }
+  25% { opacity: 0.12; }
+  50% { opacity: 0.18; }
+  75% { opacity: 0.13; }
+}
+
+/* -------------------------------------------- */
+/* SPIRITUAL JAZZ */
+/* Transcendent, communal, searching, warm */
+/* -------------------------------------------- */
+.room-theme-spiritual {
+  --room-bg: oklch(0.14 0.04 75);
+  --room-accent: oklch(0.70 0.12 70);
+  --room-glow: oklch(0.40 0.15 70);
+  --room-border: oklch(0.23 0.06 75);
+  --room-text: oklch(0.78 0.05 75);
+  --room-grain: 0.03;
+  
+  /* Typography - expansive, flowing */
+  --room-heading-weight: 300;
+  --room-body-spacing: 0.015em;
+  --room-line-height: 1.9;
+  
+  /* Motion - slow, meditative */
+  --room-transition: 1000ms;
+  --room-ease: cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.room-theme-spiritual .room-glow {
+  background: radial-gradient(ellipse at 50% 30%, var(--room-glow) 0%, transparent 50%);
+  opacity: 0.18;
+}
+
+/* -------------------------------------------- */
+/* CRITERION LISTENING */
+/* Cinematic, archival, prestigious */
+/* -------------------------------------------- */
+.room-theme-criterion {
+  --room-bg: oklch(0.11 0.01 60);
+  --room-accent: oklch(0.55 0.02 60);
+  --room-glow: oklch(0.22 0.01 60);
+  --room-border: oklch(0.18 0.01 60);
+  --room-text: oklch(0.72 0.01 60);
+  --room-grain: 0.03;
+  
+  /* Typography - structured, editorial */
+  --room-heading-weight: 500;
+  --room-body-spacing: 0em;
+  --room-line-height: 1.65;
+  
+  /* Motion - deliberate, cinematic */
+  --room-transition: 700ms;
+  --room-ease: cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.room-theme-criterion .room-glow {
+  background: linear-gradient(90deg, transparent, var(--room-glow), transparent);
+  opacity: 0.1;
+}
+
+/* Film strip aesthetic */
+.room-theme-criterion .room-divider {
+  height: 2px;
+  background: repeating-linear-gradient(
+    90deg,
+    var(--room-accent) 0px,
+    var(--room-accent) 4px,
+    transparent 4px,
+    transparent 8px
+  );
+}
+
+/* -------------------------------------------- */
+/* PITCHFORK DEEP CUTS */
+/* Critical, exploratory, discovery */
+/* -------------------------------------------- */
+.room-theme-pitchfork {
+  --room-bg: oklch(0.13 0.02 15);
+  --room-accent: oklch(0.58 0.15 15);
+  --room-glow: oklch(0.30 0.12 15);
+  --room-border: oklch(0.20 0.04 15);
+  --room-text: oklch(0.72 0.04 15);
+  --room-grain: 0.025;
+  
+  /* Typography - structured, critical */
+  --room-heading-weight: 600;
+  --room-body-spacing: -0.01em;
+  --room-line-height: 1.55;
+  
+  /* Motion - medium, precise */
+  --room-transition: 500ms;
+  --room-ease: cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.room-theme-pitchfork .room-glow {
+  background: linear-gradient(180deg, var(--room-glow) 0%, transparent 40%);
+  opacity: 0.12;
+}
+
+/* ============================================ */
+/* ROOM TYPOGRAPHY RHYTHM CLASSES */
+/* ============================================ */
+
+.room-typography-intimate {
+  letter-spacing: 0.01em;
+  line-height: 1.8;
+}
+
+.room-typography-intimate h1,
+.room-typography-intimate h2,
+.room-typography-intimate h3 {
+  font-weight: 400;
+  letter-spacing: -0.01em;
+}
+
+.room-typography-expansive {
+  letter-spacing: 0.02em;
+  line-height: 2;
+}
+
+.room-typography-expansive h1,
+.room-typography-expansive h2,
+.room-typography-expansive h3 {
+  font-weight: 300;
+  letter-spacing: 0.01em;
+}
+
+.room-typography-structured {
+  letter-spacing: 0em;
+  line-height: 1.6;
+}
+
+.room-typography-structured h1,
+.room-typography-structured h2,
+.room-typography-structured h3 {
+  font-weight: 500;
+  letter-spacing: -0.02em;
+}
+
+.room-typography-organic {
+  letter-spacing: -0.005em;
+  line-height: 1.7;
+}
+
+.room-typography-organic h1,
+.room-typography-organic h2,
+.room-typography-organic h3 {
+  font-weight: 400;
+  letter-spacing: 0em;
+}
+
+.room-typography-restrained {
+  letter-spacing: 0.03em;
+  line-height: 1.75;
+}
+
+.room-typography-restrained h1,
+.room-typography-restrained h2,
+.room-typography-restrained h3 {
+  font-weight: 300;
+  letter-spacing: 0.02em;
+}
+
+/* ============================================ */
+/* ROOM SPACING RHYTHM CLASSES */
+/* ============================================ */
+
+.room-spacing-tight > * + * {
+  margin-top: 1rem;
+}
+
+.room-spacing-breathable > * + * {
+  margin-top: 1.5rem;
+}
+
+.room-spacing-expansive > * + * {
+  margin-top: 2.5rem;
+}
