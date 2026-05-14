@@ -13,6 +13,7 @@ import {
 } from '@/lib/onboarding-state'
 import { getResonatingRooms, ROOM_AFFINITIES } from '@/lib/room-affinity'
 import { getSupabaseBrowserClient } from '@/lib/supabase/client'
+import { ensureUserProfile } from '@/lib/actions/auth'
 
 /**
  * LongPlay Onboarding - Initiation Into a Listening Culture
@@ -918,64 +919,111 @@ function RoomsRevealStep({ onContinue }: { onContinue: () => void }) {
 // ============================================
 // COMPLETE - Welcome to LongPlay
 // ============================================
-// Local error mapper — same logic as the removed server action, now client-side
-function friendlyOtpError(message: string): string {
+// ── Auth error helper ──────────────────────────────────────────────────────
+function friendlyAuthError(message: string): string {
   const msg = message.toLowerCase()
   if (msg.includes('database error saving new user'))
-    return 'Supabase could not create your account (trigger error). Apply lib/schema-patch.sql in Supabase SQL editor.'
+    return 'Supabase could not create your account. Ask the developer to apply lib/schema-patch.sql.'
   if (msg.includes('rate limit') || msg.includes('too many'))
-    return 'Too many sign-in attempts. Please wait a few minutes and try again.'
+    return 'Too many attempts. Please wait a minute and try again.'
   if (msg.includes('invalid email'))
     return 'Please enter a valid email address.'
   if (msg.includes('user not found') || msg.includes('no user found'))
-    return 'No account found for this email. Please check the address and try again.'
+    return 'No account found for this email.'
+  if ((msg.includes('token') || msg.includes('otp')) && (msg.includes('expired') || msg.includes('invalid')))
+    return 'This code has expired or is incorrect. Request a new one below.'
   return message
 }
 
-function CompleteStep({ onFinish }: { onFinish: () => void }) {
-  const [email, setEmail] = useState('')
-  const [isSending, setIsSending] = useState(false)
-  const [emailSent, setEmailSent] = useState(false)
-  const [sendError, setSendError] = useState('')
-  const [rawError, setRawError] = useState('')
+type AuthPhase = 'email' | 'otp' | 'success'
 
-  const handleSaveIdentity = async (e: React.FormEvent) => {
-    e.preventDefault()
-    if (!email || isSending) return
+function CompleteStep({ onFinish }: { onFinish: () => void }) {
+  const [phase, setPhase] = useState<AuthPhase>('email')
+  const [email, setEmail] = useState('')
+  const [otp, setOtp] = useState('')
+  const [isSending, setIsSending] = useState(false)
+  const [isVerifying, setIsVerifying] = useState(false)
+  const [sendError, setSendError] = useState('')
+  const [otpError, setOtpError] = useState('')
+  const [resendCooldown, setResendCooldown] = useState(0)
+
+  // Countdown ticker for resend cooldown
+  useEffect(() => {
+    if (resendCooldown <= 0) return
+    const t = setTimeout(() => setResendCooldown(c => c - 1), 1000)
+    return () => clearTimeout(t)
+  }, [resendCooldown])
+
+  // Send a 6-digit OTP code to `targetEmail` — no magic link, no redirect
+  const sendCode = async (targetEmail: string): Promise<boolean> => {
     setIsSending(true)
     setSendError('')
-    setRawError('')
-
-    // ── Browser-client OTP initiation ──────────────────────────────────────
-    // MUST run in the browser so the PKCE code-verifier is stored in browser
-    // storage (cookies set by the browser client itself). If this were a server
-    // action, the verifier would be written as a Set-Cookie header that gets
-    // dropped on the cross-site redirect from supabase.co → your domain.
     const supabase = getSupabaseBrowserClient()
-    const emailRedirectTo = `${window.location.origin}/auth/callback`
-
-    console.log('[CompleteStep] signInWithOtp → redirectTo:', emailRedirectTo)
 
     const { error } = await supabase.auth.signInWithOtp({
+      email: targetEmail,
+      options: { shouldCreateUser: true },
+    })
+
+    setIsSending(false)
+
+    if (error) {
+      setSendError(friendlyAuthError(error.message))
+      return false
+    }
+
+    setResendCooldown(60)
+    return true
+  }
+
+  const handleSendCode = async (e: React.FormEvent) => {
+    e.preventDefault()
+    if (!email || isSending) return
+    const ok = await sendCode(email)
+    if (ok) setPhase('otp')
+  }
+
+  const handleVerifyCode = async (e: React.FormEvent) => {
+    e.preventDefault()
+    if (otp.length < 6 || isVerifying) return
+    setIsVerifying(true)
+    setOtpError('')
+
+    const supabase = getSupabaseBrowserClient()
+    const { error } = await supabase.auth.verifyOtp({
       email,
-      options: {
-        emailRedirectTo,
-        shouldCreateUser: true,
-      },
+      token: otp,
+      type: 'email',
     })
 
     if (error) {
-      console.error('[CompleteStep] signInWithOtp error:', error.message, error.status)
-      setSendError(friendlyOtpError(error.message))
-      setRawError(error.message)
-      setIsSending(false)
+      setOtpError(friendlyAuthError(error.message))
+      setIsVerifying(false)
       return
     }
 
-    console.log('[CompleteStep] OTP sent OK to:', email)
-    setEmailSent(true)
-    // Let the user into the app immediately — magic link arrival is async
-    setTimeout(onFinish, 2000)
+    // Session is now established — upsert profile via server action
+    const { data: { user } } = await supabase.auth.getUser()
+    if (user) {
+      await ensureUserProfile(user.id, user.email ?? '', user.user_metadata ?? {})
+    }
+
+    setPhase('success')
+    setTimeout(onFinish, 1400)
+  }
+
+  const handleResend = async () => {
+    if (resendCooldown > 0 || isSending) return
+    setOtp('')
+    setOtpError('')
+    await sendCode(email)
+  }
+
+  const handleChangeEmail = () => {
+    setPhase('email')
+    setOtp('')
+    setOtpError('')
+    setSendError('')
   }
 
   return (
@@ -984,18 +1032,18 @@ function CompleteStep({ onFinish }: { onFinish: () => void }) {
         <h2 className="font-serif text-4xl md:text-5xl text-cream mb-6">
           Welcome to LongPlay
         </h2>
-        
+
         <div className="w-16 h-px bg-gradient-to-r from-transparent via-tobacco/30 to-transparent mx-auto mb-8" />
-        
+
         <p className="text-muted-foreground leading-relaxed mb-4">
           Your listening identity is ready.
         </p>
-        
+
         <p className="text-muted-foreground leading-relaxed mb-12">
-          Explore your profile, enter your rooms, and let your 
+          Explore your profile, enter your rooms, and let your
           understanding of yourself through music deepen over time.
         </p>
-        
+
         <button
           onClick={onFinish}
           className="px-12 py-4 border border-cream/30 text-cream hover:bg-cream/5 transition-all duration-700"
@@ -1003,15 +1051,25 @@ function CompleteStep({ onFinish }: { onFinish: () => void }) {
           Enter LongPlay
         </button>
 
-        {/* Save identity — email capture for persistence */}
-        <div className="mt-10 pt-8 border-t border-border/10">
-          {emailSent ? (
-            <p className="text-sm text-tobacco animate-fade-in">
-              Check your email — a link is on its way.
-            </p>
-          ) : (
-            <form onSubmit={handleSaveIdentity} className="space-y-3">
-              <p className="text-[11px] uppercase tracking-[0.3em] text-muted-foreground mb-4">
+        {/* ── Auth section ───────────────────────────────────────────────── */}
+        <div className="mt-10 pt-8 border-t border-border/10 min-h-[160px]">
+
+          {/* Phase: success */}
+          {phase === 'success' && (
+            <div className="animate-fade-in flex flex-col items-center gap-3">
+              <div className="w-8 h-8 rounded-full border border-olive/40 flex items-center justify-center">
+                <svg className="w-4 h-4 text-olive" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M4.5 12.75l6 6 9-13.5" />
+                </svg>
+              </div>
+              <p className="text-sm text-olive">Signed in. Taking you home…</p>
+            </div>
+          )}
+
+          {/* Phase: email entry */}
+          {phase === 'email' && (
+            <form onSubmit={handleSendCode} className="space-y-4 animate-fade-in">
+              <p className="text-[11px] uppercase tracking-[0.3em] text-muted-foreground">
                 Save your identity to return from any device
               </p>
 
@@ -1022,6 +1080,7 @@ function CompleteStep({ onFinish }: { onFinish: () => void }) {
                   onChange={e => setEmail(e.target.value)}
                   placeholder="your@email.com"
                   required
+                  autoComplete="email"
                   disabled={isSending}
                   className={cn(
                     "flex-1 bg-transparent border border-border/30 px-4 py-2.5 text-sm text-cream",
@@ -1038,28 +1097,105 @@ function CompleteStep({ onFinish }: { onFinish: () => void }) {
                     "disabled:opacity-40 disabled:cursor-not-allowed"
                   )}
                 >
-                  {isSending ? '...' : 'Save'}
+                  {isSending ? '…' : 'Send code'}
                 </button>
               </div>
 
               {sendError && (
-                <div className="animate-fade-in space-y-1.5 text-left max-w-sm mx-auto">
-                  <p className="text-[11px] text-red-400/80">
-                    {sendError}
-                  </p>
-                  {rawError && rawError !== sendError && (
-                    <p className="text-[10px] font-mono text-muted-foreground/50 break-all">
-                      raw: {rawError}
-                    </p>
-                  )}
-                </div>
+                <p className="text-[11px] text-red-400/80 animate-fade-in max-w-sm mx-auto">
+                  {sendError}
+                </p>
               )}
 
               <p className="text-[10px] text-muted-foreground/40">
-                No password. A sign-in link will be sent to your email.
+                We'll email you a 6-digit verification code. No password needed.
               </p>
             </form>
           )}
+
+          {/* Phase: OTP entry */}
+          {phase === 'otp' && (
+            <div className="space-y-5 animate-fade-in">
+              <div className="space-y-1">
+                <p className="text-[11px] uppercase tracking-[0.3em] text-muted-foreground">
+                  Enter the verification code sent to
+                </p>
+                <p className="text-sm text-tobacco">{email}</p>
+              </div>
+
+              <form onSubmit={handleVerifyCode} className="space-y-3 max-w-xs mx-auto">
+                <input
+                  type="text"
+                  inputMode="numeric"
+                  value={otp}
+                  onChange={e => setOtp(e.target.value.replace(/\D/g, '').slice(0, 6))}
+                  placeholder="000000"
+                  required
+                  autoComplete="one-time-code"
+                  autoFocus
+                  disabled={isVerifying}
+                  maxLength={6}
+                  className={cn(
+                    "w-full bg-transparent border border-border/30 px-4 py-3",
+                    "text-center text-2xl text-cream tracking-[0.6em] font-mono",
+                    "placeholder:text-muted-foreground/20 placeholder:tracking-[0.6em]",
+                    "focus:outline-none focus:border-tobacco/50 transition-colors duration-300",
+                    "disabled:opacity-50",
+                    otpError && "border-red-400/40"
+                  )}
+                />
+
+                <button
+                  type="submit"
+                  disabled={isVerifying || otp.length < 6}
+                  className={cn(
+                    "w-full py-2.5 text-sm border border-tobacco/40 text-tobacco",
+                    "hover:bg-tobacco/10 transition-all duration-500",
+                    "disabled:opacity-40 disabled:cursor-not-allowed"
+                  )}
+                >
+                  {isVerifying ? 'Verifying…' : 'Verify code'}
+                </button>
+              </form>
+
+              {otpError && (
+                <p className="text-[11px] text-red-400/80 animate-fade-in">
+                  {otpError}
+                </p>
+              )}
+
+              {/* Resend + change email */}
+              <div className="flex items-center justify-center gap-4 text-[11px]">
+                <button
+                  type="button"
+                  onClick={handleResend}
+                  disabled={resendCooldown > 0 || isSending}
+                  className="text-tobacco hover:text-cream transition-colors disabled:opacity-40 disabled:cursor-default"
+                >
+                  {isSending
+                    ? 'Sending…'
+                    : resendCooldown > 0
+                    ? `Resend in ${resendCooldown}s`
+                    : 'Resend code'}
+                </button>
+                <span className="text-muted-foreground/30">·</span>
+                <button
+                  type="button"
+                  onClick={handleChangeEmail}
+                  className="text-muted-foreground/60 hover:text-cream transition-colors"
+                >
+                  Use different email
+                </button>
+              </div>
+
+              {sendError && (
+                <p className="text-[11px] text-red-400/60 animate-fade-in">
+                  {sendError}
+                </p>
+              )}
+            </div>
+          )}
+
         </div>
       </div>
     </div>
