@@ -12,7 +12,7 @@ import {
   isOnboardingCompleted,
 } from '@/lib/onboarding-state'
 import { getResonatingRooms, ROOM_AFFINITIES } from '@/lib/room-affinity'
-import { sendMagicLink } from '@/lib/actions/auth'
+import { getSupabaseBrowserClient } from '@/lib/supabase/client'
 
 /**
  * LongPlay Onboarding - Initiation Into a Listening Culture
@@ -918,6 +918,20 @@ function RoomsRevealStep({ onContinue }: { onContinue: () => void }) {
 // ============================================
 // COMPLETE - Welcome to LongPlay
 // ============================================
+// Local error mapper — same logic as the removed server action, now client-side
+function friendlyOtpError(message: string): string {
+  const msg = message.toLowerCase()
+  if (msg.includes('database error saving new user'))
+    return 'Supabase could not create your account (trigger error). Apply lib/schema-patch.sql in Supabase SQL editor.'
+  if (msg.includes('rate limit') || msg.includes('too many'))
+    return 'Too many sign-in attempts. Please wait a few minutes and try again.'
+  if (msg.includes('invalid email'))
+    return 'Please enter a valid email address.'
+  if (msg.includes('user not found') || msg.includes('no user found'))
+    return 'No account found for this email. Please check the address and try again.'
+  return message
+}
+
 function CompleteStep({ onFinish }: { onFinish: () => void }) {
   const [email, setEmail] = useState('')
   const [isSending, setIsSending] = useState(false)
@@ -932,17 +946,36 @@ function CompleteStep({ onFinish }: { onFinish: () => void }) {
     setSendError('')
     setRawError('')
 
-    const result = await sendMagicLink(email, { redirectTo: '/' })
+    // ── Browser-client OTP initiation ──────────────────────────────────────
+    // MUST run in the browser so the PKCE code-verifier is stored in browser
+    // storage (cookies set by the browser client itself). If this were a server
+    // action, the verifier would be written as a Set-Cookie header that gets
+    // dropped on the cross-site redirect from supabase.co → your domain.
+    const supabase = getSupabaseBrowserClient()
+    const emailRedirectTo = `${window.location.origin}/auth/callback`
 
-    if (result.success) {
-      setEmailSent(true)
-      // Let user into the app immediately — link arrival is async
-      setTimeout(onFinish, 2000)
-    } else {
-      setSendError(result.error ?? 'Something went wrong. Please try again.')
-      if (result.rawError) setRawError(result.rawError)
+    console.log('[CompleteStep] signInWithOtp → redirectTo:', emailRedirectTo)
+
+    const { error } = await supabase.auth.signInWithOtp({
+      email,
+      options: {
+        emailRedirectTo,
+        shouldCreateUser: true,
+      },
+    })
+
+    if (error) {
+      console.error('[CompleteStep] signInWithOtp error:', error.message, error.status)
+      setSendError(friendlyOtpError(error.message))
+      setRawError(error.message)
       setIsSending(false)
+      return
     }
+
+    console.log('[CompleteStep] OTP sent OK to:', email)
+    setEmailSent(true)
+    // Let the user into the app immediately — magic link arrival is async
+    setTimeout(onFinish, 2000)
   }
 
   return (

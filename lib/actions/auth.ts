@@ -1,111 +1,71 @@
 'use server'
 
 import { createSupabaseServerClient } from '@/lib/supabase/server'
+import { getSupabaseAdminClient } from '@/lib/supabase/admin'
 import { redirect } from 'next/navigation'
-import { headers } from 'next/headers'
 
 // ---------------------------------------------------------------------------
-// Derive the canonical public URL for this deployment.
-// Priority: explicit env var > Vercel system vars > request headers.
-// The result is used as the base for emailRedirectTo.
+// ensureUserProfile
+// Called from the browser-side callback page after a session is established.
+// Uses the admin client so it bypasses RLS.
 // ---------------------------------------------------------------------------
-async function getSiteUrl(): Promise<string> {
-  // Explicitly set — highest priority (recommended for production)
-  if (process.env.NEXT_PUBLIC_SITE_URL) {
-    return process.env.NEXT_PUBLIC_SITE_URL.replace(/\/$/, '')
-  }
-
-  // Vercel sets VERCEL_PROJECT_PRODUCTION_URL and VERCEL_URL automatically
-  if (process.env.VERCEL_PROJECT_PRODUCTION_URL) {
-    return `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL}`
-  }
-  if (process.env.VERCEL_URL) {
-    return `https://${process.env.VERCEL_URL}`
-  }
-
-  // Fall back to request headers
-  const headersList = await headers()
-  const host =
-    headersList.get('x-forwarded-host') ??
-    headersList.get('host') ??
-    'localhost:5000'
-  const proto = headersList.get('x-forwarded-proto') ?? 'http'
-  return `${proto}://${host}`
-}
-
-function friendlyAuthError(message: string): string {
-  const msg = message.toLowerCase()
-
-  if (msg.includes('database error saving new user')) {
-    return (
-      'Supabase could not create your account (database trigger error). ' +
-      'Please apply lib/schema-patch.sql in the Supabase SQL editor and try again.'
-    )
-  }
-  if (msg.includes('email rate limit exceeded') || msg.includes('too many requests')) {
-    return 'Too many sign-in attempts. Please wait a few minutes and try again.'
-  }
-  if (msg.includes('invalid email')) {
-    return 'Please enter a valid email address.'
-  }
-  if (msg.includes('user not found') || msg.includes('no user found')) {
-    return 'No account found for this email. Please check the address and try again.'
-  }
-  if (msg.includes('email not confirmed')) {
-    return 'Your email has not been confirmed yet. Check your inbox for a previous sign-in link.'
-  }
-  return message
-}
-
-export async function sendMagicLink(
+export async function ensureUserProfile(
+  userId: string,
   email: string,
-  options?: { redirectTo?: string }
-): Promise<{ success: boolean; error?: string; rawError?: string; redirectUsed?: string }> {
-  if (!email || !email.includes('@')) {
-    return { success: false, error: 'Please enter a valid email address.' }
-  }
+  metadata: Record<string, unknown>
+): Promise<{ success: boolean; error?: string }> {
+  try {
+    const admin = getSupabaseAdminClient()
 
-  const supabase = await createSupabaseServerClient()
-  const siteUrl = await getSiteUrl()
+    const displayName =
+      (metadata?.name as string | undefined) ??
+      (metadata?.full_name as string | undefined) ??
+      email?.split('@')[0] ??
+      'Listener'
 
-  // The emailRedirectTo URL must be listed in Supabase → Auth → URL Configuration
-  // → Redirect URLs. Add: https://your-domain.com/auth/callback
-  // Use a wildcard like https://your-domain.com/** to cover all variants.
-  const emailRedirectTo = `${siteUrl}/auth/callback`
+    const { error: profileError } = await admin
+      .from('user_profiles')
+      .upsert(
+        { id: userId, display_name: displayName },
+        { onConflict: 'id', ignoreDuplicates: true }
+      )
 
-  console.log('[auth/sendMagicLink] email:', email, '| redirectTo:', emailRedirectTo)
-
-  const { error } = await supabase.auth.signInWithOtp({
-    email,
-    options: {
-      emailRedirectTo,
-      shouldCreateUser: true,
-    },
-  })
-
-  if (error) {
-    console.error('[auth/sendMagicLink] FAILED:', {
-      message: error.message,
-      status: error.status,
-      name: error.name,
-    })
-    return {
-      success: false,
-      error: friendlyAuthError(error.message),
-      rawError: error.message,
+    if (profileError) {
+      console.error('[ensureUserProfile] profile upsert failed:', profileError.message)
+    } else {
+      console.log('[ensureUserProfile] profile OK:', userId)
     }
-  }
 
-  console.log('[auth/sendMagicLink] OTP sent OK to:', email, '| redirectTo was:', emailRedirectTo)
-  return { success: true, redirectUsed: emailRedirectTo }
+    const { error: membershipError } = await admin
+      .from('user_memberships')
+      .upsert(
+        { user_id: userId, tier: 'explorer', status: 'free' },
+        { onConflict: 'user_id', ignoreDuplicates: true }
+      )
+
+    if (membershipError) {
+      console.error('[ensureUserProfile] membership upsert failed:', membershipError.message)
+    }
+
+    return { success: !profileError }
+  } catch (err) {
+    console.error('[ensureUserProfile] exception:', String(err))
+    return { success: false, error: String(err) }
+  }
 }
 
+// ---------------------------------------------------------------------------
+// signOut
+// ---------------------------------------------------------------------------
 export async function signOut(): Promise<void> {
   const supabase = await createSupabaseServerClient()
   await supabase.auth.signOut()
   redirect('/')
 }
 
+// ---------------------------------------------------------------------------
+// getServerUser
+// ---------------------------------------------------------------------------
 export async function getServerUser() {
   const supabase = await createSupabaseServerClient()
   const { data: { user }, error } = await supabase.auth.getUser()
