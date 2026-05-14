@@ -2,6 +2,8 @@ import type { Metadata, Viewport } from 'next'
 import { Geist, Geist_Mono } from 'next/font/google'
 import { Playfair_Display } from 'next/font/google'
 import { Analytics } from '@vercel/analytics/next'
+import { AuthProvider } from '@/components/auth-provider'
+import { OnboardingSync } from '@/components/onboarding-sync'
 import './globals.css'
 
 const geistSans = Geist({
@@ -56,7 +58,10 @@ export default function RootLayout({
   return (
     <html lang="en" className={`${geistSans.variable} ${geistMono.variable} ${playfair.variable} bg-background`}>
       <body className="font-sans antialiased min-h-screen">
-        {children}
+        <AuthProvider>
+          <OnboardingSync />
+          {children}
+        </AuthProvider>
         {process.env.NODE_ENV === 'production' && <Analytics />}
       </body>
     </html>

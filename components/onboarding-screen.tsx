@@ -12,6 +12,7 @@ import {
   isOnboardingCompleted,
 } from '@/lib/onboarding-state'
 import { getResonatingRooms, ROOM_AFFINITIES } from '@/lib/room-affinity'
+import { sendMagicLink } from '@/lib/actions/auth'
 
 /**
  * LongPlay Onboarding - Initiation Into a Listening Culture
@@ -107,6 +108,8 @@ const STREAMING_SERVICES = [
   { id: 'bandcamp', name: 'Bandcamp', color: '#1DA0C3' },
 ]
 
+const DEV_MODE = process.env.NODE_ENV === 'development'
+
 export function OnboardingScreen() {
   const router = useRouter()
   const [currentStep, setCurrentStep] = useState<Step>('opening')
@@ -114,10 +117,14 @@ export function OnboardingScreen() {
   const [calibrationAnswers, setCalibrationAnswers] = useState<Record<string, string[]>>({})
   const [buildProgress, setBuildProgress] = useState(0)
   const [isInitialized, setIsInitialized] = useState(false)
+  const [debugStatus, setDebugStatus] = useState('loading onboarding state')
 
   // Check if onboarding is already completed
   useEffect(() => {
+    setDebugStatus('checking onboarding state')
+
     if (isOnboardingCompleted()) {
+      setDebugStatus('completed — redirecting to home')
       router.replace('/')
       return
     }
@@ -134,6 +141,7 @@ export function OnboardingScreen() {
       setCalibrationAnswers(savedState.calibrationAnswers)
     }
     
+    setDebugStatus('ready')
     setIsInitialized(true)
   }, [router])
 
@@ -216,7 +224,14 @@ export function OnboardingScreen() {
   if (!isInitialized) {
     return (
       <div className="grain min-h-screen bg-background flex items-center justify-center">
-        <div className="w-12 h-12 border border-tobacco/30 rounded-full animate-pulse" />
+        <div className="text-center">
+          <div className="w-12 h-12 mx-auto border border-tobacco/30 rounded-full animate-pulse mb-4" />
+          {DEV_MODE && (
+            <p className="text-[10px] text-tobacco/50 uppercase tracking-wider">
+              {debugStatus}
+            </p>
+          )}
+        </div>
       </div>
     )
   }
@@ -293,13 +308,15 @@ export function OnboardingScreen() {
 // OPENING - Cinematic Brand Thesis
 // ============================================
 function OpeningStep({ onContinue }: { onContinue: () => void }) {
-  const [phase, setPhase] = useState(0)
+  // In dev mode, show all phases immediately so the Begin button is always visible
+  const [phase, setPhase] = useState(DEV_MODE ? 3 : 0)
   
   useEffect(() => {
+    if (DEV_MODE) return // Skip animation in dev
     const timers = [
-      setTimeout(() => setPhase(1), 1200),
-      setTimeout(() => setPhase(2), 2800),
-      setTimeout(() => setPhase(3), 4400),
+      setTimeout(() => setPhase(1), 800),
+      setTimeout(() => setPhase(2), 1800),
+      setTimeout(() => setPhase(3), 2800),
     ]
     return () => timers.forEach(clearTimeout)
   }, [])
@@ -902,9 +919,32 @@ function RoomsRevealStep({ onContinue }: { onContinue: () => void }) {
 // COMPLETE - Welcome to LongPlay
 // ============================================
 function CompleteStep({ onFinish }: { onFinish: () => void }) {
+  const [email, setEmail] = useState('')
+  const [isSending, setIsSending] = useState(false)
+  const [emailSent, setEmailSent] = useState(false)
+  const [sendError, setSendError] = useState('')
+
+  const handleSaveIdentity = async (e: React.FormEvent) => {
+    e.preventDefault()
+    if (!email || isSending) return
+    setIsSending(true)
+    setSendError('')
+
+    const result = await sendMagicLink(email, { redirectTo: '/' })
+
+    if (result.success) {
+      setEmailSent(true)
+      // Let user into the app immediately — link arrival is async
+      setTimeout(onFinish, 2000)
+    } else {
+      setSendError(result.error ?? 'Something went wrong. Please try again.')
+      setIsSending(false)
+    }
+  }
+
   return (
     <div className="flex-1 flex flex-col justify-center items-center px-8 py-16 text-center min-h-screen">
-      <div className="animate-fade-in max-w-lg">
+      <div className="animate-fade-in max-w-lg w-full">
         <h2 className="font-serif text-4xl md:text-5xl text-cream mb-6">
           Welcome to LongPlay
         </h2>
@@ -926,6 +966,58 @@ function CompleteStep({ onFinish }: { onFinish: () => void }) {
         >
           Enter LongPlay
         </button>
+
+        {/* Save identity — email capture for persistence */}
+        <div className="mt-10 pt-8 border-t border-border/10">
+          {emailSent ? (
+            <p className="text-sm text-tobacco animate-fade-in">
+              Check your email — a link is on its way.
+            </p>
+          ) : (
+            <form onSubmit={handleSaveIdentity} className="space-y-3">
+              <p className="text-[11px] uppercase tracking-[0.3em] text-muted-foreground mb-4">
+                Save your identity to return from any device
+              </p>
+
+              <div className="flex gap-2 max-w-sm mx-auto">
+                <input
+                  type="email"
+                  value={email}
+                  onChange={e => setEmail(e.target.value)}
+                  placeholder="your@email.com"
+                  required
+                  disabled={isSending}
+                  className={cn(
+                    "flex-1 bg-transparent border border-border/30 px-4 py-2.5 text-sm text-cream",
+                    "placeholder:text-muted-foreground/40 focus:outline-none focus:border-tobacco/50",
+                    "transition-colors duration-300 disabled:opacity-50"
+                  )}
+                />
+                <button
+                  type="submit"
+                  disabled={isSending || !email}
+                  className={cn(
+                    "px-5 py-2.5 text-sm border border-tobacco/40 text-tobacco",
+                    "hover:bg-tobacco/10 transition-all duration-500",
+                    "disabled:opacity-40 disabled:cursor-not-allowed"
+                  )}
+                >
+                  {isSending ? '...' : 'Save'}
+                </button>
+              </div>
+
+              {sendError && (
+                <p className="text-[11px] text-red-400/80 animate-fade-in">
+                  {sendError}
+                </p>
+              )}
+
+              <p className="text-[10px] text-muted-foreground/40">
+                No password. A sign-in link will be sent to your email.
+              </p>
+            </form>
+          )}
+        </div>
       </div>
     </div>
   )

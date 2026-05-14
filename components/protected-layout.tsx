@@ -4,58 +4,87 @@ import { useEffect, useState } from 'react'
 import { useRouter, usePathname } from 'next/navigation'
 import { isOnboardingCompleted } from '@/lib/onboarding-state'
 
-// Pages that don't require onboarding
-const PUBLIC_PATHS = ['/onboarding']
+const PUBLIC_PATHS = ['/onboarding', '/auth']
+
+const DEV_MODE = process.env.NODE_ENV === 'development'
 
 /**
  * ProtectedLayout - Wraps pages that require completed onboarding
- * 
- * Redirects to /onboarding if onboarding hasn't been completed.
- * Shows a minimal loading state during the check.
+ *
+ * Checks localStorage for completed onboarding state and redirects to
+ * /onboarding if not complete. Works identically in dev and production —
+ * there is NO auto-completion in dev mode. Clearing localStorage will
+ * redirect to /onboarding in both environments.
+ *
+ * A 3-second timeout prevents an infinite loading state in edge cases.
  */
 export function ProtectedLayout({ children }: { children: React.ReactNode }) {
   const router = useRouter()
   const pathname = usePathname()
   const [status, setStatus] = useState<'loading' | 'allowed' | 'redirecting'>('loading')
+  const [debugStep, setDebugStep] = useState('initializing')
 
   useEffect(() => {
-    // Skip check for public paths
+    const timeoutId = setTimeout(() => {
+      setStatus(prev => {
+        if (prev === 'loading') {
+          console.warn('[ProtectedLayout] timeout hit — forcing allow')
+          return 'allowed'
+        }
+        return prev
+      })
+    }, 3000)
+
     if (PUBLIC_PATHS.some(path => pathname.startsWith(path))) {
+      setDebugStep('public path — allowed')
       setStatus('allowed')
+      clearTimeout(timeoutId)
       return
     }
 
-    // Check if onboarding is completed
+    setDebugStep('checking localStorage')
+
     const completed = isOnboardingCompleted()
-    
+
     if (!completed) {
+      setDebugStep('not complete — redirecting to /onboarding')
       setStatus('redirecting')
       router.replace('/onboarding')
     } else {
+      setDebugStep('complete — allowed')
       setStatus('allowed')
     }
+
+    clearTimeout(timeoutId)
+    return () => clearTimeout(timeoutId)
   }, [pathname, router])
 
-  // Show loading state
   if (status === 'loading') {
     return (
       <div className="min-h-screen bg-background flex items-center justify-center">
         <div className="text-center">
           <div className="w-10 h-10 mx-auto mb-4 border border-tobacco/30 rounded-full animate-pulse" />
-          <p className="text-xs text-muted-foreground/50 uppercase tracking-widest">
+          <p className="text-xs text-muted-foreground/50 uppercase tracking-widest mb-2">
             LongPlay
           </p>
+          {DEV_MODE && (
+            <p className="text-[10px] text-tobacco/50 tracking-wider">
+              {debugStep}
+            </p>
+          )}
         </div>
       </div>
     )
   }
 
-  // Show nothing while redirecting
   if (status === 'redirecting') {
     return (
       <div className="min-h-screen bg-background flex items-center justify-center">
         <div className="text-center">
           <p className="text-sm text-muted-foreground">Redirecting to onboarding...</p>
+          {DEV_MODE && (
+            <p className="text-[10px] text-tobacco/50 tracking-wider mt-2">{debugStep}</p>
+          )}
         </div>
       </div>
     )

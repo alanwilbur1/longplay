@@ -1,11 +1,15 @@
 'use client'
 
-import { useRouter } from 'next/navigation'
+import { useEffect, useState } from 'react'
+import { useRouter, usePathname } from 'next/navigation'
 import Link from 'next/link'
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar'
-import { resetOnboarding } from '@/lib/onboarding-state'
+import { resetOnboarding, getOnboardingState } from '@/lib/onboarding-state'
+import { useAuth } from '@/components/auth-provider'
+import { signOut } from '@/lib/actions/auth'
+import { getOnboardingStatus } from '@/lib/actions/onboarding'
 
-// User data (would come from auth/database)
+// Hardcoded demo data — will be replaced by real auth/database data
 const USER = {
   name: 'Elena Vasquez',
   handle: '@elenavasquez',
@@ -30,12 +34,45 @@ const JOINED_ROOMS = [
 
 export function ProfileScreen() {
   const router = useRouter()
-  
-  const handleRestartOnboarding = () => {
-    if (window.confirm('This will reset your onboarding progress and redirect you to the beginning. Continue?')) {
-      resetOnboarding()
-      router.push('/onboarding')
+  const pathname = usePathname()
+  const { user, isAuthenticated, isLoading: authLoading } = useAuth()
+
+  const [localState, setLocalState] = useState<{
+    completed: boolean
+    archetype?: string
+    completedAt?: string
+  } | null>(null)
+
+  const [supabaseStatus, setSupabaseStatus] = useState<{
+    authenticated: boolean
+    onboardingCompleted: boolean
+  } | null>(null)
+
+  const [isSigningOut, setIsSigningOut] = useState(false)
+
+  useEffect(() => {
+    const state = getOnboardingState()
+    setLocalState({
+      completed: state.completed,
+      archetype: state.archetype,
+      completedAt: state.completedAt,
+    })
+  }, [])
+
+  useEffect(() => {
+    if (!authLoading) {
+      getOnboardingStatus().then(setSupabaseStatus).catch(() => {})
     }
+  }, [authLoading, isAuthenticated])
+
+  const handleRestartOnboarding = () => {
+    resetOnboarding()
+    router.push('/onboarding')
+  }
+
+  const handleSignOut = async () => {
+    setIsSigningOut(true)
+    await signOut()
   }
 
   return (
@@ -210,24 +247,88 @@ export function ProfileScreen() {
 
       {/* Sign Out */}
       <section className="px-6 py-8 md:px-12 lg:px-24">
-        <button className="text-sm text-muted-foreground hover:text-cream transition-colors">
-          Sign out
+        <button
+          onClick={handleSignOut}
+          disabled={isSigningOut}
+          className="text-sm text-muted-foreground hover:text-cream transition-colors disabled:opacity-50"
+        >
+          {isSigningOut ? 'Signing out...' : 'Sign out'}
         </button>
       </section>
 
-      {/* Developer/Testing Section */}
-      <section className="px-6 py-6 md:px-12 lg:px-24 border-t border-dashed border-border/30 bg-card/5">
-        <p className="text-[10px] uppercase tracking-[0.2em] text-muted-foreground/50 mb-4">
-          Testing Tools
+      {/* ── Auth & Debug Panel ─────────────────────────────── */}
+      <section className="px-6 py-6 md:px-12 lg:px-24 border-t-2 border-dashed border-tobacco/20 bg-card/5">
+        <p className="text-[10px] uppercase tracking-[0.3em] text-tobacco/60 mb-5">
+          Auth Debug Panel
         </p>
-        <button
-          onClick={handleRestartOnboarding}
-          className="px-4 py-2 border border-burgundy/30 text-burgundy hover:bg-burgundy/10 text-sm transition-all duration-300"
-        >
-          Restart Onboarding
-        </button>
-        <p className="text-xs text-muted-foreground/50 mt-2">
-          Resets onboarding state and returns to /onboarding
+
+        <div className="space-y-3 mb-6 font-mono text-xs">
+          {/* Route */}
+          <div className="flex items-start justify-between gap-4 py-2 border-b border-border/10">
+            <span className="text-muted-foreground/60 shrink-0">current route</span>
+            <span className="text-cream text-right break-all">{pathname}</span>
+          </div>
+
+          {/* Supabase session */}
+          <div className="flex items-start justify-between gap-4 py-2 border-b border-border/10">
+            <span className="text-muted-foreground/60 shrink-0">supabase session</span>
+            {authLoading ? (
+              <span className="text-tobacco/50">loading…</span>
+            ) : isAuthenticated && user ? (
+              <span className="text-olive text-right break-all">{user.email}</span>
+            ) : (
+              <span className="text-red-400/70">not signed in</span>
+            )}
+          </div>
+
+          {/* localStorage onboarding */}
+          <div className="flex items-start justify-between gap-4 py-2 border-b border-border/10">
+            <span className="text-muted-foreground/60 shrink-0">localStorage</span>
+            {localState === null ? (
+              <span className="text-tobacco/50">reading…</span>
+            ) : localState.completed ? (
+              <span className="text-olive text-right">
+                complete · {localState.archetype ?? 'no archetype'}
+              </span>
+            ) : (
+              <span className="text-red-400/70">not complete</span>
+            )}
+          </div>
+
+          {/* Supabase onboarding status */}
+          <div className="flex items-start justify-between gap-4 py-2 border-b border-border/10">
+            <span className="text-muted-foreground/60 shrink-0">supabase db</span>
+            {supabaseStatus === null ? (
+              <span className="text-tobacco/50">loading…</span>
+            ) : !supabaseStatus.authenticated ? (
+              <span className="text-muted-foreground/50">not authenticated</span>
+            ) : supabaseStatus.onboardingCompleted ? (
+              <span className="text-olive">onboarding_completed = true</span>
+            ) : (
+              <span className="text-red-400/70">onboarding_completed = false</span>
+            )}
+          </div>
+        </div>
+
+        {/* Actions */}
+        <div className="flex flex-wrap gap-3">
+          <button
+            onClick={handleRestartOnboarding}
+            className="px-4 py-2 border border-tobacco/40 text-tobacco hover:bg-tobacco/10 text-xs transition-all duration-300"
+          >
+            Clear localStorage + Start Onboarding
+          </button>
+
+          <Link
+            href="/onboarding"
+            className="px-4 py-2 border border-border/30 text-muted-foreground hover:text-cream hover:border-border/60 text-xs transition-all duration-300"
+          >
+            Go to /onboarding directly
+          </Link>
+        </div>
+
+        <p className="text-[10px] text-muted-foreground/30 mt-4">
+          This panel is visible in all environments for testing. Remove before launch.
         </p>
       </section>
     </div>
