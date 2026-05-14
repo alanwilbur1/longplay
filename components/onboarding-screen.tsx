@@ -923,12 +923,14 @@ function CompleteStep({ onFinish }: { onFinish: () => void }) {
   const [isSending, setIsSending] = useState(false)
   const [emailSent, setEmailSent] = useState(false)
   const [sendError, setSendError] = useState('')
+  const [rawError, setRawError] = useState('')
 
   const handleSaveIdentity = async (e: React.FormEvent) => {
     e.preventDefault()
     if (!email || isSending) return
     setIsSending(true)
     setSendError('')
+    setRawError('')
 
     const result = await sendMagicLink(email, { redirectTo: '/' })
 
@@ -938,6 +940,7 @@ function CompleteStep({ onFinish }: { onFinish: () => void }) {
       setTimeout(onFinish, 2000)
     } else {
       setSendError(result.error ?? 'Something went wrong. Please try again.')
+      if (result.rawError) setRawError(result.rawError)
       setIsSending(false)
     }
   }
@@ -1007,9 +1010,16 @@ function CompleteStep({ onFinish }: { onFinish: () => void }) {
               </div>
 
               {sendError && (
-                <p className="text-[11px] text-red-400/80 animate-fade-in">
-                  {sendError}
-                </p>
+                <div className="animate-fade-in space-y-1.5 text-left max-w-sm mx-auto">
+                  <p className="text-[11px] text-red-400/80">
+                    {sendError}
+                  </p>
+                  {rawError && rawError !== sendError && (
+                    <p className="text-[10px] font-mono text-muted-foreground/50 break-all">
+                      raw: {rawError}
+                    </p>
+                  )}
+                </div>
               )}
 
               <p className="text-[10px] text-muted-foreground/40">
