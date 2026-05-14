@@ -1,0 +1,183 @@
+LongPlay — Fix Authenticated-User / Demo-State Wiring
+
+CONTEXT
+LongPlay is a Next.js 16 (App Router) + Supabase project. OTP email auth is working — users can request a code, verify it, and a Supabase session is established. However, after successful login the app still presents the seeded "Elena / Nocturnal Romantic" demo identity, and unauthenticated users can still reach the authenticated app shell by virtue of a stale localStorage onboarding flag.
+
+The diagnosis is complete and approved. This task is state/auth wiring only. Do NOT redesign UI, do NOT change typography, colors, layout, animation, spacing, or the LongPlay editorial aesthetic. Do NOT add new screens. Do NOT remove the seeded ambient/editorial content that lives in room, club, and album screens.
+
+Work on a new branch off origin/main:
+    git checkout origin/main
+    git checkout -b fix/auth-state-wiring
+
+==============================================================
+SCOPE — APPROVED FIXES
+==============================================================
+
+1) ProtectedLayout must be auth-aware
+   File: components/protected-layout.tsx
+   - Currently it ONLY checks isOnboardingCompleted() from localStorage.
+   - Change it to consult useAuth() (from components/auth-provider.tsx) and treat the Supabase session as the source of truth.
+   - Decision matrix the guard must implement (do not change the visual loading/redirecting states, only the routing logic):
+       a. authLoading === true                              → show loading state (existing UI)
+       b. PUBLIC_PATHS match (/onboarding, /auth, /share)  → allow
+       c. isAuthenticated === false                         → redirect to /onboarding (regardless of localStorage)
+       d. isAuthenticated === true                          → allow
+   - The localStorage flag alone must never grant access. Do not delete the localStorage helpers; they remain useful as a per-device "completed once" hint, but they are no longer the gate.
+   - Preserve the existing 3-second timeout safety fallback behavior and the dev-mode debugStep readout.
+
+2) Remove the onboarding bypass in CompleteStep
+   File: components/onboarding-screen.tsx (CompleteStep, ~line 940–1208)
+   - The large "Enter LongPlay" button at the top of CompleteStep currently calls onFinish() without requiring authentication. This is the bypass.
+   - Required behavior:
+       • Before OTP verification succeeds, the "Enter LongPlay" button must be disabled (keep it visible so the layout does not shift; render it as disabled / muted using existing disabled styles already present in this file). Tooltip or helper copy underneath: "Verify your email to continue." Match existing muted-helper text styling — do not invent new visual treatments.
+       • After OTP verification succeeds (phase === 'success'), the existing setTimeout(onFinish, 1400) flow is the only path to onFinish().
+       • handleComplete() must additionally guard: read the current Supabase session via getSupabaseBrowserClient().auth.getSession() and only call completeOnboarding() + router.push('/') if a session exists. If no session, set an inline error using the existing friendlyAuthError() copy pattern and stay on the step.
+   - Do NOT change the visual structure of CompleteStep, the email form, the OTP form, the success state, or the resend / change-email controls.
+
+3) Sign-out cleanup
+   File: components/profile-screen.tsx — handleSignOut (~line 197–203)
+   Also add a small shared helper if convenient (e.g. lib/auth/sign-out.ts) but it is fine to inline.
+   On sign-out, in this exact order:
+       a. await supabase.auth.signOut() on the browser client (clears the implicit-flow session in localStorage under sb-<ref>-auth-token)
+       b. resetOnboarding() from lib/onboarding-state.ts (clears longplay_onboarding)
+       c. sessionStorage.removeItem('longplay_onboarding_synced') (the key used by components/onboarding-sync.tsx)
+       d. router.push('/onboarding')
+   Verify there are no other longplay_* keys being written; if any are found during implementation, clear them too.
+
+4) Identity-bearing user references — REPLACE with authenticated user data
+   Touch only these files:
+     - components/identity-profile-screen.tsx
+     - components/compatibility-screen.tsx
+     - components/shareable-artifacts.tsx
+
+   Rules:
+     • Use useAuth() to obtain { user, isAuthenticated, isLoading }.
+     • Derive a single displayName string with this precedence, identical to ProfileScreen:
+         dbProfile?.display_name
+         ?? user.user_metadata?.name
+         ?? user.user_metadata?.full_name
+         ?? user.email?.split('@')[0]
+         ?? 'Listener'
+       For identity-profile-screen.tsx and compatibility-screen.tsx you may skip the dbProfile fetch and start at user_metadata — these screens are not the canonical profile surface. If you want symmetry with ProfileScreen, fetch user_profiles the same way and cache it locally.
+     • Avatar: prefer user.user_metadata?.avatar_url; fall back to initials via the existing AvatarFallback component already used in profile-screen.tsx. Do not introduce new avatar visuals.
+     • Where the current copy says "Elena" or "Elena Vasquez" as the OWNER of the identity (the person whose taste portrait / archetype / share card / compatibility profile is being shown), substitute displayName.
+     • Where the current copy is editorial about the listener in second person ("you", "your"), leave it alone — that is the design intent.
+     • In components/shareable-artifacts.tsx, every userName="Elena" prop on the artifact card components must be wired to displayName.
+     • In components/compatibility-screen.tsx, the user-side name (currently "Elena") becomes displayName; the comparison subject ("Marcus") and the narrative copy that names both remain unchanged — they are seeded comparison content until real compatibility data exists.
+     • Unauthenticated visitors to /identity, /compatibility, /share: render the screen with the literal string "Listener" as the displayName fallback. Do not show a sign-in wall on these screens.
+
+   Things you MUST NOT change in these three files:
+     • Typography, font weights, tracking, italic/serif choices.
+     • Section ordering, paragraph counts, decorative dividers, animations, fade-in delays.
+     • Archetype copy ("The Nocturnal Romantic"), taste-portrait paragraphs, sonic threads, emotional dimensions sliders, evolution timeline, room memories, compatibility narrative, artifact card copy. These are seeded editorial content and stay until real per-user data exists.
+     • Album references (ALBUMS.forEmma etc.) used as illustrative examples.
+
+5) Preserve seeded editorial/demo content — DO NOT MODIFY
+   Do not edit these files in this task:
+     - components/listening-room-screen.tsx
+     - components/active-listening-room-screen.tsx
+     - components/album-detail-screen.tsx
+     - components/listening-club-screen.tsx
+   The "Elena" strings in these files are sample annotations / sample members — they are seeded ambient content representing other listeners, not the current user. They remain intentional until real network data exists.
+
+6) Visual design preservation
+   - No new components, no new screens, no new icons, no new color tokens.
+   - Reuse existing class names, tokens (cream, tobacco, burgundy, olive, border/20, etc.), Tailwind utilities, and animation classes already in the codebase.
+   - The only new code you add is logic, plus a single small debug panel described below.
+
+7) Temporary debug visibility
+   Add ONE small dev-only debug component, gated behind process.env.NODE_ENV === 'development'.
+     • Create components/auth-debug-strip.tsx — a fixed bottom-left strip (z-50, text-[10px], font-mono, neutral muted colors that already exist in the design system, e.g. text-tobacco/60, bg-card/80, border border-border/20, px-3 py-2). Single column, compact.
+     • Mount it once in app/layout.tsx, inside <AuthProvider> below <OnboardingSync />, only when NODE_ENV === 'development'. It must not render in production.
+     • Lines it must show, one per row, label : value:
+         - route          (usePathname())
+         - authLoading    (true/false)
+         - authenticated  (true/false)
+         - user.id        (8-char prefix … last-4, or —)
+         - email          (user.email or —)
+         - onboarding LS  (read isOnboardingCompleted() once per render or via a 1-second poll)
+         - guard decision (read from a small context value the ProtectedLayout exposes; or simply replicate the decision matrix client-side using useAuth + isOnboardingCompleted)
+         - demo mode      (true if !isAuthenticated, else false)
+     • ProfileScreen already has a richer Auth Debug Panel — leave it as-is; do not duplicate.
+     • Do not log to the console from this strip.
+
+==============================================================
+NON-GOALS
+==============================================================
+- No schema changes.
+- No new API routes or server actions.
+- No new dependencies.
+- No changes to the OTP send/verify flow itself — it works.
+- No removal of DEMO_USER from profile-screen.tsx; it is still the correct unauthenticated fallback for that screen.
+- No changes to any /room, /rooms, /club, /clubs, /album, /archive, /year-in-review screen content.
+- No edits to lib/schema.sql or lib/schema-patch.sql.
+
+==============================================================
+IMPLEMENTATION ORDER (recommended)
+==============================================================
+1. Sign-out cleanup (smallest, isolates the stale-localStorage class of bug for the rest of testing).
+2. ProtectedLayout auth-awareness.
+3. Onboarding bypass removal in CompleteStep.
+4. Replace Elena identity references in the three approved files.
+5. Add the dev-only AuthDebugStrip and mount it in layout.
+6. Manual verification (below).
+
+==============================================================
+VERIFICATION — must all pass before reporting done
+==============================================================
+Run pnpm dev and test in a fresh incognito window for each scenario.
+
+A. Unauthenticated lockout
+   1. Open incognito, navigate directly to / — expect redirect to /onboarding.
+   2. In DevTools Application → Local Storage, manually set:
+        longplay_onboarding = {"completed":true,"completedAt":"2025-01-01T00:00:00.000Z"}
+      Reload /. Expect: still redirected to /onboarding (localStorage alone does not grant access).
+   3. Navigate directly to /identity, /profile, /compatibility, /share — all redirect to /onboarding except /share if it is in PUBLIC_PATHS (keep current behavior).
+
+B. Onboarding bypass blocked
+   1. Step through onboarding to CompleteStep without entering email.
+   2. The "Enter LongPlay" button is disabled / muted. Clicking it does nothing or shows the helper copy.
+   3. Enter email → request code → verify code. On phase === 'success', the auto-finish path runs and routes to /.
+
+C. Session survives refresh
+   1. After completing OTP, on /, hard-refresh (Cmd-Shift-R).
+   2. AuthProvider rehydrates the session from localStorage. The user lands back on / authenticated. The debug strip shows authenticated=true and the user.id matches.
+
+D. /profile shows the authenticated user
+   1. Header shows display name derived from db profile / metadata / email prefix — not "Elena Vasquez".
+   2. Auth Debug Panel: supabase session = real email, auth user id = real uuid, hydrated profile id = same uuid, demo mode = inactive.
+
+E. /identity, /compatibility, /share show authenticated user attribution
+   1. /identity share-card footer shows "<displayName> / <Season> <Year>" — not "Elena / …".
+   2. /compatibility shows displayName instead of "Elena" everywhere the current user is labeled. "Marcus" and the narrative comparison copy remain.
+   3. /share artifact cards show userName = displayName.
+
+F. Seeded room/album/club content untouched
+   1. /room, /rooms/<slug>, /club, /album/<slug> — visually identical to origin/main. The seeded "Elena" sample annotations / members are still present in those screens. Diff the files against origin/main — there should be zero changes in:
+        components/listening-room-screen.tsx
+        components/active-listening-room-screen.tsx
+        components/album-detail-screen.tsx
+        components/listening-club-screen.tsx
+
+G. Sign-out fully resets
+   1. From /profile, click "Sign out".
+   2. Routed to /onboarding.
+   3. DevTools Application → Local Storage: sb-<ref>-auth-token gone, longplay_onboarding gone, longplay_onboarding_synced (sessionStorage) gone.
+   4. Reload / — redirected back to /onboarding (no stale access).
+
+H. Unauthenticated /identity etc. (if reachable)
+   1. If your guard implementation allows /identity for unauthenticated users at all, displayName falls back to "Listener". Otherwise, redirected to /onboarding — both behaviors are acceptable per spec; pick the one consistent with the ProtectedLayout decision matrix above.
+
+==============================================================
+DELIVERABLES
+==============================================================
+- A single PR on branch fix/auth-state-wiring against main.
+- PR description must include:
+    • Bullet list of every file changed and a one-line reason for each.
+    • A "diff is empty" confirmation for the four files listed in scope item 5.
+    • Screenshots or a short Loom of scenarios A, B, D, E, G passing.
+    • Output of: git diff --stat origin/main..HEAD
+- Do not commit the debug strip behind a feature flag; it is already NODE_ENV-gated and that is enough.
+- Do not push to main. Do not auto-merge.
+
+Report back with the PR link, the file list, and confirmation that all eight verification scenarios pass.

@@ -197,9 +197,10 @@ export function ProfileScreen() {
   const handleSignOut = async () => {
     setIsSigningOut(true)
     const supabase = getSupabaseBrowserClient()
-    await supabase.auth.signOut()
-    // AuthProvider.onAuthStateChange fires → user = null → displayUser = DEMO_USER
-    router.push('/')
+    await supabase.auth.signOut()                               // a) clear localStorage session
+    resetOnboarding()                                           // b) clear longplay_onboarding
+    sessionStorage.removeItem('longplay_onboarding_synced')    // c) clear OnboardingSync flag
+    router.push('/onboarding')                                  // d) navigate to onboarding
   }
 
   const handleRestartOnboarding = () => {

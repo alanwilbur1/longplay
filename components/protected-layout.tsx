@@ -2,25 +2,29 @@
 
 import { useEffect, useState } from 'react'
 import { useRouter, usePathname } from 'next/navigation'
-import { isOnboardingCompleted } from '@/lib/onboarding-state'
+import { useAuth } from '@/components/auth-provider'
 
-const PUBLIC_PATHS = ['/onboarding', '/auth']
+const PUBLIC_PATHS = ['/onboarding', '/auth', '/share']
 
 const DEV_MODE = process.env.NODE_ENV === 'development'
 
 /**
- * ProtectedLayout - Wraps pages that require completed onboarding
+ * ProtectedLayout — Auth-aware route guard.
  *
- * Checks localStorage for completed onboarding state and redirects to
- * /onboarding if not complete. Works identically in dev and production —
- * there is NO auto-completion in dev mode. Clearing localStorage will
- * redirect to /onboarding in both environments.
+ * Decision matrix:
+ *   a. authLoading === true                → show loading state
+ *   b. pathname starts with PUBLIC_PATHS   → allow
+ *   c. isAuthenticated === false           → redirect to /onboarding
+ *   d. isAuthenticated === true            → allow
  *
+ * The Supabase session is the sole gate.
+ * localStorage flags are no longer sufficient to grant access.
  * A 3-second timeout prevents an infinite loading state in edge cases.
  */
 export function ProtectedLayout({ children }: { children: React.ReactNode }) {
   const router = useRouter()
   const pathname = usePathname()
+  const { isAuthenticated, isLoading: authLoading } = useAuth()
   const [status, setStatus] = useState<'loading' | 'allowed' | 'redirecting'>('loading')
   const [debugStep, setDebugStep] = useState('initializing')
 
@@ -35,6 +39,7 @@ export function ProtectedLayout({ children }: { children: React.ReactNode }) {
       })
     }, 3000)
 
+    // b. Public paths always pass through
     if (PUBLIC_PATHS.some(path => pathname.startsWith(path))) {
       setDebugStep('public path — allowed')
       setStatus('allowed')
@@ -42,22 +47,27 @@ export function ProtectedLayout({ children }: { children: React.ReactNode }) {
       return
     }
 
-    setDebugStep('checking localStorage')
-
-    const completed = isOnboardingCompleted()
-
-    if (!completed) {
-      setDebugStep('not complete — redirecting to /onboarding')
-      setStatus('redirecting')
-      router.replace('/onboarding')
-    } else {
-      setDebugStep('complete — allowed')
-      setStatus('allowed')
+    // a. Auth still resolving — hold in loading state; timeout is the safety net
+    if (authLoading) {
+      setDebugStep('auth loading…')
+      return () => clearTimeout(timeoutId)
     }
 
+    // c. No authenticated session — localStorage alone is not sufficient
+    if (!isAuthenticated) {
+      setDebugStep('not authenticated — redirecting to /onboarding')
+      setStatus('redirecting')
+      router.replace('/onboarding')
+      clearTimeout(timeoutId)
+      return
+    }
+
+    // d. Authenticated — allow through
+    setDebugStep('authenticated — allowed')
+    setStatus('allowed')
     clearTimeout(timeoutId)
     return () => clearTimeout(timeoutId)
-  }, [pathname, router])
+  }, [pathname, router, authLoading, isAuthenticated])
 
   if (status === 'loading') {
     return (

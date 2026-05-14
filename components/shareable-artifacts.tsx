@@ -1,6 +1,7 @@
 'use client'
 
 import { useState, useRef, useCallback } from 'react'
+import { useAuth } from '@/components/auth-provider'
 import { AlbumCover } from '@/components/album-cover'
 import { ALBUMS, type Album } from '@/lib/albums'
 import { cn } from '@/lib/utils'
@@ -719,6 +720,11 @@ export function SonicThreadCard({ thread, description, frequency, albums, userNa
 // 10. ARTIFACT GALLERY — Export hub
 // ============================================
 export function ArtifactGallery() {
+  const { user, isAuthenticated } = useAuth()
+  const displayName = (isAuthenticated && user)
+    ? (user.user_metadata?.name ?? user.user_metadata?.full_name ?? user.email?.split('@')[0] ?? 'Listener')
+    : 'Listener'
+
   const sampleAlbums = [ALBUMS.forEmma, ALBUMS.pinkMoon, ALBUMS.blue, ALBUMS.inRainbows, ALBUMS.spiritOfEden]
   const dimensions = [
     { left: 'Warm', right: 'Cold', value: 72, description: 'The warmth of a fire in a cold room.' },
@@ -742,7 +748,7 @@ export function ArtifactGallery() {
           <ArchetypeCard
             archetype="The Nocturnal Romantic"
             tagline="You listen like someone writing letters they'll never send."
-            userName="Elena"
+            userName={displayName}
           />
         </div>
       </section>
@@ -752,7 +758,7 @@ export function ArtifactGallery() {
         <div className="max-w-md">
           <TastePortraitCard
             answer="I'm drawn less to genre than to emotional architecture. Atmosphere over immediacy. Restraint over spectacle. The right kind of sadness can feel like company."
-            userName="Elena"
+            userName={displayName}
             albums={sampleAlbums}
           />
         </div>
@@ -761,7 +767,7 @@ export function ArtifactGallery() {
       <section>
         <h3 className="text-xs uppercase tracking-[0.2em] text-tobacco mb-8">Records That Built You</h3>
         <div className="max-w-lg">
-          <RecordsThatBuiltYouCard albums={sampleAlbums} userName="Elena" />
+          <RecordsThatBuiltYouCard albums={sampleAlbums} userName={displayName} />
         </div>
       </section>
 
@@ -775,7 +781,7 @@ export function ArtifactGallery() {
             dominantEmotion="Solitude"
             insight="Your listening became more introspective. Choosing immersion over variety."
             topAlbum={ALBUMS.forEmma}
-            userName="Elena"
+            userName={displayName}
           />
         </div>
       </section>
@@ -785,7 +791,7 @@ export function ArtifactGallery() {
         <div className="max-w-xs">
           <EmotionalMapCard
             dimensions={dimensions}
-            userName="Elena"
+            userName={displayName}
             archetype="The Nocturnal Romantic"
           />
         </div>
@@ -804,7 +810,7 @@ export function ArtifactGallery() {
               { label: "Annotations", value: "174" },
               { label: "Full Albums", value: "312" },
             ]}
-            userName="Elena"
+            userName={displayName}
           />
         </div>
       </section>
@@ -814,7 +820,7 @@ export function ArtifactGallery() {
         <div className="max-w-md">
           <AnnotationCollectionCard
             annotations={annotations}
-            userName="Elena"
+            userName={displayName}
             title="Moments That Mattered"
           />
         </div>
@@ -829,7 +835,7 @@ export function ArtifactGallery() {
             album={ALBUMS.spiritOfEden}
             week="March 2026"
             reflection="This was the week you understood why patience is a form of trust."
-            userName="Elena"
+            userName={displayName}
           />
         </div>
       </section>
@@ -842,7 +848,7 @@ export function ArtifactGallery() {
             description="You gravitated toward artists who made loneliness feel less like absence and more like presence. Solo recordings. Sparse arrangements. One voice in an empty room."
             frequency="Present in 67% of your listening"
             albums={sampleAlbums.slice(0, 4)}
-            userName="Elena"
+            userName={displayName}
           />
         </div>
       </section>

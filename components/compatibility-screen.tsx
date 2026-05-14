@@ -1,6 +1,7 @@
 'use client'
 
 import Image from 'next/image'
+import { useAuth } from '@/components/auth-provider'
 
 // Real album artwork - emotionally resonant, culturally respected
 const ALBUMS = {
@@ -32,6 +33,11 @@ const ALBUMS = {
 }
 
 export function CompatibilityScreen() {
+  const { user, isAuthenticated } = useAuth()
+  const displayName = (isAuthenticated && user)
+    ? (user.user_metadata?.name ?? user.user_metadata?.full_name ?? user.email?.split('@')[0] ?? 'Listener')
+    : 'Listener'
+
   return (
     <div className="grain relative pb-24 md:pb-0 md:pt-16">
       {/* Hero - Two Profiles */}
@@ -46,12 +52,12 @@ export function CompatibilityScreen() {
             <div className="relative w-20 h-20 md:w-28 md:h-28 mx-auto mb-4 overflow-hidden rounded-full">
               <Image
                 src="https://images.unsplash.com/photo-1494790108377-be9c29b29330?w=400"
-                alt="Elena"
+                alt={displayName}
                 fill
                 className="object-cover grayscale-[20%]"
               />
             </div>
-            <p className="font-serif text-lg text-cream">Elena</p>
+            <p className="font-serif text-lg text-cream">{displayName}</p>
             <p className="text-xs text-tobacco mt-1">The Nocturnal Romantic</p>
           </div>
 
@@ -157,7 +163,7 @@ export function CompatibilityScreen() {
         
         <div className="space-y-6 max-w-xl mx-auto">
           <ContrastCard
-            person="Elena"
+            person={displayName}
             trait="Seeks catharsis"
             description="Music as emotional release. She leans into the crescendos, the moments where restraint finally breaks."
           />

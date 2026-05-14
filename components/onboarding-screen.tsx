@@ -209,15 +209,23 @@ export function OnboardingScreen() {
     }, 400)
   }
 
-  const handleComplete = () => {
-    // Mark onboarding as complete
+  const [sessionCheckError, setSessionCheckError] = useState('')
+
+  const handleComplete = async () => {
+    setSessionCheckError('')
+    // Guard: verify a Supabase session actually exists before marking onboarding
+    // complete and navigating. verifyOtp() must have succeeded for this to pass.
+    const supabase = getSupabaseBrowserClient()
+    const { data: { session } } = await supabase.auth.getSession()
+    if (!session) {
+      setSessionCheckError('Session not found. Please verify your email above to continue.')
+      return
+    }
     completeOnboarding({
       archetype: 'The Midnight Archivist',
       connectedServices,
       calibrationAnswers,
     })
-    
-    // Navigate to home
     router.push('/')
   }
 
@@ -298,7 +306,7 @@ export function OnboardingScreen() {
         )}
         
         {currentStep === 'complete' && (
-          <CompleteStep onFinish={handleComplete} />
+          <CompleteStep onFinish={handleComplete} sessionCheckError={sessionCheckError} />
         )}
       </div>
     </div>
@@ -937,7 +945,10 @@ function friendlyAuthError(message: string): string {
 
 type AuthPhase = 'email' | 'otp' | 'success'
 
-function CompleteStep({ onFinish }: { onFinish: () => void }) {
+function CompleteStep({ onFinish, sessionCheckError = '' }: { 
+  onFinish: () => void
+  sessionCheckError?: string
+}) {
   const [phase, setPhase] = useState<AuthPhase>('email')
   const [email, setEmail] = useState('')
   const [otp, setOtp] = useState('')
