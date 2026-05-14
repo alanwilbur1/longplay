@@ -960,9 +960,14 @@ function CompleteStep({ onFinish }: { onFinish: () => void }) {
     setSendError('')
     const supabase = getSupabaseBrowserClient()
 
+    console.log('[OTP FLOW]', { email: targetEmail, mode: 'otp-only' })
+
     const { error } = await supabase.auth.signInWithOtp({
       email: targetEmail,
-      options: { shouldCreateUser: true },
+      options: {
+        shouldCreateUser: true,
+        emailRedirectTo: undefined,
+      },
     })
 
     setIsSending(false)
