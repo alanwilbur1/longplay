@@ -4,25 +4,42 @@ import { createSupabaseServerClient } from '@/lib/supabase/server'
 import { redirect } from 'next/navigation'
 import { headers } from 'next/headers'
 
+// ---------------------------------------------------------------------------
+// Derive the canonical public URL for this deployment.
+// Priority: explicit env var > Vercel system vars > request headers.
+// The result is used as the base for emailRedirectTo.
+// ---------------------------------------------------------------------------
 async function getSiteUrl(): Promise<string> {
+  // Explicitly set — highest priority (recommended for production)
   if (process.env.NEXT_PUBLIC_SITE_URL) {
-    return process.env.NEXT_PUBLIC_SITE_URL
+    return process.env.NEXT_PUBLIC_SITE_URL.replace(/\/$/, '')
   }
+
+  // Vercel sets VERCEL_PROJECT_PRODUCTION_URL and VERCEL_URL automatically
+  if (process.env.VERCEL_PROJECT_PRODUCTION_URL) {
+    return `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL}`
+  }
+  if (process.env.VERCEL_URL) {
+    return `https://${process.env.VERCEL_URL}`
+  }
+
+  // Fall back to request headers
   const headersList = await headers()
-  const host = headersList.get('x-forwarded-host') ?? headersList.get('host') ?? 'localhost:5000'
+  const host =
+    headersList.get('x-forwarded-host') ??
+    headersList.get('host') ??
+    'localhost:5000'
   const proto = headersList.get('x-forwarded-proto') ?? 'http'
   return `${proto}://${host}`
 }
 
 function friendlyAuthError(message: string): string {
-  // Map raw Supabase/Postgres error strings to actionable messages.
   const msg = message.toLowerCase()
 
   if (msg.includes('database error saving new user')) {
     return (
-      'Supabase could not create your account. ' +
-      'This is usually caused by a missing database table or trigger. ' +
-      'Ask the developer to apply lib/schema-patch.sql in the Supabase SQL editor.'
+      'Supabase could not create your account (database trigger error). ' +
+      'Please apply lib/schema-patch.sql in the Supabase SQL editor and try again.'
     )
   }
   if (msg.includes('email rate limit exceeded') || msg.includes('too many requests')) {
@@ -43,7 +60,7 @@ function friendlyAuthError(message: string): string {
 export async function sendMagicLink(
   email: string,
   options?: { redirectTo?: string }
-): Promise<{ success: boolean; error?: string; rawError?: string }> {
+): Promise<{ success: boolean; error?: string; rawError?: string; redirectUsed?: string }> {
   if (!email || !email.includes('@')) {
     return { success: false, error: 'Please enter a valid email address.' }
   }
@@ -51,10 +68,12 @@ export async function sendMagicLink(
   const supabase = await createSupabaseServerClient()
   const siteUrl = await getSiteUrl()
 
-  const next = options?.redirectTo ?? '/'
-  const emailRedirectTo = `${siteUrl}/auth/callback?next=${encodeURIComponent(next)}`
+  // The emailRedirectTo URL must be listed in Supabase → Auth → URL Configuration
+  // → Redirect URLs. Add: https://your-domain.com/auth/callback
+  // Use a wildcard like https://your-domain.com/** to cover all variants.
+  const emailRedirectTo = `${siteUrl}/auth/callback`
 
-  console.log('[auth/sendMagicLink] attempting OTP for:', email, '→', emailRedirectTo)
+  console.log('[auth/sendMagicLink] email:', email, '| redirectTo:', emailRedirectTo)
 
   const { error } = await supabase.auth.signInWithOtp({
     email,
@@ -69,7 +88,6 @@ export async function sendMagicLink(
       message: error.message,
       status: error.status,
       name: error.name,
-      raw: JSON.stringify(error),
     })
     return {
       success: false,
@@ -78,8 +96,8 @@ export async function sendMagicLink(
     }
   }
 
-  console.log('[auth/sendMagicLink] OTP sent successfully to:', email)
-  return { success: true }
+  console.log('[auth/sendMagicLink] OTP sent OK to:', email, '| redirectTo was:', emailRedirectTo)
+  return { success: true, redirectUsed: emailRedirectTo }
 }
 
 export async function signOut(): Promise<void> {

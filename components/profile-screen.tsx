@@ -9,8 +9,8 @@ import { useAuth } from '@/components/auth-provider'
 import { signOut } from '@/lib/actions/auth'
 import { getOnboardingStatus } from '@/lib/actions/onboarding'
 
-// Hardcoded demo data — will be replaced by real auth/database data
-const USER = {
+// Demo fallback — shown only when no authenticated user exists
+const DEMO_USER = {
   name: 'Elena Vasquez',
   handle: '@elenavasquez',
   avatar: 'https://images.unsplash.com/photo-1494790108377-be9c29b29330?w=200',
@@ -50,6 +50,25 @@ export function ProfileScreen() {
 
   const [isSigningOut, setIsSigningOut] = useState(false)
 
+  // Derive display data from real authenticated user; fall back to demo
+  const displayUser = isAuthenticated && user
+    ? {
+        name:
+          user.user_metadata?.name ??
+          user.user_metadata?.full_name ??
+          user.email?.split('@')[0] ??
+          'Listener',
+        handle: `@${(user.email?.split('@')[0] ?? 'listener').toLowerCase().replace(/[^a-z0-9]/g, '')}`,
+        avatar: user.user_metadata?.avatar_url ?? null,
+        memberSince: user.created_at
+          ? new Date(user.created_at).toLocaleDateString('en-US', { month: 'long', year: 'numeric' })
+          : 'Recently',
+        tier: 'LongPlay Explorer',
+        archiveSize: 0,
+        savedMoments: 0,
+      }
+    : DEMO_USER
+
   useEffect(() => {
     const state = getOnboardingState()
     setLocalState({
@@ -81,18 +100,18 @@ export function ProfileScreen() {
       <section className="px-6 pt-16 pb-8 md:px-12 lg:px-24">
         <div className="flex items-start gap-6">
           <Avatar className="h-20 w-20 md:h-24 md:w-24 border-2 border-tobacco/30">
-            <AvatarImage src={USER.avatar} alt={USER.name} />
+            {displayUser.avatar && <AvatarImage src={displayUser.avatar} alt={displayUser.name} />}
             <AvatarFallback className="bg-tobacco/20 text-cream text-xl">
-              {USER.name.split(' ').map(n => n[0]).join('')}
+              {displayUser.name.split(' ').map(n => n[0]).join('').slice(0, 2)}
             </AvatarFallback>
           </Avatar>
           
           <div className="flex-1">
             <h1 className="font-serif text-2xl md:text-3xl text-cream mb-1">
-              {USER.name}
+              {displayUser.name}
             </h1>
-            <p className="text-muted-foreground text-sm mb-3">{USER.handle}</p>
-            <p className="text-xs text-tobacco">Member since {USER.memberSince}</p>
+            <p className="text-muted-foreground text-sm mb-3">{displayUser.handle}</p>
+            <p className="text-xs text-tobacco">Member since {displayUser.memberSince}</p>
           </div>
         </div>
       </section>
@@ -108,14 +127,14 @@ export function ProfileScreen() {
           className="block bg-burgundy/10 border border-burgundy/30 p-5 hover:bg-burgundy/15 transition-all duration-500"
         >
           <div className="flex items-center justify-between mb-3">
-            <h3 className="font-serif text-lg text-cream">{USER.tier}</h3>
+            <h3 className="font-serif text-lg text-cream">{displayUser.tier}</h3>
             <span className="text-xs text-burgundy px-2 py-1 border border-burgundy/50 rounded-full">Active</span>
           </div>
           <p className="text-sm text-muted-foreground mb-4">
             Full access to all identity features, unlimited clubs, and your complete listening archive.
           </p>
           <div className="flex items-center justify-between text-sm">
-            <span className="text-muted-foreground">Member since {USER.memberSince}</span>
+            <span className="text-muted-foreground">Member since {displayUser.memberSince}</span>
             <span className="text-tobacco flex items-center gap-1">
               Manage
               <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="1.5">
@@ -132,11 +151,11 @@ export function ProfileScreen() {
         
         <div className="grid grid-cols-2 gap-4">
           <div className="p-4 border border-border/20">
-            <p className="font-serif text-3xl text-cream mb-1">{USER.archiveSize.toLocaleString()}</p>
+            <p className="font-serif text-3xl text-cream mb-1">{displayUser.archiveSize.toLocaleString()}</p>
             <p className="text-xs text-muted-foreground">listening moments</p>
           </div>
           <div className="p-4 border border-border/20">
-            <p className="font-serif text-3xl text-cream mb-1">{USER.savedMoments}</p>
+            <p className="font-serif text-3xl text-cream mb-1">{displayUser.savedMoments}</p>
             <p className="text-xs text-muted-foreground">saved reflections</p>
           </div>
         </div>
@@ -278,6 +297,18 @@ export function ProfileScreen() {
               <span className="text-olive text-right break-all">{user.email}</span>
             ) : (
               <span className="text-red-400/70">not signed in</span>
+            )}
+          </div>
+
+          {/* Supabase user ID */}
+          <div className="flex items-start justify-between gap-4 py-2 border-b border-border/10">
+            <span className="text-muted-foreground/60 shrink-0">supabase user id</span>
+            {authLoading ? (
+              <span className="text-tobacco/50">loading…</span>
+            ) : isAuthenticated && user ? (
+              <span className="text-cream/60 text-right break-all text-[10px]">{user.id}</span>
+            ) : (
+              <span className="text-muted-foreground/40">—</span>
             )}
           </div>
 
