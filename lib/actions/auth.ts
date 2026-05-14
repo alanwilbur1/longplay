@@ -72,3 +72,50 @@ export async function getServerUser() {
   if (error || !user) return null
   return user
 }
+
+// ---------------------------------------------------------------------------
+// getUserProfile
+// Returns the user_profiles row + membership tier for the current session.
+// Uses the server client (reads session from cookies set by @supabase/ssr).
+// ---------------------------------------------------------------------------
+export async function getUserProfile(): Promise<{
+  id: string
+  display_name: string | null
+  onboarding_completed: boolean
+  preferences: Record<string, unknown> | null
+  created_at: string
+  membership_tier: string | null
+} | null> {
+  try {
+    const supabase = await createSupabaseServerClient()
+    const { data: { user } } = await supabase.auth.getUser()
+    if (!user) return null
+
+    const [{ data: profile, error: profileError }, { data: membership }] =
+      await Promise.all([
+        supabase
+          .from('user_profiles')
+          .select('id, display_name, onboarding_completed, preferences, created_at')
+          .eq('id', user.id)
+          .single(),
+        supabase
+          .from('user_memberships')
+          .select('tier')
+          .eq('user_id', user.id)
+          .single(),
+      ])
+
+    if (profileError) {
+      console.error('[getUserProfile] error:', profileError.message)
+      return null
+    }
+
+    return {
+      ...profile,
+      membership_tier: membership?.tier ?? null,
+    }
+  } catch (err) {
+    console.error('[getUserProfile] exception:', String(err))
+    return null
+  }
+}

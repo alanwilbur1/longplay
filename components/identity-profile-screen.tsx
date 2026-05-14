@@ -1,6 +1,7 @@
 'use client'
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useMemo } from 'react'
+import { useAuth } from '@/components/auth-provider'
 import Image from 'next/image'
 import Link from 'next/link'
 import { AlbumCover } from '@/components/album-cover'
@@ -35,9 +36,27 @@ import {
  * - like reading criticism written about your inner life
  */
 
+function getCurrentSeason(): string {
+  const m = new Date().getMonth() + 1
+  if (m >= 3 && m <= 5) return 'Spring'
+  if (m >= 6 && m <= 8) return 'Summer'
+  if (m >= 9 && m <= 11) return 'Autumn'
+  return 'Winter'
+}
+
 export function IdentityProfileScreen() {
   const [cardCopied, setCardCopied] = useState(false)
   const [mounted, setMounted] = useState(false)
+  const { user, isAuthenticated } = useAuth()
+
+  const cardAttribution = useMemo(() => {
+    const name = isAuthenticated && user
+      ? (user.user_metadata?.name ?? user.user_metadata?.full_name ?? user.email?.split('@')[0] ?? 'Listener')
+      : 'Listener'
+    const season = getCurrentSeason()
+    const year = new Date().getFullYear()
+    return `${name} / ${season} ${year}`
+  }, [isAuthenticated, user])
 
   useEffect(() => {
     setMounted(true)
@@ -371,7 +390,7 @@ export function IdentityProfileScreen() {
               {/* Card Footer */}
               <div className="text-center">
                 <p className="text-[9px] uppercase tracking-[0.5em] text-muted-foreground">
-                  Elena / Winter 2026
+                  {cardAttribution}
                 </p>
               </div>
             </div>
