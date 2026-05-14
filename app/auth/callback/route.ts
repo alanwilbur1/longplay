@@ -7,41 +7,43 @@ import type { EmailOtpType } from '@supabase/supabase-js'
 export async function GET(request: NextRequest) {
   const { searchParams, origin } = new URL(request.url)
 
-  // ── Log all params for debugging (safe — no raw tokens logged) ────────────
+  // ── Log every URL param (safe — token values are not printed, only keys) ──
   const paramKeys = [...searchParams.keys()]
   const next = searchParams.get('next') ?? '/'
-  console.log('[auth/callback] received params:', {
-    keys: paramKeys,
-    hasCode: searchParams.has('code'),
-    hasTokenHash: searchParams.has('token_hash'),
-    type: searchParams.get('type'),
-    next,
-    origin,
-  })
-
-  // ── Determine which Supabase auth flow is being used ─────────────────────
-  //
-  // Magic-link / OTP flow  → token_hash + type=email   (most common)
-  // PKCE / OAuth flow      → code                       (OAuth providers)
-  //
-  // The two flows MUST be handled differently. Using exchangeCodeForSession
-  // on a token_hash URL (or vice-versa) will always fail.
-
   const tokenHash = searchParams.get('token_hash')
   const type = searchParams.get('type') as EmailOtpType | null
   const code = searchParams.get('code')
 
-  if (!tokenHash && !code) {
-    console.error('[auth/callback] No token_hash or code in URL. Params were:', paramKeys)
-    return NextResponse.redirect(`${origin}/auth/error?reason=no_token`)
-  }
+  console.log('[auth/callback] ── incoming request ──────────────────────────')
+  console.log('[auth/callback] origin:', origin)
+  console.log('[auth/callback] param keys:', paramKeys)
+  console.log('[auth/callback] has code:', !!code)
+  console.log('[auth/callback] has token_hash:', !!tokenHash)
+  console.log('[auth/callback] type:', type ?? '(none)')
+  console.log('[auth/callback] next:', next)
 
+  // ── Build the Supabase server client ──────────────────────────────────────
+  // Must use the same cookieOptions as the server client in lib/supabase/server.ts
+  // (sameSite: 'lax') so that the code_verifier cookie survives the cross-site
+  // redirect chain: email → supabase.co → 302 → this callback.
   const cookieStore = await cookies()
+  const cookieNames = cookieStore.getAll().map(c => c.name)
+  console.log('[auth/callback] cookies present:', cookieNames)
+
+  const hasCodeVerifier = cookieNames.some(
+    n => n.includes('code-verifier') || n.includes('pkce')
+  )
+  console.log('[auth/callback] has PKCE code-verifier cookie:', hasCodeVerifier)
 
   const supabase = createServerClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
     process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY!,
     {
+      cookieOptions: {
+        path: '/',
+        sameSite: 'lax',
+        secure: process.env.NODE_ENV === 'production',
+      },
       cookies: {
         getAll() {
           return cookieStore.getAll()
@@ -55,30 +57,70 @@ export async function GET(request: NextRequest) {
     }
   )
 
-  let user = null
+  // ── Guard: must have at least one token form ───────────────────────────────
+  if (!tokenHash && !code) {
+    console.error('[auth/callback] no token_hash or code — params were:', paramKeys)
+    return NextResponse.redirect(
+      `${origin}/auth/error?reason=no_token&mode=none&params=${encodeURIComponent(paramKeys.join(','))}`
+    )
+  }
 
-  // ── Path A: Magic-link / Email OTP (token_hash + type) ───────────────────
+  let user = null
+  let detectedMode = 'unknown'
+
+  // ── Path A: Magic-link / Email OTP ────────────────────────────────────────
+  //    Supabase sends: token_hash + type=email
   if (tokenHash && type) {
-    console.log('[auth/callback] using verifyOtp flow (token_hash + type)')
+    detectedMode = 'otp'
+    console.log('[auth/callback] → Path A: verifyOtp (token_hash + type)')
+
     const { data, error } = await supabase.auth.verifyOtp({ token_hash: tokenHash, type })
 
     if (error || !data.user) {
-      console.error('[auth/callback] verifyOtp failed:', error?.message, error?.status)
-      return NextResponse.redirect(`${origin}/auth/error?reason=otp_failed`)
+      const msg = error?.message ?? 'unknown error'
+      console.error('[auth/callback] verifyOtp FAILED:', {
+        message: msg,
+        status: error?.status,
+        name: error?.name,
+      })
+      return NextResponse.redirect(
+        `${origin}/auth/error?reason=otp_failed&mode=otp&msg=${encodeURIComponent(msg)}`
+      )
     }
 
     user = data.user
     console.log('[auth/callback] verifyOtp OK — user:', user.id, user.email)
   }
 
-  // ── Path B: PKCE / OAuth (code) ───────────────────────────────────────────
+  // ── Path B: PKCE code exchange ────────────────────────────────────────────
+  //    Supabase sends: code  (requires code_verifier cookie from signInWithOtp)
   else if (code) {
-    console.log('[auth/callback] using exchangeCodeForSession flow (code)')
+    detectedMode = 'pkce'
+    console.log('[auth/callback] → Path B: exchangeCodeForSession (code)')
+    console.log('[auth/callback] code-verifier cookie present:', hasCodeVerifier)
+
+    if (!hasCodeVerifier) {
+      console.warn(
+        '[auth/callback] WARNING: no code-verifier cookie found — ' +
+        'this likely means the PKCE verifier was dropped in transit ' +
+        '(cross-site redirect with SameSite=Strict). ' +
+        'Ensure lib/supabase/server.ts uses cookieOptions.sameSite = "lax".'
+      )
+    }
+
     const { data, error } = await supabase.auth.exchangeCodeForSession(code)
 
     if (error || !data.user) {
-      console.error('[auth/callback] exchangeCodeForSession failed:', error?.message)
-      return NextResponse.redirect(`${origin}/auth/error?reason=code_failed`)
+      const msg = error?.message ?? 'unknown error'
+      console.error('[auth/callback] exchangeCodeForSession FAILED:', {
+        message: msg,
+        status: error?.status,
+        name: error?.name,
+        hadCodeVerifier: hasCodeVerifier,
+      })
+      return NextResponse.redirect(
+        `${origin}/auth/error?reason=code_failed&mode=pkce&msg=${encodeURIComponent(msg)}&had_verifier=${hasCodeVerifier}`
+      )
     }
 
     user = data.user
@@ -86,7 +128,7 @@ export async function GET(request: NextRequest) {
   }
 
   if (!user) {
-    return NextResponse.redirect(`${origin}/auth/error?reason=no_user`)
+    return NextResponse.redirect(`${origin}/auth/error?reason=no_user&mode=${detectedMode}`)
   }
 
   // ── Guarantee user_profile exists (admin client bypasses RLS) ─────────────
@@ -113,24 +155,23 @@ export async function GET(request: NextRequest) {
         hint: profileError.hint,
       })
     } else {
-      console.log('[auth/callback] profile upsert OK for:', user.id)
+      console.log('[auth/callback] profile upsert OK:', user.id)
 
-      // Seed starter membership if missing
       const { error: membershipError } = await admin
         .from('user_memberships')
         .upsert(
           { user_id: user.id, tier: 'explorer', status: 'free' },
           { onConflict: 'user_id', ignoreDuplicates: true }
         )
-
       if (membershipError) {
         console.warn('[auth/callback] membership upsert (non-fatal):', membershipError.message)
       }
     }
   } catch (err) {
-    // Tables may not exist yet — never block the redirect.
-    console.warn('[auth/callback] profile guarantee skipped:', String(err))
+    console.warn('[auth/callback] profile guarantee skipped (tables may not exist):', String(err))
   }
+
+  console.log('[auth/callback] ── redirecting to:', next, '─────────────────')
 
   // ── Redirect ───────────────────────────────────────────────────────────────
   const forwardedHost = request.headers.get('x-forwarded-host')
