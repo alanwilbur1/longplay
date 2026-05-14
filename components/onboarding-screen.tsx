@@ -990,7 +990,7 @@ function CompleteStep({ onFinish }: { onFinish: () => void }) {
 
   const handleVerifyCode = async (e: React.FormEvent) => {
     e.preventDefault()
-    if (otp.length < 6 || isVerifying) return
+    if (otp.length < 8 || isVerifying) return
     setIsVerifying(true)
     setOtpError('')
 
@@ -1133,13 +1133,13 @@ function CompleteStep({ onFinish }: { onFinish: () => void }) {
                   type="text"
                   inputMode="numeric"
                   value={otp}
-                  onChange={e => setOtp(e.target.value.replace(/\D/g, '').slice(0, 6))}
-                  placeholder="000000"
+                  onChange={e => setOtp(e.target.value.replace(/\D/g, '').slice(0, 8))}
+                  placeholder="00000000"
                   required
                   autoComplete="one-time-code"
                   autoFocus
                   disabled={isVerifying}
-                  maxLength={6}
+                  maxLength={8}
                   className={cn(
                     "w-full bg-transparent border border-border/30 px-4 py-3",
                     "text-center text-2xl text-cream tracking-[0.6em] font-mono",
@@ -1152,7 +1152,7 @@ function CompleteStep({ onFinish }: { onFinish: () => void }) {
 
                 <button
                   type="submit"
-                  disabled={isVerifying || otp.length < 6}
+                  disabled={isVerifying || otp.length < 8}
                   className={cn(
                     "w-full py-2.5 text-sm border border-tobacco/40 text-tobacco",
                     "hover:bg-tobacco/10 transition-all duration-500",
