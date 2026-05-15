@@ -1,0 +1,60 @@
+Implement Phase 2 hardening only.
+
+Current branch:
+chore/phase-2-hardening
+
+Do not add Phase 3 features.
+Do not touch annotations yet.
+Do not redesign UI.
+
+Tasks:
+
+1. Regenerate Supabase TS types if possible.
+   - Update lib/supabase/types.ts from the current Supabase schema.
+   - Remove unnecessary `as any` casts in lib/actions/membership.ts.
+   - If type generation is not possible from this environment, report exactly why and do not fake types manually.
+
+2. Gate unauthenticated Join CTA.
+   - On public room pages, anonymous users can browse rooms.
+   - If unauthenticated, the join button should not silently fail.
+   - Replace join behavior with a clear sign-in path, using existing visual style.
+   - Minimal copy: “Sign in to join”
+   - Route to /onboarding or existing login path.
+   - No layout redesign.
+
+3. Add fallback visibility.
+   - Keep static fallback behavior.
+   - But whenever DB fallback activates, surface it clearly in development.
+   - Add console.warn with source file/page.
+   - If there is an existing auth/debug strip, add a dev-only line such as:
+     fallback: active/inactive
+   - Do not show fallback warnings in production UI.
+
+4. Narrow revalidatePath scope.
+   - In joinRoom/leaveRoom, remove broad revalidatePath('/', 'layout') if present.
+   - Revalidate only affected routes:
+     - /rooms
+     - /rooms/[slug]
+     - /room/[slug]
+     - /profile
+   - Preserve membership persistence behavior.
+
+5. Cookie migration helper cleanup.
+   - Do not remove it yet.
+   - Confirm it is isolated and clearly TODO-labeled.
+   - Add a comment that it should be removed after Replit cookie migration is verified stable.
+
+Verification:
+- pnpm build
+- /rooms works unauthenticated
+- unauthenticated room detail shows sign-in-to-join instead of silent failure
+- authenticated user can join/leave room
+- /profile reflects membership
+- no visual redesign
+- git diff should be small and focused
+
+Return:
+1. files changed
+2. what was fixed
+3. any task skipped and why
+4. build result

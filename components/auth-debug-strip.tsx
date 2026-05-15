@@ -76,6 +76,7 @@ export function AuthDebugStrip() {
     ['guard decision', guardDecision],
     ['demo mode', String(!isAuthenticated)],
     ['rooms src', roomsSrc],
+    ['fallback', roomsSrc === '…' ? '…' : roomsSrc === 'static' ? 'active' : 'inactive'],
     ['memberships', membershipCount === null ? '—' : String(membershipCount)],
   ]
 

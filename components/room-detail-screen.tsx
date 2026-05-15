@@ -8,6 +8,7 @@ import { AlbumCover } from '@/components/album-cover'
 import { RoomEntryRitual } from '@/components/room-entry-ritual'
 import { type Room, getRelatedRooms, getRoomSeasonalMood, getRoomBySlug } from '@/lib/rooms'
 import { joinRoom, leaveRoom } from '@/lib/actions/membership'
+import { useAuth } from '@/components/auth-provider'
 
 const DEV_MODE = process.env.NODE_ENV === 'development'
 
@@ -29,6 +30,7 @@ interface RoomDetailScreenProps {
  */
 export function RoomDetailScreen({ room, initialIsJoined = false }: RoomDetailScreenProps) {
   const router = useRouter()
+  const { isAuthenticated } = useAuth()
   const [isJoined, setIsJoined] = useState(initialIsJoined)
   const [showFullNote, setShowFullNote] = useState(false)
   const [showManifesto, setShowManifesto] = useState(false)
@@ -836,7 +838,7 @@ export function RoomDetailScreen({ room, initialIsJoined = false }: RoomDetailSc
                       {isPending ? 'Leaving…' : 'Leave'}
                     </button>
                   </>
-                ) : (
+                ) : isAuthenticated ? (
                   <button
                     disabled={isPending}
                     onClick={() => {
@@ -860,6 +862,19 @@ export function RoomDetailScreen({ room, initialIsJoined = false }: RoomDetailSc
                   >
                     {isPending ? 'Joining…' : 'Join Room'}
                   </button>
+                ) : (
+                  <Link
+                    href="/onboarding"
+                    className={cn(
+                      "px-8 py-4 text-cream text-sm tracking-wide transition-all",
+                      "border",
+                      room.aesthetics.borderTint,
+                      "hover:bg-card/20"
+                    )}
+                    style={{ transitionDuration: 'var(--room-transition, 500ms)' }}
+                  >
+                    Sign in to join
+                  </Link>
                 )}
               </div>
 

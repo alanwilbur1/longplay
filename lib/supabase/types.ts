@@ -136,6 +136,74 @@ export interface Database {
           last_ai_refresh_at?: string | null
         }
       }
+      rooms: {
+        Row: {
+          id: string
+          slug: string
+          name: string
+          description: string | null
+          type: string | null
+          created_at: string
+          updated_at: string
+        }
+        Insert: {
+          id?: string
+          slug: string
+          name: string
+          description?: string | null
+          type?: string | null
+        }
+        Update: {
+          slug?: string
+          name?: string
+          description?: string | null
+          type?: string | null
+          updated_at?: string
+        }
+      }
+      club_memberships: {
+        Row: {
+          id: string
+          user_id: string
+          room_id: string
+          status: 'active' | 'left'
+          role: string
+          joined_at: string
+          left_at: string | null
+          created_at: string
+          updated_at: string
+        }
+        Insert: {
+          id?: string
+          user_id: string
+          room_id: string
+          status?: 'active' | 'left'
+          role?: string
+          joined_at?: string
+          left_at?: string | null
+        }
+        Update: {
+          status?: 'active' | 'left'
+          role?: string
+          joined_at?: string
+          left_at?: string | null
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: 'club_memberships_room_id_fkey'
+            columns: ['room_id']
+            referencedRelation: 'rooms'
+            referencedColumns: ['id']
+          },
+          {
+            foreignKeyName: 'club_memberships_user_id_fkey'
+            columns: ['user_id']
+            referencedRelation: 'user_profiles'
+            referencedColumns: ['id']
+          },
+        ]
+      }
       streaming_connections: {
         Row: {
           id: string
