@@ -1,6 +1,7 @@
 import { createServerClient } from '@supabase/ssr'
 import { cookies } from 'next/headers'
 import type { Database } from './types'
+import { getSupabaseCookieOptions } from './cookie-options'
 
 export async function createSupabaseServerClient() {
   const cookieStore = await cookies()
@@ -9,23 +10,10 @@ export async function createSupabaseServerClient() {
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
     process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY!,
     {
-      // ── SameSite=None; Secure ─────────────────────────────────────────────
-      // The app runs in an iframe (worf.replit.dev) embedded in the Replit
-      // workspace (replit.com). These are different eTLD+1 domains, so the
-      // browser treats every request from the iframe as cross-site.
-      //
-      // Browsers do NOT send SameSite=Lax cookies with cross-site POST
-      // requests. Next.js server actions are invoked via POST, so a Lax
-      // cookie is stripped before it reaches the server — `cookies()` sees
-      // nothing and auth.getUser() returns null in ~3 ms.
-      //
-      // SameSite=None; Secure bypasses this restriction. The Replit dev proxy
-      // and all deployed targets are HTTPS, so `secure: true` is always met.
-      cookieOptions: {
-        path: '/',
-        sameSite: 'none' as const,
-        secure: true,
-      },
+      // Cookie attributes are environment-scoped — see lib/supabase/cookie-options.ts.
+      // Replit → SameSite=None;Secure (cross-site POST support for server actions)
+      // Production/Vercel → SameSite=Lax;Secure (stricter default)
+      cookieOptions: getSupabaseCookieOptions(),
       cookies: {
         getAll() {
           return cookieStore.getAll()

@@ -1,0 +1,130 @@
+Implement the Phase 2 follow-up fix for Supabase auth cookie policy.
+
+Context:
+The current implementation hardcodes:
+
+sameSite: 'none'
+secure: true
+
+in:
+- lib/supabase/client.ts
+- lib/supabase/server.ts
+
+This was added to solve a Replit preview iframe issue:
+- preview runs cross-site inside an iframe
+- SameSite=Lax cookies were stripped on server-action POST requests
+
+Claude audit conclusion:
+This behavior should NOT ship unconditionally to production.
+
+==================================================
+GOAL
+==================================================
+
+Environment-scope the cookie policy:
+
+1. Production / Vercel / longplay.club
+Use:
+- sameSite: 'lax'
+- secure: true
+
+2. Replit preview iframe environments
+Use:
+- sameSite: 'none'
+- secure: true
+
+==================================================
+IMPLEMENTATION REQUIREMENTS
+==================================================
+
+Create a shared helper:
+- lib/supabase/cookie-options.ts
+
+This helper should:
+- detect whether the app is running in a Replit preview iframe environment
+- return the appropriate cookie options
+
+Example shape:
+
+export function getSupabaseCookieOptions() {
+  return {
+    path: '/',
+    sameSite: isReplitPreview ? 'none' : 'lax',
+    secure: true,
+  }
+}
+
+Detection strategy:
+Use a stable environment signal if available.
+Prefer:
+- process.env.REPL_ID
+- process.env.REPLIT_DEV_DOMAIN
+- process.env.REPLIT_DOMAINS
+or another reliable Replit-specific env var.
+
+Do NOT use window checks.
+Do NOT rely on localhost.
+Do NOT hardcode domains.
+
+==================================================
+APPLY TO
+==================================================
+
+Update:
+- lib/supabase/client.ts
+- lib/supabase/server.ts
+
+Both must import and use:
+getSupabaseCookieOptions()
+
+==================================================
+COOKIE MIGRATION BLOCK
+==================================================
+
+Current code includes:
+__lp_cookie_v2 sessionStorage migration logic that calls refreshSession().
+
+Audit recommendation:
+Keep temporarily, but clearly isolate it.
+
+Requirements:
+- move migration logic into a clearly labeled helper/function
+- add TODO comment:
+  REMOVE AFTER REPLIT COOKIE MIGRATION IS VERIFIED IN PRODUCTION
+- ensure it only runs once per browser session
+
+==================================================
+DO NOT CHANGE
+==================================================
+
+- onboarding UI
+- auth flow
+- OTP flow
+- memberships
+- DB logic
+- server actions
+- room rendering
+- v0 visuals
+
+==================================================
+VERIFY
+==================================================
+
+Verify both environments conceptually:
+
+Production mode:
+- cookies use SameSite=Lax
+
+Replit preview:
+- cookies use SameSite=None
+- memberships still work
+- server actions still receive auth sessions
+
+Then run:
+- pnpm build
+
+Return:
+1. exact files changed
+2. final cookie policy behavior
+3. whether membership persistence still works in Replit preview
+4. whether production now defaults back to SameSite=Lax
