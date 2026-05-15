@@ -9,6 +9,7 @@ import { useAuth } from '@/components/auth-provider'
 import { getSupabaseBrowserClient } from '@/lib/supabase/client'
 import { getOnboardingStatus } from '@/lib/actions/onboarding'
 import { getMyMemberships } from '@/lib/actions/membership'
+import { listMyMoments } from '@/lib/actions/moments'
 
 // Demo fallback — rendered only when no authenticated session exists
 const DEMO_USER = {
@@ -71,6 +72,7 @@ export function ProfileScreen() {
   const [dbProfile, setDbProfile] = useState<DbProfile | null>(null)
   const [profileLoading, setProfileLoading] = useState(true)
   const [profileError, setProfileError] = useState<string | null>(null)
+  const [momentCounts, setMomentCounts] = useState({ total: 0, reflections: 0 })
 
   // ── Profile hydration ─────────────────────────────────────────────────────
   // Fetch user_profiles row using the browser Supabase client (reads session
@@ -153,6 +155,21 @@ export function ProfileScreen() {
     }
   }, [authLoading, isAuthenticated])
 
+  // ── Moment counts from DB ─────────────────────────────────────────────────
+  useEffect(() => {
+    if (!isAuthenticated) return
+    listMyMoments()
+      .then(result => {
+        if (result.success && result.data) {
+          setMomentCounts({
+            total: result.data.length,
+            reflections: result.data.filter(m => m.type === 'reflection').length,
+          })
+        }
+      })
+      .catch(() => {})
+  }, [isAuthenticated])
+
   // ── Joined rooms from DB ───────────────────────────────────────────────────
   useEffect(() => {
     if (isAuthenticated) {
@@ -200,8 +217,8 @@ export function ProfileScreen() {
           dbProfile?.membership_tier === 'member'
             ? 'LongPlay Member'
             : 'LongPlay Explorer',
-        archiveSize: 0,
-        savedMoments: 0,
+        archiveSize: momentCounts.total,
+        savedMoments: momentCounts.reflections,
         isDemo: false,
       }
     : DEMO_USER
@@ -317,7 +334,7 @@ export function ProfileScreen() {
         </div>
 
         <Link
-          href="/archive/moments"
+          href="/listening-life"
           className="block mt-4 text-sm text-tobacco hover:text-cream transition-colors"
         >
           Explore your listening life →
