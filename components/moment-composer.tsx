@@ -10,6 +10,7 @@
 
 import { useState, useTransition } from 'react'
 import Link from 'next/link'
+import { useRouter } from 'next/navigation'
 import { cn } from '@/lib/utils'
 import { useAuth } from '@/components/auth-provider'
 import { createMoment, type MomentType } from '@/lib/actions/moments'
@@ -67,6 +68,7 @@ const TAB_CONFIG: Record<Tab, {
 const DEV_MODE = process.env.NODE_ENV === 'development'
 
 export function MomentComposer({ albumId, cycleId }: MomentComposerProps) {
+  const router = useRouter()
   const { isAuthenticated } = useAuth()
   const [activeTab, setActiveTab] = useState<Tab>('annotate')
   const [content, setContent] = useState('')
@@ -100,6 +102,7 @@ export function MomentComposer({ albumId, cycleId }: MomentComposerProps) {
       if (result.success) {
         setStatus('success')
         setContent('')
+        router.refresh()
         setTimeout(() => setStatus('idle'), 3000)
       } else {
         setStatus('error')
@@ -196,9 +199,11 @@ export function MomentComposer({ albumId, cycleId }: MomentComposerProps) {
         )}
       </div>
 
-      {/* Dev-only error */}
-      {DEV_MODE && status === 'error' && errorMsg && (
-        <p className="text-[10px] text-red-400/70 font-mono">⚠ {errorMsg}</p>
+      {/* Error — always visible so save failures are never silent */}
+      {status === 'error' && errorMsg && (
+        <p className="text-[11px] text-red-400/80 font-mono mt-1">
+          ⚠ {DEV_MODE ? errorMsg : 'Could not save. Please try again.'}
+        </p>
       )}
     </div>
   )

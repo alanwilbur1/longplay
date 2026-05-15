@@ -317,7 +317,7 @@ export function ProfileScreen() {
         </div>
 
         <Link
-          href="/listening-life"
+          href="/archive/moments"
           className="block mt-4 text-sm text-tobacco hover:text-cream transition-colors"
         >
           Explore your listening life →

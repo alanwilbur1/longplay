@@ -1,0 +1,83 @@
+Fix Phase 3A Moment UI wiring and hydration issues.
+
+Current branch:
+feat/phase-3-listening-identity
+
+Current problems observed in Replit preview:
+
+1. Hydration error:
+<button> cannot be nested inside <button>
+Source points to:
+components/active-listening-room-screen.tsx around line 300
+Likely cause:
+track row/card is a button and contains a nested "Mark a moment" button.
+
+Fix:
+- Do not nest button inside button.
+- Convert the outer clickable track row to a div with role/button if needed, or make "Mark a moment" a non-nested control.
+- Preserve visual styling.
+- Remove hydration error completely.
+
+2. "Mark a moment" button on track rows does nothing.
+Expected:
+- Clicking "Mark a moment" should create a passage-level Mark if possible.
+- If true passage-level timestamp is not implemented, create a valid track-level Mark or open the Moment composer with track context.
+- It must not silently do nothing.
+
+3. MomentComposer save appears to do nothing.
+Expected:
+- Saving Mark / Annotation / Reflection / Save should insert into the moments table.
+- Show success or error clearly.
+- If insertion fails, display the actual error message in dev.
+- Confirm the server action receives auth user and album_id.
+
+4. Saved Moments do not appear in the visible "Your Annotations" section.
+Current screen still shows seeded/static annotations.
+Expected:
+- The room screen should show the user's real saved Moments from Supabase, at least annotation/reflection/mark/save entries for the current album.
+- Existing seeded annotations can remain as ambient demo examples only if clearly separated or if no user moments exist.
+- Do not make this a social feed.
+- Owner-only display is fine.
+
+5. /archive/moments exists but "Explore your listening life" does not route there.
+Current:
+Profile/archive area still shows 0 listening moments and 0 saved reflections.
+Expected:
+- Link "Explore your listening life" to /archive/moments, or otherwise expose /archive/moments clearly.
+- Profile/archive counts should reflect real Moment counts if simple to wire.
+- At minimum, /archive/moments should show newly created moments after refresh.
+
+6. Verify schema compatibility.
+Check that lib/actions/moments.ts inserts fields matching the actual Supabase schema:
+- moment_id vs id
+- member_id
+- album_id
+- type
+- content jsonb
+- visibility
+- created_local_time
+- track_id / timestamp_ms constraints
+
+Likely issue:
+createMoment may be inserting the wrong PK field name or using an album_id value that does not satisfy schema expectations.
+
+Requirements:
+- Keep Phase 3A scope only.
+- Do not implement identity snapshots.
+- Do not implement AI.
+- Do not implement feeds.
+- Do not redesign UI.
+- Preserve current visual language.
+
+Verification:
+- pnpm build
+- no nested button hydration error
+- authenticated user can create Mark
+- authenticated user can create Annotation
+- authenticated user can create Reflection
+- authenticated user can Save album
+- newly created Moments appear on the room page under a real "Your Moments" or "Your Annotations" area
+- newly created Moments appear in /archive/moments
+- refresh persists them
+- "Explore your listening life" leads to /archive/moments or the archive clearly exposes Moments
+- unauthenticated users cannot create Moments
