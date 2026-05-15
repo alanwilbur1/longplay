@@ -370,20 +370,33 @@ async function main() {
 
   // ── 8. Past cycles from room.pastCycles + PAST_CYCLES archive ─────────────
   console.log('\n[8/8] Archived cycles…')
-  const archivedRows: Record<string, unknown>[] = []
+  // Key: `${room_id}|${year}|${week_number}` — guards against duplicates across
+  // both sources before the upsert, mirroring the DB unique constraint.
+  const archivedRowMap = new Map<string, Record<string, unknown>>()
 
-  // From each room's pastCycles array
+  // Helper to register a row, last-write-wins within a run (PAST_CYCLES wins
+  // over stub rows from room.pastCycles because it runs second).
+  function addArchivedRow(row: Record<string, unknown>) {
+    const key = `${row.room_id}|${row.year}|${row.week_number}`
+    archivedRowMap.set(key, row)
+  }
+
+  // From each room's pastCycles array.
+  // These are stub entries without real week/year data, so we assign unique
+  // week_numbers starting at 900 (well above any real weekly cycle number)
+  // to prevent intra-room collisions on the (room_id, year, week_number) key.
   for (const room of ALL_ROOMS) {
+    let stubIndex = 900
     for (const pc of room.pastCycles) {
       const pId = pastCycleId(pc.id)
-      // Skip if this would conflict with a current cycle
+      // Skip if this id already belongs to a current cycle
       if (cycleRows.find(c => c.id === pId)) continue
 
-      archivedRows.push({
+      addArchivedRow({
         id: pId,
         room_id: roomId(room.slug),
         album_id: albumId(pc.album.id),
-        week_number: 0,
+        week_number: stubIndex++,
         year: 2026,
         start_date: '2026-01-01',
         end_date: '2026-01-07',
@@ -410,16 +423,14 @@ async function main() {
     }
   }
 
-  // From PAST_CYCLES in lib/cycles.ts
+  // From PAST_CYCLES in lib/cycles.ts — these have real week/year data and
+  // overwrite any stub row that happens to share the same composite key.
   for (const cycle of PAST_CYCLES) {
     const pId = pastCycleId(cycle.id)
     const rId = roomId(cycle.room.id)
     const aId = albumId(cycle.album.id)
 
-    // Don't re-add if already from room.pastCycles
-    if (archivedRows.find(r => r.id === pId)) continue
-
-    archivedRows.push({
+    addArchivedRow({
       id: pId,
       room_id: rId,
       album_id: aId,
@@ -449,10 +460,15 @@ async function main() {
     })
   }
 
+  const archivedRows = Array.from(archivedRowMap.values())
+
   if (archivedRows.length > 0) {
     const { error: archErr } = await db
       .from('cycles')
-      .upsert(archivedRows, { onConflict: 'id' })
+      // Upsert on the actual DB unique constraint so re-runs UPDATE rather
+      // than INSERT and never hit the duplicate-key error.
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      .upsert(archivedRows as any[], { onConflict: 'room_id,year,week_number' })
     if (archErr) throw new Error(`Archived cycles upsert: ${archErr.message}`)
   }
   console.log(`   ✓ ${archivedRows.length} archived cycles`)
