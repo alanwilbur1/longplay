@@ -1382,7 +1382,7 @@ function LoginStep({
     setOtpError('')
 
     const supabase = getSupabaseBrowserClient()
-    const { error } = await supabase.auth.verifyOtp({
+    const { data: otpData, error } = await supabase.auth.verifyOtp({
       email,
       token: otp,
       type: 'email',
@@ -1394,8 +1394,19 @@ function LoginStep({
       return
     }
 
-    // Session established — hydrate profile then check completion status
-    const { data: { user } } = await supabase.auth.getUser()
+    // Use the user returned directly by verifyOtp — avoids a race against
+    // session hydration that causes false-negative "no session" errors.
+    // If verifyOtp didn't embed a user (edge case), poll briefly before failing.
+    let user = otpData?.user ?? null
+
+    if (!user) {
+      for (let attempt = 0; attempt < 6; attempt++) {
+        await new Promise(r => setTimeout(r, 300))
+        const { data: { user: polled } } = await supabase.auth.getUser()
+        if (polled) { user = polled; break }
+      }
+    }
+
     if (!user) {
       setOtpError('Could not retrieve session. Please try again.')
       setIsVerifying(false)
