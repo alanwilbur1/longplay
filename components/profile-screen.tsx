@@ -8,6 +8,7 @@ import { resetOnboarding, getOnboardingState } from '@/lib/onboarding-state'
 import { useAuth } from '@/components/auth-provider'
 import { getSupabaseBrowserClient } from '@/lib/supabase/client'
 import { getOnboardingStatus } from '@/lib/actions/onboarding'
+import { getMyMemberships } from '@/lib/actions/membership'
 
 // Demo fallback — rendered only when no authenticated session exists
 const DEMO_USER = {
@@ -47,16 +48,13 @@ const CONNECTED_SERVICES = [
   { name: 'Last.fm', connected: true, lastSync: '1 day ago' },
 ]
 
-const JOINED_ROOMS = [
-  { name: 'The Nocturnal Room', role: 'Member', joined: 'March 2023' },
-  { name: 'Beautiful Damage', role: 'Member', joined: 'May 2023' },
-  { name: 'Records for Rain', role: 'Member', joined: 'August 2023' },
-]
+type JoinedRoomEntry = { name: string; slug: string; role: string; joined: string }
 
 export function ProfileScreen() {
   const router = useRouter()
   const pathname = usePathname()
   const { user, isAuthenticated, isLoading: authLoading } = useAuth()
+  const [joinedRooms, setJoinedRooms] = useState<JoinedRoomEntry[]>([])
 
   const [localState, setLocalState] = useState<{
     completed: boolean
@@ -154,6 +152,27 @@ export function ProfileScreen() {
       getOnboardingStatus().then(setSupabaseStatus).catch(() => {})
     }
   }, [authLoading, isAuthenticated])
+
+  // ── Joined rooms from DB ───────────────────────────────────────────────────
+  useEffect(() => {
+    if (isAuthenticated) {
+      getMyMemberships()
+        .then(memberships => {
+          setJoinedRooms(
+            memberships.map(m => ({
+              name: m.roomName,
+              slug: m.roomSlug,
+              role: m.role === 'member' ? 'Member' : m.role,
+              joined: new Date(m.joinedAt).toLocaleDateString('en-US', {
+                month: 'long',
+                year: 'numeric',
+              }),
+            })),
+          )
+        })
+        .catch(() => {})
+    }
+  }, [isAuthenticated])
 
   // ── Display user derivation ───────────────────────────────────────────────
   // Priority: DB display_name → JWT metadata → email prefix → DEMO_USER
@@ -346,10 +365,18 @@ export function ProfileScreen() {
         </div>
 
         <div className="space-y-3">
-          {JOINED_ROOMS.map(room => (
+          {joinedRooms.length === 0 && (
+            <p className="text-sm text-muted-foreground py-2">
+              No rooms joined yet.{' '}
+              <Link href="/rooms" className="text-tobacco hover:text-cream transition-colors">
+                Discover rooms →
+              </Link>
+            </p>
+          )}
+          {joinedRooms.map(room => (
             <Link
-              key={room.name}
-              href={`/rooms/${room.name.toLowerCase().replace(/\s+/g, '-')}`}
+              key={room.slug}
+              href={`/rooms/${room.slug}`}
               className="flex items-center justify-between p-4 border border-border/20 hover:border-border/40 transition-colors"
             >
               <div>

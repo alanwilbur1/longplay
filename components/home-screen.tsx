@@ -3,7 +3,7 @@
 import { useEffect, useState } from 'react'
 import Link from 'next/link'
 import { AlbumCover } from '@/components/album-cover'
-import { ALBUMS } from '@/lib/albums'
+import { ALBUMS, type Album } from '@/lib/albums'
 import { LongPlayLogo } from '@/components/navigation'
 import { getCurrentPhase, CURRENT_PROMPTS, CURATORS_NOTE } from '@/lib/weekly-cadence'
 import { RESURFACED_MOMENTS, LISTENING_PERIODS } from '@/lib/archive'
@@ -16,8 +16,8 @@ import {
 } from '@/components/room-affinity-display'
 import { getAffinityInsights, getPrimaryRoom } from '@/lib/room-affinity'
 
-// Current week's album
-const CURRENT_ALBUM = ALBUMS.forEmma
+// Current week's album (static fallback; overridden by prop from server)
+const STATIC_CURRENT_ALBUM = ALBUMS.forEmma
 
 // Ambient listener activity - feels alive without being a feed
 const AMBIENT_ACTIVITY = [
@@ -53,7 +53,12 @@ const FEATURED_CLUBS = [
   },
 ]
 
-export function HomeScreen() {
+interface HomeScreenProps {
+  currentAlbum?: Album
+}
+
+export function HomeScreen({ currentAlbum: propAlbum }: HomeScreenProps = {}) {
+  const CURRENT_ALBUM = propAlbum ?? STATIC_CURRENT_ALBUM
   const [phase, setPhase] = useState(getCurrentPhase())
   const [ambientMessage, setAmbientMessage] = useState(AMBIENT_ACTIVITY[0])
   const [isAfterMidnight, setIsAfterMidnight] = useState(false)
@@ -126,7 +131,7 @@ export function HomeScreen() {
         <div className="max-w-3xl mx-auto">
           {/* Album Presentation - Hero */}
           <Link 
-            href="/album/for-emma"
+            href={`/album/${CURRENT_ALBUM.id}`}
             className="group block relative animate-fade-in-up"
             style={{ animationDelay: '0.3s' }}
           >

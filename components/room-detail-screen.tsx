@@ -1,15 +1,19 @@
 'use client'
 
-import { useState } from 'react'
+import { useState, useTransition } from 'react'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 import { cn } from '@/lib/utils'
 import { AlbumCover } from '@/components/album-cover'
 import { RoomEntryRitual } from '@/components/room-entry-ritual'
 import { type Room, getRelatedRooms, getRoomSeasonalMood, getRoomBySlug } from '@/lib/rooms'
+import { joinRoom, leaveRoom } from '@/lib/actions/membership'
+
+const DEV_MODE = process.env.NODE_ENV === 'development'
 
 interface RoomDetailScreenProps {
   room: Room
+  initialIsJoined?: boolean
 }
 
 /**
@@ -23,13 +27,15 @@ interface RoomDetailScreenProps {
  * - aesthetically unique
  * - emotionally specific
  */
-export function RoomDetailScreen({ room }: RoomDetailScreenProps) {
+export function RoomDetailScreen({ room, initialIsJoined = false }: RoomDetailScreenProps) {
   const router = useRouter()
-  const [isJoined, setIsJoined] = useState(true) // Mock: user is already a member
+  const [isJoined, setIsJoined] = useState(initialIsJoined)
   const [showFullNote, setShowFullNote] = useState(false)
   const [showManifesto, setShowManifesto] = useState(false)
   const [showCuratorProfile, setShowCuratorProfile] = useState(false)
   const [showEntryRitual, setShowEntryRitual] = useState(false)
+  const [membershipError, setMembershipError] = useState<string | null>(null)
+  const [isPending, startTransition] = useTransition()
   
   const seasonalMood = getRoomSeasonalMood(room)
   const relatedRooms = getRelatedRooms(room)
@@ -791,44 +797,77 @@ export function RoomDetailScreen({ room }: RoomDetailScreenProps) {
               </p>
             </div>
             
-            <div className="flex gap-4">
-              {isJoined ? (
-                <>
+            <div className="flex flex-col gap-2 items-end">
+              <div className="flex gap-4">
+                {isJoined ? (
+                  <>
+                    <button
+                      onClick={() => setShowEntryRitual(true)}
+                      className={cn(
+                        "px-8 py-4 text-cream text-sm tracking-wide transition-all",
+                        room.aesthetics.primaryAccent.replace('text-', 'bg-').replace('/70', '/80').replace('/80', '/90'),
+                        "hover:opacity-90"
+                      )}
+                      style={{ transitionDuration: 'var(--room-transition, 500ms)' }}
+                    >
+                      {room.culture.entryPhrase}
+                    </button>
+                    <button
+                      disabled={isPending}
+                      onClick={() => {
+                        setMembershipError(null)
+                        startTransition(async () => {
+                          const result = await leaveRoom(room.slug)
+                          if (result.success) {
+                            setIsJoined(false)
+                            router.refresh()
+                          } else {
+                            setMembershipError(result.error ?? 'Leave failed')
+                          }
+                        })
+                      }}
+                      className={cn(
+                        "px-6 py-4 border text-muted-foreground text-sm transition-all",
+                        room.aesthetics.borderTint,
+                        "hover:text-cream hover:border-border/50 disabled:opacity-50"
+                      )}
+                      style={{ transitionDuration: 'var(--room-transition, 500ms)' }}
+                    >
+                      {isPending ? 'Leaving…' : 'Leave'}
+                    </button>
+                  </>
+                ) : (
                   <button
-                    onClick={() => setShowEntryRitual(true)}
+                    disabled={isPending}
+                    onClick={() => {
+                      setMembershipError(null)
+                      startTransition(async () => {
+                        const result = await joinRoom(room.slug)
+                        if (result.success) {
+                          setIsJoined(true)
+                          router.refresh()
+                        } else {
+                          setMembershipError(result.error ?? 'Join failed')
+                        }
+                      })
+                    }}
                     className={cn(
                       "px-8 py-4 text-cream text-sm tracking-wide transition-all",
                       room.aesthetics.primaryAccent.replace('text-', 'bg-').replace('/70', '/80').replace('/80', '/90'),
-                      "hover:opacity-90"
+                      "hover:opacity-90 disabled:opacity-50"
                     )}
                     style={{ transitionDuration: 'var(--room-transition, 500ms)' }}
                   >
-                    {room.culture.entryPhrase}
+                    {isPending ? 'Joining…' : 'Join Room'}
                   </button>
-                  <button
-                    onClick={() => setIsJoined(false)}
-                    className={cn(
-                      "px-6 py-4 border text-muted-foreground text-sm transition-all",
-                      room.aesthetics.borderTint,
-                      "hover:text-cream hover:border-border/50"
-                    )}
-                    style={{ transitionDuration: 'var(--room-transition, 500ms)' }}
-                  >
-                    Leave
-                  </button>
-                </>
-              ) : (
-                <button
-                  onClick={() => setIsJoined(true)}
-                  className={cn(
-                    "px-8 py-4 text-cream text-sm tracking-wide transition-all",
-                    room.aesthetics.primaryAccent.replace('text-', 'bg-').replace('/70', '/80').replace('/80', '/90'),
-                    "hover:opacity-90"
-                  )}
-                  style={{ transitionDuration: 'var(--room-transition, 500ms)' }}
-                >
-                  Join Room
-                </button>
+                )}
+              </div>
+
+              {/* Dev-only: surface action errors so auth/DB issues are visible */}
+              {DEV_MODE && membershipError && (
+                <p className="text-[10px] text-red-400/80 font-mono max-w-xs text-right">
+                  ⚠ {membershipError}
+                </p>
               )}
             </div>
           </div>

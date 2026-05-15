@@ -10,10 +10,12 @@ import {
   saveOnboardingState, 
   completeOnboarding,
   isOnboardingCompleted,
+  resetOnboarding,
 } from '@/lib/onboarding-state'
 import { getResonatingRooms, ROOM_AFFINITIES } from '@/lib/room-affinity'
 import { getSupabaseBrowserClient } from '@/lib/supabase/client'
 import { ensureUserProfile } from '@/lib/actions/auth'
+import { saveOnboardingCompletion } from '@/lib/actions/onboarding'
 
 /**
  * LongPlay Onboarding - Initiation Into a Listening Culture
@@ -120,30 +122,75 @@ export function OnboardingScreen() {
   const [isInitialized, setIsInitialized] = useState(false)
   const [debugStatus, setDebugStatus] = useState('loading onboarding state')
 
-  // Check if onboarding is already completed
+  // Check if onboarding is already completed.
+  // Auth must resolve before we trust any completion flag:
+  // localStorage is treated as a cache only when an active Supabase session
+  // exists. Without a session the localStorage flag is stale (from a prior
+  // signed-in session) and must be ignored to prevent a redirect loop.
   useEffect(() => {
-    setDebugStatus('checking onboarding state')
+    setDebugStatus('checking auth + onboarding state')
+    const supabase = getSupabaseBrowserClient()
 
-    if (isOnboardingCompleted()) {
-      setDebugStatus('completed — redirecting to home')
-      router.replace('/')
-      return
+    function showOnboardingFlow() {
+      const savedState = getOnboardingState()
+      // Only restore in-progress step state — never honour a stale completed flag.
+      if (
+        savedState.currentStep &&
+        savedState.currentStep !== 'complete' &&
+        STEPS.includes(savedState.currentStep as Step)
+      ) {
+        setCurrentStep(savedState.currentStep as Step)
+      }
+      if (savedState.connectedServices) {
+        setConnectedServices(savedState.connectedServices)
+      }
+      if (savedState.calibrationAnswers) {
+        setCalibrationAnswers(savedState.calibrationAnswers)
+      }
+      setDebugStatus('ready')
+      setIsInitialized(true)
     }
-    
-    // Restore state from localStorage if returning
-    const savedState = getOnboardingState()
-    if (savedState.currentStep && STEPS.includes(savedState.currentStep as Step)) {
-      setCurrentStep(savedState.currentStep as Step)
-    }
-    if (savedState.connectedServices) {
-      setConnectedServices(savedState.connectedServices)
-    }
-    if (savedState.calibrationAnswers) {
-      setCalibrationAnswers(savedState.calibrationAnswers)
-    }
-    
-    setDebugStatus('ready')
-    setIsInitialized(true)
+
+    supabase.auth.getUser()
+      .then(({ data: { user } }) => {
+        if (!user) {
+          // No active session — any localStorage completion flag is stale.
+          // Clear it so it cannot cause loops, then show the auth/OTP entry step.
+          if (isOnboardingCompleted()) {
+            resetOnboarding()
+            setDebugStatus('unauthenticated — cleared stale localStorage flag')
+          } else {
+            setDebugStatus('unauthenticated — showing auth flow')
+          }
+          showOnboardingFlow()
+          return
+        }
+
+        // Authenticated — fast-path: localStorage says complete, trust it.
+        if (isOnboardingCompleted()) {
+          setDebugStatus('completed (localStorage) — redirecting to home')
+          router.replace('/')
+          return
+        }
+
+        // Authenticated — slow path: check DB (covers sign-out + sign-back-in
+        // after localStorage was cleared).
+        return supabase
+          .from('user_profiles')
+          .select('onboarding_completed')
+          .eq('id', user.id)
+          .single()
+          .then(({ data }) => {
+            const profile = data as { onboarding_completed: boolean } | null
+            if (profile?.onboarding_completed) {
+              setDebugStatus('completed (db) — redirecting to home')
+              router.replace('/')
+            } else {
+              showOnboardingFlow()
+            }
+          })
+      })
+      .catch(() => showOnboardingFlow())
   }, [router])
 
   // Save state on changes
@@ -210,11 +257,30 @@ export function OnboardingScreen() {
   }
 
   const [sessionCheckError, setSessionCheckError] = useState('')
+  const [isLoginMode, setIsLoginMode] = useState(false)
 
+  // Called right after OTP verification succeeds at the end of full onboarding.
+  // Persists completion to Supabase (source of truth) and localStorage (cache).
+  const handleAuthSuccess = async () => {
+    // Persist to DB first — this is what makes returning-user login work.
+    await saveOnboardingCompletion({
+      archetype: 'The Midnight Archivist',
+      connectedServices,
+      calibrationAnswers,
+    })
+    completeOnboarding({
+      archetype: 'The Midnight Archivist',
+      connectedServices,
+      calibrationAnswers,
+    })
+    // Short delay so the "Signed in. Taking you home…" state is visible briefly.
+    setTimeout(() => router.replace('/'), 1400)
+  }
+
+  // Called by the "Enter LongPlay" button — user may or may not have signed in.
+  // Still guarded by getSession() as a safety net.
   const handleComplete = async () => {
     setSessionCheckError('')
-    // Guard: verify a Supabase session actually exists before marking onboarding
-    // complete and navigating. verifyOtp() must have succeeded for this to pass.
     const supabase = getSupabaseBrowserClient()
     const { data: { session } } = await supabase.auth.getSession()
     if (!session) {
@@ -226,7 +292,7 @@ export function OnboardingScreen() {
       connectedServices,
       calibrationAnswers,
     })
-    router.push('/')
+    router.replace('/')
   }
 
   // Show loading while checking onboarding state
@@ -247,6 +313,20 @@ export function OnboardingScreen() {
 
   return (
     <div className="grain min-h-screen bg-background flex flex-col overflow-hidden">
+
+      {/* Login mode — bypass all onboarding steps */}
+      {isLoginMode && (
+        <LoginStep
+          onBack={() => setIsLoginMode(false)}
+          onContinueOnboarding={() => {
+            setIsLoginMode(false)
+            setCurrentStep('connect')
+          }}
+        />
+      )}
+
+      {!isLoginMode && (
+        <>
       {/* Subtle progress indicator - only after opening */}
       {currentStep !== 'opening' && (
         <div className="fixed top-0 left-0 right-0 z-50">
@@ -261,7 +341,12 @@ export function OnboardingScreen() {
 
       {/* Step Content */}
       <div className="flex-1 flex flex-col">
-        {currentStep === 'opening' && <OpeningStep onContinue={handleContinue} />}
+        {currentStep === 'opening' && (
+          <OpeningStep
+            onContinue={handleContinue}
+            onLogin={() => setIsLoginMode(true)}
+          />
+        )}
         
         {currentStep === 'connect' && (
           <ConnectStep 
@@ -306,9 +391,15 @@ export function OnboardingScreen() {
         )}
         
         {currentStep === 'complete' && (
-          <CompleteStep onFinish={handleComplete} sessionCheckError={sessionCheckError} />
+          <CompleteStep
+            onFinish={handleComplete}
+            onAuthSuccess={handleAuthSuccess}
+            sessionCheckError={sessionCheckError}
+          />
         )}
       </div>
+      </>
+      )}
     </div>
   )
 }
@@ -316,7 +407,7 @@ export function OnboardingScreen() {
 // ============================================
 // OPENING - Cinematic Brand Thesis
 // ============================================
-function OpeningStep({ onContinue }: { onContinue: () => void }) {
+function OpeningStep({ onContinue, onLogin }: { onContinue: () => void; onLogin: () => void }) {
   // In dev mode, show all phases immediately so the Begin button is always visible
   const [phase, setPhase] = useState(DEV_MODE ? 3 : 0)
   
@@ -379,6 +470,15 @@ function OpeningStep({ onContinue }: { onContinue: () => void }) {
           >
             Begin
           </button>
+
+          <div className="mt-8">
+            <button
+              onClick={onLogin}
+              className="text-[11px] text-muted-foreground/50 hover:text-cream/60 transition-colors duration-500 uppercase tracking-[0.3em]"
+            >
+              Already a member? Log in
+            </button>
+          </div>
         </div>
       </div>
     </div>
@@ -945,8 +1045,9 @@ function friendlyAuthError(message: string): string {
 
 type AuthPhase = 'email' | 'otp' | 'success'
 
-function CompleteStep({ onFinish, sessionCheckError = '' }: { 
+function CompleteStep({ onFinish, onAuthSuccess, sessionCheckError = '' }: { 
   onFinish: () => void
+  onAuthSuccess: () => void
   sessionCheckError?: string
 }) {
   const [phase, setPhase] = useState<AuthPhase>('email')
@@ -1025,7 +1126,9 @@ function CompleteStep({ onFinish, sessionCheckError = '' }: {
     }
 
     setPhase('success')
-    setTimeout(onFinish, 1400)
+    // Call onAuthSuccess directly — it owns the completeOnboarding() call and
+    // the router.replace('/') with a 1.4s delay so the success state is visible.
+    onAuthSuccess()
   }
 
   const handleResend = async () => {
@@ -1213,6 +1316,273 @@ function CompleteStep({ onFinish, sessionCheckError = '' }: {
           )}
 
         </div>
+      </div>
+    </div>
+  )
+}
+
+// ============================================
+// LOGIN - Returning-user fast path
+// ============================================
+// Shown instead of the full onboarding flow when the user clicks
+// "Already a member? Log in". After OTP verify:
+//   onboarding_completed = true  → router.replace('/')
+//   onboarding_completed = false → onContinueOnboarding() (resumes at connect step)
+function LoginStep({
+  onBack,
+  onContinueOnboarding,
+}: {
+  onBack: () => void
+  onContinueOnboarding: () => void
+}) {
+  const router = useRouter()
+  const [phase, setPhase] = useState<AuthPhase>('email')
+  const [email, setEmail] = useState('')
+  const [otp, setOtp] = useState('')
+  const [isSending, setIsSending] = useState(false)
+  const [isVerifying, setIsVerifying] = useState(false)
+  const [sendError, setSendError] = useState('')
+  const [otpError, setOtpError] = useState('')
+  const [resendCooldown, setResendCooldown] = useState(0)
+
+  useEffect(() => {
+    if (resendCooldown <= 0) return
+    const t = setTimeout(() => setResendCooldown(c => c - 1), 1000)
+    return () => clearTimeout(t)
+  }, [resendCooldown])
+
+  const sendCode = async (targetEmail: string): Promise<boolean> => {
+    setIsSending(true)
+    setSendError('')
+    const supabase = getSupabaseBrowserClient()
+    const { error } = await supabase.auth.signInWithOtp({
+      email: targetEmail,
+      options: { shouldCreateUser: true, emailRedirectTo: undefined },
+    })
+    setIsSending(false)
+    if (error) {
+      setSendError(friendlyAuthError(error.message))
+      return false
+    }
+    setResendCooldown(60)
+    return true
+  }
+
+  const handleSendCode = async (e: React.FormEvent) => {
+    e.preventDefault()
+    if (!email || isSending) return
+    const ok = await sendCode(email)
+    if (ok) setPhase('otp')
+  }
+
+  const handleVerifyCode = async (e: React.FormEvent) => {
+    e.preventDefault()
+    if (otp.length < 6 || isVerifying) return
+    setIsVerifying(true)
+    setOtpError('')
+
+    const supabase = getSupabaseBrowserClient()
+    const { error } = await supabase.auth.verifyOtp({
+      email,
+      token: otp,
+      type: 'email',
+    })
+
+    if (error) {
+      setOtpError(friendlyAuthError(error.message))
+      setIsVerifying(false)
+      return
+    }
+
+    // Session established — hydrate profile then check completion status
+    const { data: { user } } = await supabase.auth.getUser()
+    if (!user) {
+      setOtpError('Could not retrieve session. Please try again.')
+      setIsVerifying(false)
+      return
+    }
+
+    await ensureUserProfile(user.id, user.email ?? '', user.user_metadata ?? {})
+
+    // onboarding_completed from Supabase is the source of truth
+    const { data: profile } = await supabase
+      .from('user_profiles')
+      .select('onboarding_completed')
+      .eq('id', user.id)
+      .single()
+
+    setPhase('success')
+
+    if (profile?.onboarding_completed) {
+      setTimeout(() => router.replace('/'), 1000)
+    } else {
+      // New or incomplete — resume onboarding from the connect step
+      setTimeout(() => onContinueOnboarding(), 1000)
+    }
+  }
+
+  const handleResend = async () => {
+    if (resendCooldown > 0 || isSending) return
+    setOtp('')
+    setOtpError('')
+    await sendCode(email)
+  }
+
+  return (
+    <div className="flex-1 flex flex-col justify-center items-center px-8 py-16 text-center min-h-screen">
+      <div className="animate-fade-in max-w-lg w-full">
+
+        <h2 className="font-serif text-4xl md:text-5xl text-cream mb-4">
+          Welcome back
+        </h2>
+
+        <div className="w-16 h-px bg-gradient-to-r from-transparent via-tobacco/30 to-transparent mx-auto mb-8" />
+
+        <p className="text-muted-foreground leading-relaxed mb-12">
+          Enter your email to receive a verification code.
+        </p>
+
+        {/* Success */}
+        {phase === 'success' && (
+          <div className="animate-fade-in flex flex-col items-center gap-3 min-h-[160px] justify-center">
+            <div className="w-8 h-8 rounded-full border border-olive/40 flex items-center justify-center">
+              <svg className="w-4 h-4 text-olive" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M4.5 12.75l6 6 9-13.5" />
+              </svg>
+            </div>
+            <p className="text-sm text-olive">Signed in. Taking you home…</p>
+          </div>
+        )}
+
+        {/* Email entry */}
+        {phase === 'email' && (
+          <form onSubmit={handleSendCode} className="space-y-4 animate-fade-in">
+            <div className="flex gap-2 max-w-sm mx-auto">
+              <input
+                type="email"
+                value={email}
+                onChange={e => setEmail(e.target.value)}
+                placeholder="your@email.com"
+                required
+                autoComplete="email"
+                autoFocus
+                disabled={isSending}
+                className={cn(
+                  "flex-1 bg-transparent border border-border/30 px-4 py-2.5 text-sm text-cream",
+                  "placeholder:text-muted-foreground/40 focus:outline-none focus:border-tobacco/50",
+                  "transition-colors duration-300 disabled:opacity-50"
+                )}
+              />
+              <button
+                type="submit"
+                disabled={isSending || !email}
+                className={cn(
+                  "px-5 py-2.5 text-sm border border-tobacco/40 text-tobacco",
+                  "hover:bg-tobacco/10 transition-all duration-500",
+                  "disabled:opacity-40 disabled:cursor-not-allowed"
+                )}
+              >
+                {isSending ? '…' : 'Send code'}
+              </button>
+            </div>
+            {sendError && (
+              <p className="text-[11px] text-red-400/80 animate-fade-in max-w-sm mx-auto">
+                {sendError}
+              </p>
+            )}
+            <p className="text-[10px] text-muted-foreground/40">
+              We'll email you a 6-digit verification code. No password needed.
+            </p>
+          </form>
+        )}
+
+        {/* OTP entry */}
+        {phase === 'otp' && (
+          <div className="space-y-5 animate-fade-in">
+            <div className="space-y-1">
+              <p className="text-[11px] uppercase tracking-[0.3em] text-muted-foreground">
+                Enter the verification code sent to
+              </p>
+              <p className="text-sm text-tobacco">{email}</p>
+            </div>
+
+            <form onSubmit={handleVerifyCode} className="space-y-3 max-w-xs mx-auto">
+              <input
+                type="text"
+                inputMode="numeric"
+                value={otp}
+                onChange={e => setOtp(e.target.value.replace(/\D/g, '').slice(0, 8))}
+                placeholder="000000"
+                required
+                autoComplete="one-time-code"
+                autoFocus
+                disabled={isVerifying}
+                maxLength={8}
+                className={cn(
+                  "w-full bg-transparent border border-border/30 px-4 py-3",
+                  "text-center text-2xl text-cream tracking-[0.6em] font-mono",
+                  "placeholder:text-muted-foreground/20 placeholder:tracking-[0.6em]",
+                  "focus:outline-none focus:border-tobacco/50 transition-colors duration-300",
+                  "disabled:opacity-50",
+                  otpError && "border-red-400/40"
+                )}
+              />
+              <button
+                type="submit"
+                disabled={isVerifying || otp.length < 6}
+                className={cn(
+                  "w-full py-2.5 text-sm border border-tobacco/40 text-tobacco",
+                  "hover:bg-tobacco/10 transition-all duration-500",
+                  "disabled:opacity-40 disabled:cursor-not-allowed"
+                )}
+              >
+                {isVerifying ? 'Verifying…' : 'Verify code'}
+              </button>
+            </form>
+
+            {otpError && (
+              <p className="text-[11px] text-red-400/80 animate-fade-in">
+                {otpError}
+              </p>
+            )}
+
+            <div className="flex items-center justify-center gap-4 text-[11px]">
+              <button
+                type="button"
+                onClick={handleResend}
+                disabled={resendCooldown > 0 || isSending}
+                className="text-tobacco hover:text-cream transition-colors disabled:opacity-40 disabled:cursor-default"
+              >
+                {isSending
+                  ? 'Sending…'
+                  : resendCooldown > 0
+                  ? `Resend in ${resendCooldown}s`
+                  : 'Resend code'}
+              </button>
+              <span className="text-muted-foreground/30">·</span>
+              <button
+                type="button"
+                onClick={() => { setPhase('email'); setOtp(''); setOtpError('') }}
+                className="text-muted-foreground/60 hover:text-cream transition-colors"
+              >
+                Use different email
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* Back to opening */}
+        {phase !== 'success' && (
+          <div className="mt-12">
+            <button
+              onClick={onBack}
+              className="text-[10px] text-muted-foreground/30 hover:text-muted-foreground/60 transition-colors uppercase tracking-[0.3em]"
+            >
+              ← Back
+            </button>
+          </div>
+        )}
+
       </div>
     </div>
   )
