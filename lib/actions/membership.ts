@@ -56,17 +56,22 @@ export async function joinRoom(
       user_id: user.id,
       room_id: roomId,
       status: 'active',
+      role: 'member',
       joined_at: new Date().toISOString(),
       left_at: null,
     },
     { onConflict: 'user_id,room_id' },
   )
 
-  if (error) return { success: false, error: error.message }
+  if (error) {
+    console.error('[joinRoom] upsert error:', error.message, error)
+    return { success: false, error: error.message }
+  }
 
   revalidatePath('/rooms')
   revalidatePath(`/rooms/${roomSlug}`)
   revalidatePath('/profile')
+  revalidatePath('/', 'layout')
 
   return { success: true }
 }
