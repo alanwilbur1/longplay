@@ -2,44 +2,61 @@ import { notFound } from 'next/navigation'
 import { Navigation } from '@/components/navigation'
 import { RoomDetailScreen } from '@/components/room-detail-screen'
 import { ProtectedLayout } from '@/components/protected-layout'
+import { getRoomBySlug as getDbRoom } from '@/lib/data/rooms'
+import { isRoomMember } from '@/lib/actions/membership'
 import { getRoomBySlug, ALL_ROOMS } from '@/lib/rooms'
 
-// Generate static params for all rooms
+// Static params from known slugs (build-time; no DB required)
 export function generateStaticParams() {
-  return ALL_ROOMS.map((room) => ({
-    slug: room.slug,
-  }))
+  return ALL_ROOMS.map(room => ({ slug: room.slug }))
 }
 
 export async function generateMetadata({ params }: { params: Promise<{ slug: string }> }) {
   const { slug } = await params
-  const room = getRoomBySlug(slug)
-  
-  if (!room) {
-    return {
-      title: 'Room Not Found | LongPlay',
-    }
+
+  let name = ''
+  let description = ''
+  try {
+    const room = await getDbRoom(slug)
+    if (room) { name = room.name; description = room.description }
+  } catch {
+    const room = getRoomBySlug(slug)
+    if (room) { name = room.name; description = room.description }
   }
-  
-  return {
-    title: `${room.name} | LongPlay`,
-    description: room.description,
-  }
+
+  if (!name) return { title: 'Room Not Found | LongPlay' }
+  return { title: `${name} | LongPlay`, description }
 }
 
-export default async function RoomDetailPage({ params }: { params: Promise<{ slug: string }> }) {
+export default async function RoomDetailPage({
+  params,
+}: {
+  params: Promise<{ slug: string }>
+}) {
   const { slug } = await params
-  const room = getRoomBySlug(slug)
-  
-  if (!room) {
-    notFound()
+
+  // Try DB first, fall back to static
+  let room = null
+  try {
+    room = await getDbRoom(slug)
+  } catch {}
+  if (!room) room = getRoomBySlug(slug) ?? null
+
+  if (!room) notFound()
+
+  // Check real membership status
+  let initialIsJoined = false
+  try {
+    initialIsJoined = await isRoomMember(slug)
+  } catch {
+    // unauthenticated — stays false
   }
-  
+
   return (
     <ProtectedLayout>
       <Navigation />
       <main className="min-h-screen pb-20 md:pb-0 md:pt-16">
-        <RoomDetailScreen room={room} />
+        <RoomDetailScreen room={room} initialIsJoined={initialIsJoined} />
       </main>
     </ProtectedLayout>
   )

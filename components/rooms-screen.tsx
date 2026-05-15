@@ -2,14 +2,21 @@
 
 import Link from 'next/link'
 import { AlbumCover } from '@/components/album-cover'
-import { 
-  EDITORIAL_ROOMS, 
-  GENRE_ROOMS, 
-  CREATOR_ROOMS,
-  type Room 
-} from '@/lib/rooms'
+import { type Room } from '@/lib/rooms'
 
-export function RoomsScreen() {
+interface RoomsScreenProps {
+  editorialRooms: Room[]
+  genreRooms: Room[]
+  creatorRooms: Room[]
+  joinedRooms: Room[]
+}
+
+export function RoomsScreen({
+  editorialRooms,
+  genreRooms,
+  creatorRooms,
+  joinedRooms,
+}: RoomsScreenProps) {
   return (
     <div className="grain relative pb-32 md:pb-16 md:pt-24">
       {/* Hero - Discovery Frame */}
@@ -29,37 +36,45 @@ export function RoomsScreen() {
       <section className="px-6 py-8 md:px-12 lg:px-24 border-t border-border/20">
         <div className="flex items-center justify-between mb-6">
           <h2 className="text-xs uppercase tracking-[0.2em] text-muted-foreground">Your Rooms</h2>
-          <span className="text-xs text-tobacco">3 active</span>
+          <span className="text-xs text-tobacco">
+            {joinedRooms.length > 0 ? `${joinedRooms.length} active` : 'none joined'}
+          </span>
         </div>
         
-        <div className="flex gap-4 overflow-x-auto pb-2 -mx-6 px-6 md:mx-0 md:px-0 md:overflow-visible scrollbar-hide">
-          {EDITORIAL_ROOMS.slice(0, 3).map((room) => (
-            <Link 
-              key={room.id} 
-              href={`/rooms/${room.slug}`}
-              className="group shrink-0 w-32 md:w-40"
-            >
-              <div className="relative aspect-square mb-3 overflow-hidden bg-muted rounded">
-                <AlbumCover
-                  src={room.currentAlbum.cover}
-                  alt={room.name}
-                  title={room.currentAlbum.title}
-                  artist={room.currentAlbum.artist}
-                  fallbackGradient={room.currentAlbum.fallbackGradient}
-                  fill
-                  className="transition-transform duration-700 group-hover:scale-105"
-                />
-                <div className="absolute inset-0 bg-gradient-to-t from-background/80 to-transparent" />
-                <div className="absolute bottom-2 left-2 right-2">
-                  <p className="text-[10px] text-cream/80 truncate">Now playing</p>
+        {joinedRooms.length > 0 ? (
+          <div className="flex gap-4 overflow-x-auto pb-2 -mx-6 px-6 md:mx-0 md:px-0 md:overflow-visible scrollbar-hide">
+            {joinedRooms.slice(0, 3).map((room) => (
+              <Link 
+                key={room.id} 
+                href={`/rooms/${room.slug}`}
+                className="group shrink-0 w-32 md:w-40"
+              >
+                <div className="relative aspect-square mb-3 overflow-hidden bg-muted rounded">
+                  <AlbumCover
+                    src={room.currentAlbum.cover}
+                    alt={room.name}
+                    title={room.currentAlbum.title}
+                    artist={room.currentAlbum.artist}
+                    fallbackGradient={room.currentAlbum.fallbackGradient}
+                    fill
+                    className="transition-transform duration-700 group-hover:scale-105"
+                  />
+                  <div className="absolute inset-0 bg-gradient-to-t from-background/80 to-transparent" />
+                  <div className="absolute bottom-2 left-2 right-2">
+                    <p className="text-[10px] text-cream/80 truncate">Now playing</p>
+                  </div>
                 </div>
-              </div>
-              <h3 className="font-serif text-sm text-cream group-hover:text-cream/80 transition-colors truncate">
-                {room.name}
-              </h3>
-            </Link>
-          ))}
-        </div>
+                <h3 className="font-serif text-sm text-cream group-hover:text-cream/80 transition-colors truncate">
+                  {room.name}
+                </h3>
+              </Link>
+            ))}
+          </div>
+        ) : (
+          <p className="text-sm text-muted-foreground">
+            Browse the rooms below and join one to begin your listening practice.
+          </p>
+        )}
       </section>
 
       {/* Editorial Rooms - Featured */}
@@ -67,7 +82,7 @@ export function RoomsScreen() {
         <h2 className="text-xs uppercase tracking-[0.2em] text-muted-foreground mb-8">Editorial Rooms</h2>
         
         <div className="space-y-8 md:space-y-0 md:grid md:grid-cols-2 md:gap-8">
-          {EDITORIAL_ROOMS.map((room) => (
+          {editorialRooms.map((room) => (
             <EditorialRoomCard key={room.id} room={room} />
           ))}
         </div>
@@ -78,7 +93,7 @@ export function RoomsScreen() {
         <h2 className="text-xs uppercase tracking-[0.2em] text-muted-foreground mb-8">By Sound & Feeling</h2>
         
         <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
-          {GENRE_ROOMS.map((room) => (
+          {genreRooms.map((room) => (
             <GenreRoomCard key={room.id} room={room} />
           ))}
         </div>
@@ -89,7 +104,7 @@ export function RoomsScreen() {
         <h2 className="text-xs uppercase tracking-[0.2em] text-muted-foreground mb-8">Curator-Led</h2>
         
         <div className="space-y-4">
-          {CREATOR_ROOMS.map((room) => (
+          {creatorRooms.map((room) => (
             <CreatorRoomCard key={room.id} room={room} />
           ))}
         </div>

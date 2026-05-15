@@ -2,6 +2,7 @@ import { notFound } from 'next/navigation'
 import { Navigation } from '@/components/navigation'
 import { ActiveListeningRoomScreen } from '@/components/active-listening-room-screen'
 import { ProtectedLayout } from '@/components/protected-layout'
+import { getRoomBySlug as getDbRoom } from '@/lib/data/rooms'
 import { getRoomBySlug, ALL_ROOMS } from '@/lib/rooms'
 
 // Generate static params for all rooms
@@ -13,14 +14,13 @@ export function generateStaticParams() {
 
 export async function generateMetadata({ params }: { params: Promise<{ slug: string }> }) {
   const { slug } = await params
-  const room = getRoomBySlug(slug)
-  
-  if (!room) {
-    return {
-      title: 'Listening Room | LongPlay',
-    }
-  }
-  
+
+  let room = null
+  try { room = await getDbRoom(slug) } catch {}
+  if (!room) room = getRoomBySlug(slug) ?? null
+
+  if (!room) return { title: 'Listening Room | LongPlay' }
+
   return {
     title: `Listening: ${room.currentAlbum.title} | ${room.name} | LongPlay`,
     description: `Currently listening to ${room.currentAlbum.title} by ${room.currentAlbum.artist} in ${room.name}`,
@@ -29,12 +29,13 @@ export async function generateMetadata({ params }: { params: Promise<{ slug: str
 
 export default async function ActiveRoomPage({ params }: { params: Promise<{ slug: string }> }) {
   const { slug } = await params
-  const room = getRoomBySlug(slug)
-  
-  if (!room) {
-    notFound()
-  }
-  
+
+  let room = null
+  try { room = await getDbRoom(slug) } catch {}
+  if (!room) room = getRoomBySlug(slug) ?? null
+
+  if (!room) notFound()
+
   return (
     <ProtectedLayout>
       <Navigation />

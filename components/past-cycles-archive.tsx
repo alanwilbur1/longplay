@@ -12,18 +12,37 @@ import {
   type ListeningEra,
 } from '@/lib/cycles'
 
+interface PastCyclesArchiveProps {
+  pastCycles?: ListeningCycle[]
+  listeningEras?: ListeningEra[]
+}
+
 /**
  * Past Cycles Archive
  * 
  * A cinematic archive of previous listening cycles.
  * Each cycle is a preserved cultural artifact, not expired content.
  */
-export function PastCyclesArchive() {
+export function PastCyclesArchive({
+  pastCycles: passedCycles,
+  listeningEras: passedEras,
+}: PastCyclesArchiveProps = {}) {
+  const cycles = passedCycles ?? PAST_CYCLES
+  const eras = passedEras ?? LISTENING_ERAS
   const [viewMode, setViewMode] = useState<'eras' | 'timeline' | 'grid'>('eras')
   const [selectedCycle, setSelectedCycle] = useState<ListeningCycle | null>(null)
-  
-  const resonatingCycles = getResonatingCycles()
-  const totalEngagement = getTotalEngagement()
+
+  const resonatingCycles = passedCycles
+    ? passedCycles.filter(c => c.stillResonates.isTrue)
+    : getResonatingCycles()
+  const totalEngagement = passedCycles
+    ? {
+        annotations: passedCycles.reduce((s, c) => s + c.userEngagement.annotations, 0),
+        sessions: passedCycles.reduce((s, c) => s + c.userEngagement.listeningSessions, 0),
+        savedMoments: passedCycles.reduce((s, c) => s + c.userEngagement.savedMoments, 0),
+        discussions: passedCycles.reduce((s, c) => s + c.userEngagement.discussionContributions, 0),
+      }
+    : getTotalEngagement()
   
   return (
     <div className="grain relative pb-24 md:pb-0">
@@ -50,7 +69,7 @@ export function PastCyclesArchive() {
         {/* Archive stats */}
         <div className="flex items-center justify-center gap-6 mt-12 text-sm text-muted-foreground">
           <div className="text-center">
-            <p className="font-serif text-2xl text-cream">{PAST_CYCLES.length}</p>
+            <p className="font-serif text-2xl text-cream">{cycles.length}</p>
             <p className="text-xs">cycles preserved</p>
           </div>
           <div className="w-px h-8 bg-border/30" />
@@ -60,7 +79,7 @@ export function PastCyclesArchive() {
           </div>
           <div className="w-px h-8 bg-border/30" />
           <div className="text-center">
-            <p className="font-serif text-2xl text-cream">{LISTENING_ERAS.length}</p>
+            <p className="font-serif text-2xl text-cream">{eras.length}</p>
             <p className="text-xs">listening eras</p>
           </div>
         </div>
@@ -137,7 +156,7 @@ export function PastCyclesArchive() {
       {viewMode === 'eras' && (
         <section className="px-6 py-12 md:px-12 lg:px-24">
           <div className="max-w-3xl mx-auto space-y-20">
-            {LISTENING_ERAS.map((era) => (
+            {eras.map((era) => (
               <EraCard key={era.id} era={era} onSelectCycle={setSelectedCycle} />
             ))}
           </div>
@@ -155,7 +174,7 @@ export function PastCyclesArchive() {
               <div className="absolute left-6 top-0 bottom-0 w-px bg-gradient-to-b from-tobacco/50 via-tobacco/20 to-transparent" />
               
               <div className="space-y-12">
-                {PAST_CYCLES.map((cycle, i) => (
+                {cycles.map((cycle, i) => (
                   <TimelineCycleCard 
                     key={cycle.id} 
                     cycle={cycle} 
@@ -176,7 +195,7 @@ export function PastCyclesArchive() {
         <section className="px-6 py-12 md:px-12 lg:px-24">
           <div className="max-w-4xl mx-auto">
             <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-6">
-              {PAST_CYCLES.map((cycle) => (
+              {cycles.map((cycle) => (
                 <GridCycleCard 
                   key={cycle.id} 
                   cycle={cycle}

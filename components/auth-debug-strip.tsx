@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react'
 import { usePathname } from 'next/navigation'
 import { useAuth } from '@/components/auth-provider'
 import { isOnboardingCompleted } from '@/lib/onboarding-state'
+import { getMyMemberships } from '@/lib/actions/membership'
 
 /**
  * AuthDebugStrip — dev-only fixed overlay showing live auth/routing state.
@@ -14,6 +15,8 @@ export function AuthDebugStrip() {
   const pathname = usePathname()
   const { user, isAuthenticated, isLoading: authLoading } = useAuth()
   const [onboardingLS, setOnboardingLS] = useState<boolean | null>(null)
+  const [membershipCount, setMembershipCount] = useState<number | null>(null)
+  const [roomsSrc, setRoomsSrc] = useState<'db' | 'static' | '…'>('…')
 
   // Poll localStorage once per second so the strip reflects manual edits in DevTools
   useEffect(() => {
@@ -22,6 +25,24 @@ export function AuthDebugStrip() {
     const id = setInterval(check, 1000)
     return () => clearInterval(id)
   }, [])
+
+  // Load membership count from DB to verify Phase 2 wiring
+  useEffect(() => {
+    if (!isAuthenticated) {
+      setMembershipCount(null)
+      setRoomsSrc('static')
+      return
+    }
+    getMyMemberships()
+      .then(m => {
+        setMembershipCount(m.length)
+        setRoomsSrc('db')
+      })
+      .catch(() => {
+        setMembershipCount(null)
+        setRoomsSrc('static')
+      })
+  }, [isAuthenticated])
 
   // Replicate ProtectedLayout decision matrix client-side
   const PUBLIC_PATHS = ['/onboarding', '/auth', '/share']
@@ -46,6 +67,8 @@ export function AuthDebugStrip() {
     ['onboarding LS', onboardingLS === null ? '…' : String(onboardingLS)],
     ['guard decision', guardDecision],
     ['demo mode', String(!isAuthenticated)],
+    ['rooms src', roomsSrc],
+    ['memberships', membershipCount === null ? '—' : String(membershipCount)],
   ]
 
   return (

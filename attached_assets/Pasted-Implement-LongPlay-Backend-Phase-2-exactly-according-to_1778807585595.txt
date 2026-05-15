@@ -1,0 +1,181 @@
+Implement LongPlay Backend Phase 2 exactly according to the attached/pasted spec.
+
+Hard rules:
+- Work on a new branch: feat/phase-2-rooms-albums-cycles
+- Do not push to main.
+- Do not auto-merge.
+- Preserve the v0 UI exactly.
+- Do not redesign anything.
+- Do not touch onboarding-screen.tsx.
+- Do not modify these files:
+  components/listening-room-screen.tsx
+  components/listening-club-screen.tsx
+  components/listening-affinity-screen.tsx
+  components/listening-life-screen.tsx
+  components/identity-profile-screen.tsx
+  components/onboarding-screen.tsx
+  components/shareable-artifacts.tsx
+  components/cycle-phase-indicator.tsx
+  components/year-in-review-screen.tsx
+  components/membership-screen.tsx
+  components/room-affinity-display.tsx
+  lib/room-affinity.ts
+  lib/archive.ts
+  lib/membership.ts
+  lib/weekly-cadence.ts
+  lib/rooms.ts
+  lib/albums.ts
+  lib/cycles.ts
+
+Goal:
+Move rooms, albums, cycles, and club memberships read/write paths from static mock modules to Supabase, while returning objects that exactly match the existing TypeScript interfaces and preserving all current UI output.
+
+Implementation steps:
+
+1. Create branch from origin/main:
+   git checkout origin/main
+   git checkout -b feat/phase-2-rooms-albums-cycles
+
+2. Create lib/schema-phase2.sql with additive, idempotent schema changes:
+   - Add tagline, emotional_temperature, emotional_tags, sonic_tags to rooms.
+   - Add slug to albums.
+   - Add unique partial index on albums(slug).
+   - Add public-read SELECT RLS policies for rooms, albums, cycles, curators, cycle_prompts, curator_essays.
+   - Add club_memberships RLS so users can SELECT/INSERT/UPDATE/DELETE only rows where user_id = auth.uid().
+   - Do not widen writes for public tables.
+
+3. Create scripts/seed-phase2.ts:
+   - Load SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY from .env.local using existing env patterns.
+   - Use getSupabaseAdminClient().
+   - Idempotently upsert:
+     curators
+     albums
+     rooms
+     cycles
+     cycle_prompts
+     curator_essays
+     rooms.current_cycle_id
+   - Use deterministic UUIDs from legacy string ids.
+   - Persist mapping to scripts/seed-manifest.json.
+   - Never delete existing rows.
+   - Do not invent fields. Store unmapped UI-only fields in existing JSONB fields and unpack them in data helpers.
+
+4. Add server-side data helpers:
+   - lib/data/rooms.ts
+     getRoomBySlug(slug)
+     listAllRooms()
+     listRoomsByType(type)
+     getRelatedRooms(room)
+     Re-export Room type.
+     Return objects exactly matching the existing Room interface.
+
+   - lib/data/albums.ts
+     getAlbumBySlug(slug)
+     getAlbumById(id)
+     listAlbumsByRoom(roomId)
+     listAlbumsByKeys(keys)
+     Return objects exactly matching the existing Album interface.
+
+   - lib/data/cycles.ts
+     getResonatingCycles(userId?)
+     getCyclesByRoom(roomId)
+     getPastCycles()
+     getCurrentCycleForRoom(roomId)
+     Return objects exactly matching the existing ListeningCycle interface.
+
+5. Add lib/rooms-ui.ts:
+   - Move/re-export pure UI helper getRoomSeasonalMood here.
+   - Do not put UI logic in the DB data path.
+
+6. Wire only these consumers:
+   - app/rooms/[slug]/page.tsx
+   - app/room/[slug]/page.tsx
+   - app/album/[slug]/page.tsx
+   - app/rooms/page.tsx
+   - components/rooms-screen.tsx
+   - components/room-detail-screen.tsx
+   - components/active-listening-room-screen.tsx only if needed for prop compatibility
+   - components/room-entry-ritual.tsx only if needed for prop compatibility
+   - components/home-screen.tsx
+   - app/page.tsx
+   - components/past-cycles-archive.tsx
+   - app/archive/cycles/page.tsx
+   - components/profile-screen.tsx
+
+7. Add lib/actions/membership.ts with server actions:
+   - joinRoom(roomId)
+   - leaveRoom(roomId)
+   - isRoomMember(roomId)
+   - getMyMemberships()
+   Requirements:
+   - Use authenticated Supabase server client.
+   - Return success false if unauthenticated.
+   - joinRoom upserts active membership.
+   - leaveRoom soft-leaves by setting status='left' and left_at=now().
+   - Revalidate room and profile paths after mutation.
+
+8. Wire the room CTA:
+   - Replace hardcoded isJoined=true with server-computed membership state.
+   - Use the existing button, copy, styling, and animation.
+   - No visual changes.
+
+9. Extend auth-debug-strip.tsx dev-only:
+   - Add rooms source: db/mock
+   - Add membership: member/guest/—
+   - No console logging.
+
+Important implementation constraint:
+Do NOT create a generic ORM-style abstraction layer.
+
+Favor:
+- explicit query helpers
+- narrowly scoped assemblers
+- simple typed transforms
+- page-oriented data assembly
+
+Avoid:
+- recursive hydration
+- dynamic relation loading
+- generic repository patterns
+- automatic deep object builders
+
+Verification:
+Run and report:
+1. pnpm tsx scripts/seed-phase2.ts twice, proving second run is idempotent.
+2. pnpm build.
+3. Confirm /rooms renders all 9 rooms identically.
+4. Confirm /rooms/[slug] renders identically.
+5. Confirm /room/[slug] renders identically.
+6. Confirm /album/[slug] now resolves from DB and renders identically.
+7. Confirm / home renders identical current album, featured clubs, and resonating cycles.
+8. Confirm /archive/cycles renders from DB.
+9. Confirm joining a room writes to club_memberships and profile reflects joined rooms.
+10. Confirm sign-out keeps /rooms public but profile fallback only appears for demo user.
+11. Confirm RLS: anon can SELECT public content but cannot write.
+12. Confirm these files have zero diff from origin/main:
+    components/listening-room-screen.tsx
+    components/listening-club-screen.tsx
+    components/listening-affinity-screen.tsx
+    components/listening-life-screen.tsx
+    components/identity-profile-screen.tsx
+    components/onboarding-screen.tsx
+    components/shareable-artifacts.tsx
+    components/cycle-phase-indicator.tsx
+    components/year-in-review-screen.tsx
+    components/membership-screen.tsx
+    components/room-affinity-display.tsx
+    lib/rooms.ts
+    lib/albums.ts
+    lib/cycles.ts
+
+Deliverables:
+- Commit changes to feat/phase-2-rooms-albums-cycles.
+- Open a PR against main.
+- Do not merge.
+- PR description must include:
+  - Exact migration SQL from lib/schema-phase2.sql.
+  - git diff --stat origin/main..HEAD.
+  - seed script output from both runs.
+  - list of pages/components switched to DB reads.
+  - verification checklist results.
+  - screenshots before/after for /rooms, /rooms/[slug], /room/[slug], /album/[slug], and /.

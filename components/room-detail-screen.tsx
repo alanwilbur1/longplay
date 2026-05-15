@@ -7,9 +7,11 @@ import { cn } from '@/lib/utils'
 import { AlbumCover } from '@/components/album-cover'
 import { RoomEntryRitual } from '@/components/room-entry-ritual'
 import { type Room, getRelatedRooms, getRoomSeasonalMood, getRoomBySlug } from '@/lib/rooms'
+import { joinRoom, leaveRoom } from '@/lib/actions/membership'
 
 interface RoomDetailScreenProps {
   room: Room
+  initialIsJoined?: boolean
 }
 
 /**
@@ -23,9 +25,9 @@ interface RoomDetailScreenProps {
  * - aesthetically unique
  * - emotionally specific
  */
-export function RoomDetailScreen({ room }: RoomDetailScreenProps) {
+export function RoomDetailScreen({ room, initialIsJoined = false }: RoomDetailScreenProps) {
   const router = useRouter()
-  const [isJoined, setIsJoined] = useState(true) // Mock: user is already a member
+  const [isJoined, setIsJoined] = useState(initialIsJoined)
   const [showFullNote, setShowFullNote] = useState(false)
   const [showManifesto, setShowManifesto] = useState(false)
   const [showCuratorProfile, setShowCuratorProfile] = useState(false)
@@ -806,7 +808,10 @@ export function RoomDetailScreen({ room }: RoomDetailScreenProps) {
                     {room.culture.entryPhrase}
                   </button>
                   <button
-                    onClick={() => setIsJoined(false)}
+                    onClick={async () => {
+                      const result = await leaveRoom(room.slug)
+                      if (result.success) setIsJoined(false)
+                    }}
                     className={cn(
                       "px-6 py-4 border text-muted-foreground text-sm transition-all",
                       room.aesthetics.borderTint,
@@ -819,7 +824,10 @@ export function RoomDetailScreen({ room }: RoomDetailScreenProps) {
                 </>
               ) : (
                 <button
-                  onClick={() => setIsJoined(true)}
+                  onClick={async () => {
+                    const result = await joinRoom(room.slug)
+                    if (result.success) setIsJoined(true)
+                  }}
                   className={cn(
                     "px-8 py-4 text-cream text-sm tracking-wide transition-all",
                     room.aesthetics.primaryAccent.replace('text-', 'bg-').replace('/70', '/80').replace('/80', '/90'),
