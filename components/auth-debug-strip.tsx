@@ -5,6 +5,7 @@ import { usePathname } from 'next/navigation'
 import { useAuth } from '@/components/auth-provider'
 import { isOnboardingCompleted } from '@/lib/onboarding-state'
 import { getMyMemberships } from '@/lib/actions/membership'
+import { listMyMoments } from '@/lib/actions/moments'
 import { getSupabaseBrowserClient } from '@/lib/supabase/client'
 
 /**
@@ -17,6 +18,7 @@ export function AuthDebugStrip() {
   const { user, isAuthenticated, isLoading: authLoading } = useAuth()
   const [onboardingLS, setOnboardingLS] = useState<boolean | null>(null)
   const [membershipCount, setMembershipCount] = useState<number | null>(null)
+  const [momentsCount, setMomentsCount] = useState<number | null>(null)
   const [roomsSrc, setRoomsSrc] = useState<'db' | 'static' | '…'>('…')
 
   // Poll localStorage once per second so the strip reflects manual edits in DevTools
@@ -52,6 +54,17 @@ export function AuthDebugStrip() {
       .catch(() => setMembershipCount(null))
   }, [isAuthenticated])
 
+  // Load moments count (authenticated users only)
+  useEffect(() => {
+    if (!isAuthenticated) {
+      setMomentsCount(null)
+      return
+    }
+    listMyMoments({ limit: 200 })
+      .then(r => setMomentsCount(r.data?.length ?? 0))
+      .catch(() => setMomentsCount(null))
+  }, [isAuthenticated])
+
   // Must stay in sync with PUBLIC_PATHS in components/protected-layout.tsx
   const PUBLIC_PATHS = ['/onboarding', '/auth', '/share', '/rooms']
   const isPublic = PUBLIC_PATHS.some(p => pathname.startsWith(p))
@@ -78,6 +91,7 @@ export function AuthDebugStrip() {
     ['rooms src', roomsSrc],
     ['fallback', roomsSrc === '…' ? '…' : roomsSrc === 'static' ? 'active' : 'inactive'],
     ['memberships', membershipCount === null ? '—' : String(membershipCount)],
+    ['my moments', momentsCount === null ? '—' : String(momentsCount)],
   ]
 
   return (
