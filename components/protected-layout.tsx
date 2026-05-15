@@ -4,7 +4,7 @@ import { useEffect, useState } from 'react'
 import { useRouter, usePathname } from 'next/navigation'
 import { useAuth } from '@/components/auth-provider'
 
-const PUBLIC_PATHS = ['/onboarding', '/auth', '/share']
+const PUBLIC_PATHS = ['/onboarding', '/auth', '/share', '/rooms']
 
 const DEV_MODE = process.env.NODE_ENV === 'development'
 

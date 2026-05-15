@@ -10,6 +10,7 @@ import {
   saveOnboardingState, 
   completeOnboarding,
   isOnboardingCompleted,
+  resetOnboarding,
 } from '@/lib/onboarding-state'
 import { getResonatingRooms, ROOM_AFFINITIES } from '@/lib/room-affinity'
 import { getSupabaseBrowserClient } from '@/lib/supabase/client'
@@ -120,24 +121,23 @@ export function OnboardingScreen() {
   const [isInitialized, setIsInitialized] = useState(false)
   const [debugStatus, setDebugStatus] = useState('loading onboarding state')
 
-  // Check if onboarding is already completed
+  // Check if onboarding is already completed.
+  // Auth must resolve before we trust any completion flag:
+  // localStorage is treated as a cache only when an active Supabase session
+  // exists. Without a session the localStorage flag is stale (from a prior
+  // signed-in session) and must be ignored to prevent a redirect loop.
   useEffect(() => {
-    setDebugStatus('checking onboarding state')
-
-    // 1. Fast path: localStorage says complete — skip DB round-trip
-    if (isOnboardingCompleted()) {
-      setDebugStatus('completed (localStorage) — redirecting to home')
-      router.replace('/')
-      return
-    }
-
-    // 2. Slow path: localStorage may have been cleared on sign-out.
-    //    Check Supabase DB for returning authenticated users.
+    setDebugStatus('checking auth + onboarding state')
     const supabase = getSupabaseBrowserClient()
 
-    function restoreLocalState() {
+    function showOnboardingFlow() {
       const savedState = getOnboardingState()
-      if (savedState.currentStep && STEPS.includes(savedState.currentStep as Step)) {
+      // Only restore in-progress step state — never honour a stale completed flag.
+      if (
+        savedState.currentStep &&
+        savedState.currentStep !== 'complete' &&
+        STEPS.includes(savedState.currentStep as Step)
+      ) {
         setCurrentStep(savedState.currentStep as Step)
       }
       if (savedState.connectedServices) {
@@ -153,10 +153,27 @@ export function OnboardingScreen() {
     supabase.auth.getUser()
       .then(({ data: { user } }) => {
         if (!user) {
-          restoreLocalState()
+          // No active session — any localStorage completion flag is stale.
+          // Clear it so it cannot cause loops, then show the auth/OTP entry step.
+          if (isOnboardingCompleted()) {
+            resetOnboarding()
+            setDebugStatus('unauthenticated — cleared stale localStorage flag')
+          } else {
+            setDebugStatus('unauthenticated — showing auth flow')
+          }
+          showOnboardingFlow()
           return
         }
-        // Authenticated user — check DB for completed flag
+
+        // Authenticated — fast-path: localStorage says complete, trust it.
+        if (isOnboardingCompleted()) {
+          setDebugStatus('completed (localStorage) — redirecting to home')
+          router.replace('/')
+          return
+        }
+
+        // Authenticated — slow path: check DB (covers sign-out + sign-back-in
+        // after localStorage was cleared).
         return supabase
           .from('user_profiles')
           .select('onboarding_completed')
@@ -168,11 +185,11 @@ export function OnboardingScreen() {
               setDebugStatus('completed (db) — redirecting to home')
               router.replace('/')
             } else {
-              restoreLocalState()
+              showOnboardingFlow()
             }
           })
       })
-      .catch(() => restoreLocalState())
+      .catch(() => showOnboardingFlow())
   }, [router])
 
   // Save state on changes
