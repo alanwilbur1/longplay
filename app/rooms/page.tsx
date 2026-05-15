@@ -22,7 +22,10 @@ export default async function RoomsPage() {
     editorialRooms = allRooms.filter(r => r.type === 'editorial')
     genreRooms = allRooms.filter(r => r.type === 'genre')
     creatorRooms = allRooms.filter(r => r.type === 'creator')
-  } catch {
+  } catch (err) {
+    if (process.env.NODE_ENV === 'development') {
+      console.warn('[app/rooms/page.tsx] DB load failed — using static fallback:', err)
+    }
     editorialRooms = EDITORIAL_ROOMS
     genreRooms = GENRE_ROOMS
     creatorRooms = CREATOR_ROOMS

@@ -31,7 +31,7 @@ async function getRoomId(
     .select('id')
     .eq('slug', roomSlug)
     .single()
-  return (data as { id: string } | null)?.id ?? null
+  return data?.id ?? null
 }
 
 // ── Join ─────────────────────────────────────────────────────────────────────
@@ -50,8 +50,7 @@ export async function joinRoom(
   const roomId = await getRoomId(supabase, roomSlug)
   if (!roomId) return { success: false, error: `Room not found: ${roomSlug}` }
 
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const { error } = await (supabase as any).from('club_memberships').upsert(
+  const { error } = await supabase.from('club_memberships').upsert(
     {
       user_id: user.id,
       room_id: roomId,
@@ -70,8 +69,8 @@ export async function joinRoom(
 
   revalidatePath('/rooms')
   revalidatePath(`/rooms/${roomSlug}`)
+  revalidatePath(`/room/${roomSlug}`)
   revalidatePath('/profile')
-  revalidatePath('/', 'layout')
 
   return { success: true }
 }
@@ -92,8 +91,7 @@ export async function leaveRoom(
   const roomId = await getRoomId(supabase, roomSlug)
   if (!roomId) return { success: false, error: `Room not found: ${roomSlug}` }
 
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const { error } = await (supabase as any)
+  const { error } = await supabase
     .from('club_memberships')
     .update({ status: 'left', left_at: new Date().toISOString() })
     .eq('user_id', user.id)
@@ -103,6 +101,7 @@ export async function leaveRoom(
 
   revalidatePath('/rooms')
   revalidatePath(`/rooms/${roomSlug}`)
+  revalidatePath(`/room/${roomSlug}`)
   revalidatePath('/profile')
 
   return { success: true }
@@ -121,15 +120,14 @@ export async function isRoomMember(roomSlug: string): Promise<boolean> {
   const roomId = await getRoomId(supabase, roomSlug)
   if (!roomId) return false
 
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const { data } = await (supabase as any)
+  const { data } = await supabase
     .from('club_memberships')
     .select('status')
     .eq('user_id', user.id)
     .eq('room_id', roomId)
     .single()
 
-  return (data as { status: string } | null)?.status === 'active'
+  return data?.status === 'active'
 }
 
 // ── getMyMemberships ──────────────────────────────────────────────────────────
@@ -142,8 +140,7 @@ export async function getMyMemberships(): Promise<MembershipRow[]> {
   } = await supabase.auth.getUser()
   if (!user) return []
 
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const { data, error } = await (supabase as any)
+  const { data, error } = await supabase
     .from('club_memberships')
     .select('status, joined_at, role, room:rooms!room_id(slug,name)')
     .eq('user_id', user.id)
@@ -152,14 +149,16 @@ export async function getMyMemberships(): Promise<MembershipRow[]> {
 
   if (error || !data) return []
 
-  return (data as Record<string, unknown>[]).map(row => {
-    const room = row.room as { slug: string; name: string } | null
-    return {
-      roomSlug: room?.slug ?? '',
-      roomName: room?.name ?? '',
-      status: row.status as 'active' | 'left',
-      joinedAt: row.joined_at as string,
-      role: (row.role as string) ?? 'member',
-    }
-  })
+  return (data as unknown as Array<{
+    status: 'active' | 'left'
+    joined_at: string
+    role: string
+    room: { slug: string; name: string } | null
+  }>).map(row => ({
+    roomSlug: row.room?.slug ?? '',
+    roomName: row.room?.name ?? '',
+    status: row.status,
+    joinedAt: row.joined_at,
+    role: row.role ?? 'member',
+  }))
 }

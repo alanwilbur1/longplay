@@ -37,10 +37,21 @@ export default async function RoomDetailPage({
 
   // Try DB first, fall back to static
   let room = null
+  let usedFallback = false
   try {
     room = await getDbRoom(slug)
-  } catch {}
-  if (!room) room = getRoomBySlug(slug) ?? null
+  } catch (err) {
+    if (process.env.NODE_ENV === 'development') {
+      console.warn(`[app/rooms/[slug]/page.tsx] DB load failed for "${slug}" — using static fallback:`, err)
+    }
+    usedFallback = true
+  }
+  if (!room) {
+    room = getRoomBySlug(slug) ?? null
+    if (!usedFallback && process.env.NODE_ENV === 'development') {
+      console.warn(`[app/rooms/[slug]/page.tsx] Room "${slug}" not found in DB — using static fallback`)
+    }
+  }
 
   if (!room) notFound()
 
