@@ -5,6 +5,7 @@ import { usePathname } from 'next/navigation'
 import { useAuth } from '@/components/auth-provider'
 import { isOnboardingCompleted } from '@/lib/onboarding-state'
 import { getMyMemberships } from '@/lib/actions/membership'
+import { getSupabaseBrowserClient } from '@/lib/supabase/client'
 
 /**
  * AuthDebugStrip — dev-only fixed overlay showing live auth/routing state.
@@ -26,26 +27,33 @@ export function AuthDebugStrip() {
     return () => clearInterval(id)
   }, [])
 
-  // Load membership count from DB to verify Phase 2 wiring
+  // Probe Supabase directly (public anon read) to determine rooms source.
+  // Rooms use a public-read RLS policy, so this works regardless of auth state.
+  // Must NOT use auth state as a proxy — unauthenticated users still get DB rooms.
+  useEffect(() => {
+    const supabase = getSupabaseBrowserClient()
+    supabase
+      .from('rooms')
+      .select('id', { count: 'exact', head: true })
+      .then(({ count, error }) => {
+        setRoomsSrc(!error && (count ?? 0) > 0 ? 'db' : 'static')
+      })
+      .catch(() => setRoomsSrc('static'))
+  }, [])
+
+  // Load membership count (authenticated users only)
   useEffect(() => {
     if (!isAuthenticated) {
       setMembershipCount(null)
-      setRoomsSrc('static')
       return
     }
     getMyMemberships()
-      .then(m => {
-        setMembershipCount(m.length)
-        setRoomsSrc('db')
-      })
-      .catch(() => {
-        setMembershipCount(null)
-        setRoomsSrc('static')
-      })
+      .then(m => setMembershipCount(m.length))
+      .catch(() => setMembershipCount(null))
   }, [isAuthenticated])
 
-  // Replicate ProtectedLayout decision matrix client-side
-  const PUBLIC_PATHS = ['/onboarding', '/auth', '/share']
+  // Must stay in sync with PUBLIC_PATHS in components/protected-layout.tsx
+  const PUBLIC_PATHS = ['/onboarding', '/auth', '/share', '/rooms']
   const isPublic = PUBLIC_PATHS.some(p => pathname.startsWith(p))
   const guardDecision = isPublic
     ? 'public — allow'
