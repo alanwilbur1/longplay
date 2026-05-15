@@ -9,20 +9,22 @@ export async function createSupabaseServerClient() {
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
     process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY!,
     {
-      // ── Cookie options ────────────────────────────────────────────────────
-      // sameSite: 'lax' is critical for the PKCE magic-link flow.
+      // ── SameSite=None; Secure ─────────────────────────────────────────────
+      // The app runs in an iframe (worf.replit.dev) embedded in the Replit
+      // workspace (replit.com). These are different eTLD+1 domains, so the
+      // browser treats every request from the iframe as cross-site.
       //
-      // The auth flow is:
-      //   email click → supabase.co/verify → 302 redirect → /auth/callback
+      // Browsers do NOT send SameSite=Lax cookies with cross-site POST
+      // requests. Next.js server actions are invoked via POST, so a Lax
+      // cookie is stripped before it reaches the server — `cookies()` sees
+      // nothing and auth.getUser() returns null in ~3 ms.
       //
-      // That final redirect is a cross-site top-level navigation. Browsers
-      // only attach cookies with SameSite=Lax (or None) on such navigations.
-      // SameSite=Strict would drop the code_verifier cookie entirely, causing
-      // exchangeCodeForSession to fail with "Auth session missing".
+      // SameSite=None; Secure bypasses this restriction. The Replit dev proxy
+      // and all deployed targets are HTTPS, so `secure: true` is always met.
       cookieOptions: {
         path: '/',
-        sameSite: 'lax',
-        secure: process.env.NODE_ENV === 'production',
+        sameSite: 'none' as const,
+        secure: true,
       },
       cookies: {
         getAll() {
