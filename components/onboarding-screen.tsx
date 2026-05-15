@@ -124,26 +124,55 @@ export function OnboardingScreen() {
   useEffect(() => {
     setDebugStatus('checking onboarding state')
 
+    // 1. Fast path: localStorage says complete — skip DB round-trip
     if (isOnboardingCompleted()) {
-      setDebugStatus('completed — redirecting to home')
+      setDebugStatus('completed (localStorage) — redirecting to home')
       router.replace('/')
       return
     }
-    
-    // Restore state from localStorage if returning
-    const savedState = getOnboardingState()
-    if (savedState.currentStep && STEPS.includes(savedState.currentStep as Step)) {
-      setCurrentStep(savedState.currentStep as Step)
+
+    // 2. Slow path: localStorage may have been cleared on sign-out.
+    //    Check Supabase DB for returning authenticated users.
+    const supabase = getSupabaseBrowserClient()
+
+    function restoreLocalState() {
+      const savedState = getOnboardingState()
+      if (savedState.currentStep && STEPS.includes(savedState.currentStep as Step)) {
+        setCurrentStep(savedState.currentStep as Step)
+      }
+      if (savedState.connectedServices) {
+        setConnectedServices(savedState.connectedServices)
+      }
+      if (savedState.calibrationAnswers) {
+        setCalibrationAnswers(savedState.calibrationAnswers)
+      }
+      setDebugStatus('ready')
+      setIsInitialized(true)
     }
-    if (savedState.connectedServices) {
-      setConnectedServices(savedState.connectedServices)
-    }
-    if (savedState.calibrationAnswers) {
-      setCalibrationAnswers(savedState.calibrationAnswers)
-    }
-    
-    setDebugStatus('ready')
-    setIsInitialized(true)
+
+    supabase.auth.getUser()
+      .then(({ data: { user } }) => {
+        if (!user) {
+          restoreLocalState()
+          return
+        }
+        // Authenticated user — check DB for completed flag
+        return supabase
+          .from('user_profiles')
+          .select('onboarding_completed')
+          .eq('id', user.id)
+          .single()
+          .then(({ data }) => {
+            const profile = data as { onboarding_completed: boolean } | null
+            if (profile?.onboarding_completed) {
+              setDebugStatus('completed (db) — redirecting to home')
+              router.replace('/')
+            } else {
+              restoreLocalState()
+            }
+          })
+      })
+      .catch(() => restoreLocalState())
   }, [router])
 
   // Save state on changes

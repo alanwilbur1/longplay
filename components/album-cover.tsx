@@ -11,6 +11,7 @@ interface AlbumCoverProps {
   artist: string
   fallbackGradient?: string
   fill?: boolean
+  priority?: boolean // Accepted for API compatibility; artwork loads via useEffect
   width?: number
   height?: number
   className?: string

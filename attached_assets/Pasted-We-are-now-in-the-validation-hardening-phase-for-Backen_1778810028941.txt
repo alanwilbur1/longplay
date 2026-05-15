@@ -1,0 +1,205 @@
+We are now in the validation + hardening phase for Backend Phase 2.
+
+Do NOT add new features.
+Do NOT redesign UI.
+Do NOT expand scope.
+
+Goal:
+Validate the real Supabase-backed implementation end-to-end and eliminate any hidden fallback/state issues before merge.
+
+==================================================
+STEP 1 — APPLY REAL DB MIGRATION
+==================================================
+
+Use the actual contents of:
+  lib/schema-phase2.sql
+
+Instructions:
+- Verify the migration is additive and idempotent.
+- Verify no destructive ALTERs or drops exist.
+- Verify RLS policies are correctly scoped.
+- Confirm anon users can SELECT public content tables only.
+- Confirm anon users cannot INSERT/UPDATE/DELETE.
+
+Then provide the exact SQL I should run in Supabase SQL Editor.
+
+==================================================
+STEP 2 — RUN REAL SEED
+==================================================
+
+Run:
+  pnpm tsx scripts/seed-phase2.ts
+
+Then run it AGAIN.
+
+Requirements:
+- Second run must be a true no-op/idempotent.
+- No duplicate rows.
+- No duplicate slugs.
+- No broken foreign keys.
+- No conflicting UUID mappings.
+- Verify scripts/seed-manifest.json remains stable between runs.
+
+Return:
+- terminal output from both runs
+- counts for:
+  rooms
+  albums
+  cycles
+  cycle_prompts
+  curator_essays
+  club_memberships
+
+==================================================
+STEP 3 — ELIMINATE HYBRID DATA RISKS
+==================================================
+
+Audit all "static fallback" logic added in this PR.
+
+Critical requirement:
+When DB rows exist, the DB data MUST always win.
+
+Fallbacks may ONLY activate when:
+- DB is unreachable
+- no rows exist
+- anonymous demo state explicitly intended
+
+Audit these files carefully:
+- app/page.tsx
+- app/rooms/page.tsx
+- app/archive/cycles/page.tsx
+- components/home-screen.tsx
+- components/past-cycles-archive.tsx
+- components/profile-screen.tsx
+
+Check for:
+- accidental mock precedence
+- merging mock + DB data together
+- stale object shapes
+- hidden hardcoded references
+
+Fix any issues found.
+
+==================================================
+STEP 4 — VALIDATE REAL DB RENDERING
+==================================================
+
+After seeding:
+- rooms source in auth-debug-strip MUST show:
+    db
+  not:
+    static/mock
+
+Validate:
+1. /rooms
+2. /rooms/[slug]
+3. /room/[slug]
+4. /album/[slug]
+5. /
+6. /archive/cycles
+7. /profile
+
+Requirements:
+- visual output identical to origin/main
+- no hydration warnings
+- no console errors
+- no missing artwork
+- no undefined fields
+- no layout shifts
+- no broken prompts or curator notes
+
+Take screenshots before/after if needed.
+
+==================================================
+STEP 5 — MEMBERSHIP VALIDATION
+==================================================
+
+With authenticated user:
+
+Test:
+- join room
+- refresh
+- membership persists
+- profile reflects membership
+- leave room
+- status becomes left
+- rejoin works
+- revalidation updates UI correctly
+
+Verify:
+- club_memberships rows use correct user_id
+- no duplicate memberships
+- ON CONFLICT logic works correctly
+
+==================================================
+STEP 6 — ONBOARDING PERSISTENCE AUDIT
+==================================================
+
+Critical bug audit:
+
+Expected behavior:
+- New user completes onboarding once.
+- After logout:
+    user sees auth/login flow
+- After logging back in:
+    user returns directly into app
+    WITHOUT repeating onboarding
+
+Audit:
+- onboarding completion persistence
+- profile hydration
+- auth routing
+- localStorage usage
+- Supabase profile source of truth
+
+If onboarding state still depends on localStorage alone:
+FIX IT.
+
+Correct architecture:
+- onboarding completion stored in Supabase profile/user metadata
+- auth session determines identity
+- localStorage may cache UX state only, not truth
+
+Do NOT redesign onboarding UI.
+
+==================================================
+STEP 7 — BUILD + DEPLOY VALIDATION
+==================================================
+
+Run:
+- pnpm build
+
+Then validate:
+- generateStaticParams works against seeded DB
+- no build-time Supabase failures
+- no undefined env access
+- no server/client boundary violations
+
+Then validate preview deployment behavior.
+
+==================================================
+STEP 8 — SUPABASE TYPES CLEANUP
+==================================================
+
+Current code uses temporary `as any` casts for club_memberships.
+
+Tasks:
+- regenerate Supabase database types
+- remove unnecessary any casts
+- ensure membership actions/helpers are typed correctly
+
+Do NOT weaken types further.
+
+==================================================
+FINAL DELIVERABLE
+==================================================
+
+Return:
+1. every issue found
+2. every fix applied
+3. remaining risks
+4. final changed file list
+5. build output
+6. seed output
+7. screenshots/verification summary
+8. confirmation whether this PR is safe to merge

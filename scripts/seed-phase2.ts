@@ -14,6 +14,13 @@
  *   pnpm tsx scripts/seed-phase2.ts
  */
 
+// WebSocket polyfill for Node.js < 22 (Supabase realtime client requires it)
+import { WebSocket as WS } from 'ws'
+if (typeof globalThis.WebSocket === 'undefined') {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  ;(globalThis as any).WebSocket = WS
+}
+
 import { createHash } from 'crypto'
 import { writeFileSync } from 'fs'
 import { join } from 'path'
