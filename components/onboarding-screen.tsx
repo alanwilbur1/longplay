@@ -257,10 +257,22 @@ export function OnboardingScreen() {
 
   const [sessionCheckError, setSessionCheckError] = useState('')
 
+  // Called right after OTP verification succeeds — no session re-check needed
+  // because we just established the session a moment ago.
+  const handleAuthSuccess = () => {
+    completeOnboarding({
+      archetype: 'The Midnight Archivist',
+      connectedServices,
+      calibrationAnswers,
+    })
+    // Short delay so the "Signed in. Taking you home…" state is visible briefly.
+    setTimeout(() => router.replace('/'), 1400)
+  }
+
+  // Called by the "Enter LongPlay" button — user may or may not have signed in.
+  // Still guarded by getSession() as a safety net.
   const handleComplete = async () => {
     setSessionCheckError('')
-    // Guard: verify a Supabase session actually exists before marking onboarding
-    // complete and navigating. verifyOtp() must have succeeded for this to pass.
     const supabase = getSupabaseBrowserClient()
     const { data: { session } } = await supabase.auth.getSession()
     if (!session) {
@@ -272,7 +284,7 @@ export function OnboardingScreen() {
       connectedServices,
       calibrationAnswers,
     })
-    router.push('/')
+    router.replace('/')
   }
 
   // Show loading while checking onboarding state
@@ -352,7 +364,11 @@ export function OnboardingScreen() {
         )}
         
         {currentStep === 'complete' && (
-          <CompleteStep onFinish={handleComplete} sessionCheckError={sessionCheckError} />
+          <CompleteStep
+            onFinish={handleComplete}
+            onAuthSuccess={handleAuthSuccess}
+            sessionCheckError={sessionCheckError}
+          />
         )}
       </div>
     </div>
@@ -991,8 +1007,9 @@ function friendlyAuthError(message: string): string {
 
 type AuthPhase = 'email' | 'otp' | 'success'
 
-function CompleteStep({ onFinish, sessionCheckError = '' }: { 
+function CompleteStep({ onFinish, onAuthSuccess, sessionCheckError = '' }: { 
   onFinish: () => void
+  onAuthSuccess: () => void
   sessionCheckError?: string
 }) {
   const [phase, setPhase] = useState<AuthPhase>('email')
@@ -1071,7 +1088,9 @@ function CompleteStep({ onFinish, sessionCheckError = '' }: {
     }
 
     setPhase('success')
-    setTimeout(onFinish, 1400)
+    // Call onAuthSuccess directly — it owns the completeOnboarding() call and
+    // the router.replace('/') with a 1.4s delay so the success state is visible.
+    onAuthSuccess()
   }
 
   const handleResend = async () => {
