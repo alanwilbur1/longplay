@@ -256,13 +256,16 @@ export function ListeningRoomScreen() {
               const isSelected = selectedTrack === track.number
               
               return (
-                <button
+                <div
                   key={track.number}
+                  role="button"
+                  tabIndex={0}
                   onClick={() => setSelectedTrack(isSelected ? null : track.number)}
+                  onKeyDown={(e) => (e.key === 'Enter' || e.key === ' ') && setSelectedTrack(isSelected ? null : track.number)}
                   className={cn(
-                    "w-full text-left p-4 transition-all duration-500 border border-transparent",
-                    isSelected 
-                      ? "bg-card/50 border-border/30" 
+                    "w-full text-left p-4 transition-all duration-500 border border-transparent cursor-pointer",
+                    isSelected
+                      ? "bg-card/50 border-border/30"
                       : "hover:bg-card/20"
                   )}
                 >
@@ -298,7 +301,10 @@ export function ListeningRoomScreen() {
                           </span>
                         </div>
                       ))}
-                      <button className="flex items-center gap-2 text-olive/80 hover:text-olive text-sm transition-colors">
+                      <button
+                        onClick={(e) => e.stopPropagation()}
+                        className="flex items-center gap-2 text-olive/80 hover:text-olive text-sm transition-colors"
+                      >
                         <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="1.5">
                           <path strokeLinecap="round" strokeLinejoin="round" d="M12 4.5v15m7.5-7.5h-15" />
                         </svg>
@@ -306,7 +312,7 @@ export function ListeningRoomScreen() {
                       </button>
                     </div>
                   )}
-                </button>
+                </div>
               )
             })}
           </div>
