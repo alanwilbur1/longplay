@@ -1,11 +1,14 @@
 'use client'
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useTransition } from 'react'
+import { useRouter } from 'next/navigation'
 import { Textarea } from '@/components/ui/textarea'
 import { AlbumCover } from '@/components/album-cover'
 import { ALBUMS } from '@/lib/albums'
 import { getCurrentPhase, CURRENT_PROMPTS, CURATORS_NOTE, type PhaseInfo } from '@/lib/weekly-cadence'
 import { cn } from '@/lib/utils'
+import { createMoment } from '@/lib/actions/moments'
+import { useAuth } from '@/components/auth-provider'
 
 const ALBUM = ALBUMS.forEmma
 
@@ -87,21 +90,85 @@ const SAVED_MOMENTS = [
 ]
 
 export function ListeningRoomScreen() {
+  const router = useRouter()
+  const { isAuthenticated } = useAuth()
+  const [isPending, startTransition] = useTransition()
   const [annotation, setAnnotation] = useState('')
   const [phase, setPhase] = useState<PhaseInfo | null>(null)
   const [selectedTrack, setSelectedTrack] = useState<number | null>(null)
   const [timestamp, setTimestamp] = useState('')
   const [isLateNight, setIsLateNight] = useState(false)
   const [selectedEmotion, setSelectedEmotion] = useState<string | null>(null)
+  const [markingTrack, setMarkingTrack] = useState<number | null>(null)
+  const [markSuccess, setMarkSuccess] = useState<number | null>(null)
+  const [markError, setMarkError] = useState('')
+  const [saveStatus, setSaveStatus] = useState<'idle' | 'success' | 'error'>('idle')
+  const [saveError, setSaveError] = useState('')
 
   useEffect(() => {
     setPhase(getCurrentPhase())
-    // Check if it's late night (after 11pm or before 5am)
     const hour = new Date().getHours()
     setIsLateNight(hour >= 23 || hour < 5)
   }, [])
 
   const isPrivatePhase = phase?.isPrivate ?? true
+
+  const handleMarkTrack = (trackNumber: number, trackTitle: string) => {
+    if (!isAuthenticated) { setMarkError('Sign in to mark moments'); return }
+    setMarkingTrack(trackNumber)
+    setMarkError('')
+    const localTime = new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false })
+    startTransition(async () => {
+      const result = await createMoment({
+        type: 'mark',
+        albumId: ALBUM.id,
+        content: `Track ${trackNumber}: ${trackTitle}`,
+        trackId: String(trackNumber),
+        visibility: 'private',
+        createdLocalTime: localTime,
+      })
+      setMarkingTrack(null)
+      if (result.success) {
+        setMarkSuccess(trackNumber)
+        router.refresh()
+        setTimeout(() => setMarkSuccess(null), 3000)
+      } else {
+        setMarkError(result.error ?? 'Could not save mark')
+        setTimeout(() => setMarkError(''), 4000)
+      }
+    })
+  }
+
+  const handleSaveAnnotation = () => {
+    if (!annotation.trim()) return
+    if (!isAuthenticated) { setSaveStatus('error'); setSaveError('Sign in to save annotations'); return }
+    setSaveStatus('idle')
+    setSaveError('')
+    const localTime = new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false })
+    const trackContext = selectedTrack ? TRACKLIST.find(t => t.number === selectedTrack) : null
+    startTransition(async () => {
+      const result = await createMoment({
+        type: 'annotation',
+        albumId: ALBUM.id,
+        content: annotation.trim(),
+        trackId: trackContext ? String(trackContext.number) : null,
+        visibility: 'private',
+        createdLocalTime: localTime,
+      })
+      if (result.success) {
+        setSaveStatus('success')
+        setAnnotation('')
+        setTimestamp('')
+        setSelectedTrack(null)
+        setSelectedEmotion(null)
+        router.refresh()
+        setTimeout(() => setSaveStatus('idle'), 3000)
+      } else {
+        setSaveStatus('error')
+        setSaveError(result.error ?? 'Could not save annotation')
+      }
+    })
+  }
   const showDiscussion = phase?.phase === 'discussion' || phase?.phase === 'curators-note' || phase?.phase === 'identity-update'
   const showCuratorsNote = phase?.phase === 'curators-note' || phase?.phase === 'identity-update'
 
@@ -256,13 +323,16 @@ export function ListeningRoomScreen() {
               const isSelected = selectedTrack === track.number
               
               return (
-                <button
+                <div
                   key={track.number}
+                  role="button"
+                  tabIndex={0}
                   onClick={() => setSelectedTrack(isSelected ? null : track.number)}
+                  onKeyDown={(e) => (e.key === 'Enter' || e.key === ' ') && setSelectedTrack(isSelected ? null : track.number)}
                   className={cn(
-                    "w-full text-left p-4 transition-all duration-500 border border-transparent",
-                    isSelected 
-                      ? "bg-card/50 border-border/30" 
+                    "w-full text-left p-4 transition-all duration-500 border border-transparent cursor-pointer",
+                    isSelected
+                      ? "bg-card/50 border-border/30"
                       : "hover:bg-card/20"
                   )}
                 >
@@ -298,15 +368,21 @@ export function ListeningRoomScreen() {
                           </span>
                         </div>
                       ))}
-                      <button className="flex items-center gap-2 text-olive/80 hover:text-olive text-sm transition-colors">
+                      <button
+                        onClick={(e) => { e.stopPropagation(); handleMarkTrack(track.number, track.title) }}
+                        disabled={markingTrack === track.number || isPending}
+                        className="flex items-center gap-2 text-olive/80 hover:text-olive text-sm transition-colors disabled:opacity-50"
+                      >
                         <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="1.5">
                           <path strokeLinecap="round" strokeLinejoin="round" d="M12 4.5v15m7.5-7.5h-15" />
                         </svg>
-                        <span>Mark a moment</span>
+                        <span>
+                          {markSuccess === track.number ? '✓ Marked' : markingTrack === track.number ? 'Marking…' : 'Mark a moment'}
+                        </span>
                       </button>
                     </div>
                   )}
-                </button>
+                </div>
               )
             })}
           </div>
@@ -391,17 +467,28 @@ export function ListeningRoomScreen() {
             {/* Save */}
             <div className="flex items-center justify-between mt-8">
               <p className="text-xs text-muted-foreground/50">
-                {isPrivatePhase 
-                  ? 'Private until Friday' 
+                {isPrivatePhase
+                  ? 'Private until Friday'
                   : 'Visible to other listeners'}
               </p>
-              <button 
-                className="px-8 py-3 bg-tobacco/80 hover:bg-tobacco text-cream text-sm tracking-wide transition-all duration-500 disabled:opacity-30"
-                disabled={annotation.length === 0}
-              >
-                Save
-              </button>
+              {saveStatus === 'success' ? (
+                <span className="text-[11px] text-olive tracking-wide">✓ Saved</span>
+              ) : (
+                <button
+                  onClick={handleSaveAnnotation}
+                  className="px-8 py-3 bg-tobacco/80 hover:bg-tobacco text-cream text-sm tracking-wide transition-all duration-500 disabled:opacity-30"
+                  disabled={annotation.length === 0 || isPending}
+                >
+                  {isPending ? 'Saving…' : 'Save'}
+                </button>
+              )}
             </div>
+            {(saveStatus === 'error' && saveError) && (
+              <p className="text-[11px] text-red-400/80 font-mono mt-2">⚠ {saveError}</p>
+            )}
+            {markError && (
+              <p className="text-[11px] text-red-400/80 font-mono mt-2">⚠ {markError}</p>
+            )}
           </div>
           
           {/* ============================================ */}

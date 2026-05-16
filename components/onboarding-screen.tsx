@@ -15,7 +15,7 @@ import {
 import { getResonatingRooms, ROOM_AFFINITIES } from '@/lib/room-affinity'
 import { getSupabaseBrowserClient } from '@/lib/supabase/client'
 import { ensureUserProfile } from '@/lib/actions/auth'
-import { saveOnboardingCompletion } from '@/lib/actions/onboarding'
+import { saveOnboardingCompletion, getOnboardingStatus } from '@/lib/actions/onboarding'
 
 /**
  * LongPlay Onboarding - Initiation Into a Listening Culture
@@ -1344,6 +1344,7 @@ function LoginStep({
   const [sendError, setSendError] = useState('')
   const [otpError, setOtpError] = useState('')
   const [resendCooldown, setResendCooldown] = useState(0)
+  const [devDiag, setDevDiag] = useState('')
 
   useEffect(() => {
     if (resendCooldown <= 0) return
@@ -1382,7 +1383,7 @@ function LoginStep({
     setOtpError('')
 
     const supabase = getSupabaseBrowserClient()
-    const { error } = await supabase.auth.verifyOtp({
+    const { data: otpData, error } = await supabase.auth.verifyOtp({
       email,
       token: otp,
       type: 'email',
@@ -1394,8 +1395,19 @@ function LoginStep({
       return
     }
 
-    // Session established — hydrate profile then check completion status
-    const { data: { user } } = await supabase.auth.getUser()
+    // Use the user returned directly by verifyOtp — avoids a race against
+    // session hydration that causes false-negative "no session" errors.
+    // If verifyOtp didn't embed a user (edge case), poll briefly before failing.
+    let user = otpData?.user ?? null
+
+    if (!user) {
+      for (let attempt = 0; attempt < 6; attempt++) {
+        await new Promise(r => setTimeout(r, 300))
+        const { data: { user: polled } } = await supabase.auth.getUser()
+        if (polled) { user = polled; break }
+      }
+    }
+
     if (!user) {
       setOtpError('Could not retrieve session. Please try again.')
       setIsVerifying(false)
@@ -1404,16 +1416,22 @@ function LoginStep({
 
     await ensureUserProfile(user.id, user.email ?? '', user.user_metadata ?? {})
 
-    // onboarding_completed from Supabase is the source of truth
-    const { data: profile } = await supabase
-      .from('user_profiles')
-      .select('onboarding_completed')
-      .eq('id', user.id)
-      .single()
+    // Use the server action to check onboarding status — avoids RLS timing issues
+    // that can cause the browser client to return null right after session establishment.
+    // The server action reads the session from cookies which are reliably set by verifyOtp.
+    const status = await getOnboardingStatus()
+
+    const decision = status.onboardingCompleted ? 'home' : 'onboarding'
+
+    if (process.env.NODE_ENV === 'development') {
+      setDevDiag(
+        `uid:${user.id.slice(0, 8)}… auth:${status.authenticated} completed:${status.onboardingCompleted} → ${decision}`
+      )
+    }
 
     setPhase('success')
 
-    if (profile?.onboarding_completed) {
+    if (status.onboardingCompleted) {
       setTimeout(() => router.replace('/'), 1000)
     } else {
       // New or incomplete — resume onboarding from the connect step
@@ -1451,6 +1469,11 @@ function LoginStep({
               </svg>
             </div>
             <p className="text-sm text-olive">Signed in. Taking you home…</p>
+            {process.env.NODE_ENV === 'development' && devDiag && (
+              <p className="text-[10px] font-mono text-muted-foreground/40 mt-2 max-w-xs break-all">
+                {devDiag}
+              </p>
+            )}
           </div>
         )}
 

@@ -1,14 +1,17 @@
 'use client'
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useTransition } from 'react'
 import Link from 'next/link'
-import { Textarea } from '@/components/ui/textarea'
+import { useRouter } from 'next/navigation'
 import { AlbumCover } from '@/components/album-cover'
+import { MomentComposer } from '@/components/moment-composer'
+import { createMoment, type Moment } from '@/lib/actions/moments'
 import { cn } from '@/lib/utils'
 import { type Room } from '@/lib/rooms'
 
 interface ActiveListeningRoomScreenProps {
   room: Room
+  initialMoments?: Moment[]
 }
 
 // Sample tracklist - would come from album data in production
@@ -61,12 +64,14 @@ const SAMPLE_MOMENTS = [
   { timestamp: "0:30", track: "Track 1", note: "First breath", savedBy: 15 },
 ]
 
-export function ActiveListeningRoomScreen({ room }: ActiveListeningRoomScreenProps) {
-  const [annotation, setAnnotation] = useState('')
+export function ActiveListeningRoomScreen({ room, initialMoments }: ActiveListeningRoomScreenProps) {
+  const router = useRouter()
+  const [isPendingMark, startMarkTransition] = useTransition()
   const [selectedTrack, setSelectedTrack] = useState<number | null>(null)
-  const [timestamp, setTimestamp] = useState('')
-  const [selectedEmotion, setSelectedEmotion] = useState<string | null>(null)
   const [isLateNight, setIsLateNight] = useState(false)
+  const [markingTrack, setMarkingTrack] = useState<number | null>(null)
+  const [markSuccess, setMarkSuccess] = useState<number | null>(null)
+  const [markError, setMarkError] = useState('')
 
   useEffect(() => {
     const hour = new Date().getHours()
@@ -74,6 +79,31 @@ export function ActiveListeningRoomScreen({ room }: ActiveListeningRoomScreenPro
   }, [])
 
   const isPrivatePhase = room.weeklyPhase === 'arrival' || room.weeklyPhase === 'private'
+
+  const handleMarkTrack = (trackNumber: number, trackTitle: string) => {
+    setMarkingTrack(trackNumber)
+    setMarkError('')
+    const localTime = new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false })
+    startMarkTransition(async () => {
+      const result = await createMoment({
+        type: 'mark',
+        albumId: room.currentAlbum.id,
+        content: `Track ${trackNumber}: ${trackTitle}`,
+        trackId: String(trackNumber),
+        visibility: 'private',
+        createdLocalTime: localTime,
+      })
+      setMarkingTrack(null)
+      if (result.success) {
+        setMarkSuccess(trackNumber)
+        router.refresh()
+        setTimeout(() => setMarkSuccess(null), 3000)
+      } else {
+        setMarkError(result.error ?? 'Could not save mark')
+        setTimeout(() => setMarkError(''), 4000)
+      }
+    })
+  }
 
   return (
     <div className={cn(
@@ -259,13 +289,16 @@ export function ActiveListeningRoomScreen({ room }: ActiveListeningRoomScreenPro
               const isSelected = selectedTrack === track.number
               
               return (
-                <button
+                <div
                   key={track.number}
+                  role="button"
+                  tabIndex={0}
                   onClick={() => setSelectedTrack(isSelected ? null : track.number)}
+                  onKeyDown={(e) => (e.key === 'Enter' || e.key === ' ') && setSelectedTrack(isSelected ? null : track.number)}
                   className={cn(
-                    "w-full text-left p-4 transition-all duration-500 border border-transparent",
-                    isSelected 
-                      ? "bg-card/50 border-border/30" 
+                    "w-full text-left p-4 transition-all duration-500 border border-transparent cursor-pointer",
+                    isSelected
+                      ? "bg-card/50 border-border/30"
                       : "hover:bg-card/20"
                   )}
                 >
@@ -300,15 +333,21 @@ export function ActiveListeningRoomScreen({ room }: ActiveListeningRoomScreenPro
                           </span>
                         </div>
                       ))}
-                      <button className="flex items-center gap-2 text-olive/80 hover:text-olive text-sm transition-colors">
+                      <button
+                        onClick={(e) => { e.stopPropagation(); handleMarkTrack(track.number, track.title) }}
+                        disabled={markingTrack === track.number || isPendingMark}
+                        className="flex items-center gap-2 text-olive/80 hover:text-olive text-sm transition-colors disabled:opacity-50"
+                      >
                         <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="1.5">
                           <path strokeLinecap="round" strokeLinejoin="round" d="M12 4.5v15m7.5-7.5h-15" />
                         </svg>
-                        <span>Mark a moment</span>
+                        <span>
+                          {markSuccess === track.number ? '✓ Marked' : markingTrack === track.number ? 'Marking…' : 'Mark a moment'}
+                        </span>
                       </button>
                     </div>
                   )}
-                </button>
+                </div>
               )
             })}
           </div>
@@ -323,100 +362,75 @@ export function ActiveListeningRoomScreen({ room }: ActiveListeningRoomScreenPro
           
           <div className="mb-16">
             <p className="text-[10px] uppercase tracking-[0.3em] text-muted-foreground/60 mb-8">
-              {isPrivatePhase ? 'Your Notebook' : 'Leave a Note'}
+              {isPrivatePhase ? 'Your Notebook' : 'Capture a Moment'}
             </p>
-            
-            <div className="flex items-center gap-4 mb-6">
-              <button 
-                onClick={() => setTimestamp(timestamp ? '' : '2:47')}
-                className={cn(
-                  "flex items-center gap-2 px-4 py-2 text-sm border transition-all duration-300",
-                  timestamp 
-                    ? "border-tobacco/50 bg-tobacco/10 text-tobacco" 
-                    : "border-border/30 text-muted-foreground hover:border-tobacco/30 hover:text-tobacco/70"
-                )}
-              >
-                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="1.5">
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M12 6v6h4.5m4.5 0a9 9 0 11-18 0 9 9 0 0118 0z" />
-                </svg>
-                {timestamp || 'Add timestamp'}
-              </button>
-            </div>
-            
-            <div className="relative">
-              <Textarea
-                value={annotation}
-                onChange={(e) => setAnnotation(e.target.value)}
-                placeholder="What are you hearing? A moment, a texture, a feeling that stays..."
-                className="bg-transparent border-0 border-b border-border/20 rounded-none resize-none min-h-[120px] text-cream placeholder:text-muted-foreground/30 focus-visible:ring-0 focus-visible:border-tobacco/40 text-lg font-serif leading-relaxed px-0"
-              />
-              <div className="absolute left-0 top-0 bottom-0 w-px bg-burgundy/20" />
-            </div>
-            
-            <div className="mt-6 flex flex-wrap gap-2">
-              {['devastation', 'warmth', 'tension', 'release', 'nostalgia', 'solitude', 'transcendence'].map((emotion) => (
-                <button
-                  key={emotion}
-                  onClick={() => setSelectedEmotion(selectedEmotion === emotion ? null : emotion)}
-                  className={cn(
-                    "text-xs px-3 py-1.5 border transition-all duration-300",
-                    selectedEmotion === emotion
-                      ? "border-burgundy/50 bg-burgundy/10 text-burgundy"
-                      : "border-border/20 text-muted-foreground/60 hover:border-burgundy/30 hover:text-burgundy/70"
-                  )}
-                >
-                  {emotion}
-                </button>
-              ))}
-            </div>
-            
-            <div className="flex items-center justify-between mt-8">
-              <p className="text-xs text-muted-foreground/50">
-                {isPrivatePhase 
-                  ? 'Private until discussion phase' 
-                  : 'Visible to other listeners'}
-              </p>
-              <button 
-                className="px-8 py-3 bg-tobacco/80 hover:bg-tobacco text-cream text-sm tracking-wide transition-all duration-500 disabled:opacity-30"
-                disabled={annotation.length === 0}
-              >
-                Save
-              </button>
-            </div>
+            <MomentComposer albumId={room.currentAlbum.id} roomSlug={room.slug} />
           </div>
           
-          {/* Annotations from the room */}
+          {/* Your Moments — real DB data when available; sample fallback when empty */}
           <div>
             <p className="text-[10px] uppercase tracking-[0.3em] text-muted-foreground/60 mb-8">
-              {isPrivatePhase ? 'Your Annotations' : 'From the Room'}
+              Your Moments
             </p>
-            
-            <div className="space-y-8">
-              {SAMPLE_ANNOTATIONS.map((note) => (
-                <div key={note.id} className="group relative pl-8 border-l border-burgundy/20">
-                  <div className="absolute -left-1.5 top-0 w-3 h-3 rounded-full bg-burgundy/40" />
-                  
-                  <div className="flex items-center gap-3 mb-3">
-                    <span className="text-xs text-tobacco font-mono">
-                      {note.timestamp} · {note.track}
-                    </span>
-                    {note.emotion && (
-                      <span className="text-[10px] uppercase tracking-[0.15em] text-muted-foreground/40">
-                        {note.emotion}
+
+            {(initialMoments?.length ?? 0) > 0 ? (
+              <div className="space-y-8">
+                {initialMoments!.map((moment) => (
+                  <div key={moment.id} className="group relative pl-8 border-l border-tobacco/20">
+                    <div className="absolute -left-1.5 top-0 w-3 h-3 rounded-full bg-tobacco/30" />
+                    <div className="flex items-center gap-3 mb-2">
+                      <span className="text-[10px] uppercase tracking-[0.2em] text-tobacco/60">
+                        {moment.type}
                       </span>
+                      {moment.createdLocalTime && (
+                        <span className="text-[10px] text-muted-foreground/30 font-mono">
+                          {moment.createdLocalTime}
+                        </span>
+                      )}
+                    </div>
+                    {moment.content && moment.content !== '✓' && moment.content !== '⭐ saved' && !moment.content.startsWith('Track ') ? (
+                      <p className="font-serif text-lg text-cream/80 leading-relaxed">
+                        {moment.content}
+                      </p>
+                    ) : (
+                      <p className="text-sm text-muted-foreground/40 italic">
+                        {moment.type === 'mark' ? 'Marked' : moment.type === 'save' ? 'Saved to collection' : moment.content}
+                      </p>
                     )}
                   </div>
-                  
-                  <p className="font-serif text-lg text-cream/80 leading-relaxed mb-3">
-                    {note.content}
-                  </p>
-                  
-                  {!isPrivatePhase && (
-                    <p className="text-xs text-muted-foreground/40">— {note.author}</p>
-                  )}
+                ))}
+              </div>
+            ) : (
+              <div>
+                <p className="text-sm text-muted-foreground/30 italic mb-10">
+                  No moments saved yet for this album.
+                </p>
+                <div className="space-y-8 opacity-30 pointer-events-none select-none">
+                  {SAMPLE_ANNOTATIONS.map((note) => (
+                    <div key={note.id} className="group relative pl-8 border-l border-burgundy/20">
+                      <div className="absolute -left-1.5 top-0 w-3 h-3 rounded-full bg-burgundy/40" />
+                      <div className="flex items-center gap-3 mb-3">
+                        <span className="text-xs text-tobacco font-mono">
+                          {note.timestamp} · {note.track}
+                        </span>
+                        {note.emotion && (
+                          <span className="text-[10px] uppercase tracking-[0.15em] text-muted-foreground/40">
+                            {note.emotion}
+                          </span>
+                        )}
+                      </div>
+                      <p className="font-serif text-lg text-cream/80 leading-relaxed mb-3">
+                        {note.content}
+                      </p>
+                    </div>
+                  ))}
                 </div>
-              ))}
-            </div>
+              </div>
+            )}
+
+            {markError && (
+              <p className="text-[10px] text-red-400/70 font-mono mt-4">⚠ {markError}</p>
+            )}
           </div>
         </div>
       </section>

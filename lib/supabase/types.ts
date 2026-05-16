@@ -241,6 +241,88 @@ export interface Database {
           updated_at?: string
         }
       }
+      moments: {
+        Row: {
+          id: string
+          member_id: string
+          type: 'mark' | 'annotation' | 'reflection' | 'prompt_response' | 'rating' | 'reply' | 'save'
+          visibility: 'private' | 'club' | 'connection' | 'public'
+          album_id: string
+          content: string
+          track_id: string | null
+          timestamp_ms: number | null
+          cycle_id: string | null
+          prompt_id: string | null
+          parent_moment_id: string | null
+          deleted_at: string | null
+          created_at: string
+          created_local_time: string | null
+          updated_at: string
+        }
+        Insert: {
+          id?: string
+          member_id: string
+          type: 'mark' | 'annotation' | 'reflection' | 'prompt_response' | 'rating' | 'reply' | 'save'
+          visibility?: 'private' | 'club' | 'connection' | 'public'
+          album_id: string
+          content: string
+          track_id?: string | null
+          timestamp_ms?: number | null
+          cycle_id?: string | null
+          prompt_id?: string | null
+          parent_moment_id?: string | null
+          deleted_at?: string | null
+          created_at?: string
+          created_local_time?: string | null
+        }
+        Update: {
+          visibility?: 'private' | 'club' | 'connection' | 'public'
+          deleted_at?: string | null
+          updated_at?: string
+        }
+      }
+      moment_visibility_history: {
+        Row: {
+          id: string
+          moment_id: string
+          previous_visibility: 'private' | 'club' | 'connection' | 'public'
+          new_visibility: 'private' | 'club' | 'connection' | 'public'
+          changed_at: string
+          changed_by: string
+        }
+        Insert: {
+          id?: string
+          moment_id: string
+          previous_visibility: 'private' | 'club' | 'connection' | 'public'
+          new_visibility: 'private' | 'club' | 'connection' | 'public'
+          changed_at?: string
+          changed_by: string
+        }
+        Update: Record<string, never>
+      }
+      participation_events: {
+        Row: {
+          id: string
+          member_id: string
+          event_type: 'listen_start' | 'listen_complete' | 'cycle_join' | 'moment_create' | 'annotation_add' | 'reflection_submit' | 'prompt_respond' | 'album_save'
+          album_id: string | null
+          cycle_id: string | null
+          moment_id: string | null
+          metadata: Record<string, unknown> | null
+          created_at: string
+        }
+        Insert: {
+          id?: string
+          member_id: string
+          event_type: 'listen_start' | 'listen_complete' | 'cycle_join' | 'moment_create' | 'annotation_add' | 'reflection_submit' | 'prompt_respond' | 'album_save'
+          album_id?: string | null
+          cycle_id?: string | null
+          moment_id?: string | null
+          metadata?: Record<string, unknown> | null
+          created_at?: string
+        }
+        Update: Record<string, never>
+      }
     }
     Views: Record<string, never>
     Functions: Record<string, never>
@@ -248,6 +330,9 @@ export interface Database {
       streaming_service: StreamingService
       membership_tier: MembershipTier
       membership_status: MembershipStatus
+      moment_type: 'mark' | 'annotation' | 'reflection' | 'prompt_response' | 'rating' | 'reply' | 'save'
+      moment_visibility: 'private' | 'club' | 'connection' | 'public'
+      participation_event_type: 'listen_start' | 'listen_complete' | 'cycle_join' | 'moment_create' | 'annotation_add' | 'reflection_submit' | 'prompt_respond' | 'album_save'
     }
   }
 }

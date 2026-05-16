@@ -1,0 +1,134 @@
+Implement LongPlay Phase 3A: Moment Infrastructure.
+
+Current branch:
+feat/phase-3-listening-identity
+
+Do NOT implement:
+- identity snapshots
+- portraits
+- AI generation
+- compatibility
+- memory resurfacing
+- Year in Review
+- Spotify
+- realtime
+- feeds
+- redesigns
+
+Goal:
+Build the foundational Moment system exactly aligned to the Moment Model and Technical Architecture.
+
+Scope:
+
+1. Add schema migration:
+Create lib/schema-phase3a-moments.sql
+
+Include:
+- moments table
+- moment_visibility_history table
+- participation_events table
+- required enums:
+  - moment_type: mark, annotation, reflection, prompt_response, rating, reply, save
+  - moment_visibility: private, club, connection, public
+  - participation_event_type
+- constraints:
+  - every moment has member_id, type, created_at, created_local_time, visibility, album_id, content
+  - timestamp_ms requires track_id
+  - prompt_response requires cycle_id and prompt_id
+  - reply requires parent_moment_id
+  - default visibility = private
+- indexes:
+  - moments(member_id, created_at)
+  - moments(album_id, created_at)
+  - moments(cycle_id, created_at)
+  - moments(parent_moment_id)
+  - moments(member_id, type)
+- RLS:
+  - owner can select own moments
+  - owner can insert own moments
+  - owner can update visibility only through controlled path if possible
+  - no in-place content edits
+  - club-visible moments readable only by members of that cycle after discussion phase opens, if current schema supports that
+  - if discussion gating cannot be fully implemented yet, default to owner-only and document the limitation
+
+2. Server actions:
+Create lib/actions/moments.ts
+
+Implement:
+- createMoment(input)
+- branchMoment(parentMomentId, input)
+- updateMomentVisibility(momentId, newVisibility)
+- softDeleteMoment(momentId)
+- listMyMoments(filters?)
+- getMyMoment(momentId)
+
+Rules:
+- no in-place content editing
+- revision = new Moment with parent_moment_id
+- visibility changes write moment_visibility_history
+- all actions require authenticated Supabase user
+- user can only mutate their own Moments
+- return clear success/error objects
+
+3. Data helpers:
+Create lib/data/moments.ts
+
+Implement:
+- getMyArchiveMoments()
+- getMomentsByAlbumForCurrentUser(albumId)
+- getMomentBranchChain(momentId)
+- getCycleDiscussionMoments(cycleId)
+- searchMyMoments(query)
+
+Keep helper outputs typed and stable.
+
+4. Minimal UI:
+Do not redesign.
+
+Add the smallest possible UI to prove the system works:
+- On album detail or active listening room, allow authenticated user to create:
+  - Mark
+  - Annotation
+  - Reflection
+  - Save
+- Add a simple private “My Moments” archive page:
+  - route: /archive/moments
+  - shows current user’s Moments
+  - filter by type if simple
+  - show album, type, created time, visibility
+  - no feed behavior
+  - owner-only
+
+5. Participation:
+Create participation_events table and helper/action, but do not wire Spotify or external streaming yet.
+Add only internal placeholder support if needed.
+
+6. Debug/dev:
+Extend debug strip if useful:
+- moments source: db
+- my moments count
+
+7. Verification:
+Run:
+- pnpm build
+
+Then verify:
+- unauthenticated user cannot create Moments
+- authenticated user can create Mark
+- authenticated user can create Annotation
+- authenticated user can create Reflection
+- authenticated user can Save album
+- Moments appear in /archive/moments
+- visibility defaults to private
+- visibility change writes history
+- branch/revision creates new row, does not overwrite old row
+- no feed-like surface was created
+- existing Phase 2 rooms/albums/memberships still work
+
+Return:
+1. files changed
+2. schema summary
+3. actions created
+4. UI surfaces added
+5. verification results
+6. anything deferred

@@ -1,0 +1,49 @@
+Fix Phase 3A profile and listening-life integration.
+
+Current state:
+Moment persistence is working:
+- room page shows saved Moments
+- /archive/moments shows saved Moments
+- refresh persists
+
+Remaining issues:
+1. Profile archive counters still show:
+   - 0 listening moments
+   - 0 saved reflections
+even though /archive/moments shows real Moment rows.
+
+2. The "Explore your listening life" link now routes directly to /archive/moments.
+This may have bypassed the existing /listening-life experience and removed access to the broader listening-life section/features.
+
+Tasks:
+
+1. Fix profile counters.
+- Profile should query real Moment counts for the authenticated user.
+- listening moments = total non-deleted Moments
+- saved reflections = count of reflection Moments, or if the existing label means something else, clarify and choose the closest correct mapping.
+- Do not use static/local counts.
+- Keep visual styling unchanged.
+
+2. Preserve the existing Listening Life section.
+- Audit app/listening-life/page.tsx and components/listening-life-screen.tsx.
+- Do not replace the broader listening-life experience with /archive/moments unless that was already the intended product route.
+- Restore "Explore your listening life" to /listening-life if that page contains broader content.
+- Add a clear link from /listening-life to /archive/moments, such as "View your moments archive", using existing visual style.
+- The Moments archive should be a sub-surface of Listening Life, not a replacement for the whole section.
+
+3. Integrate Moment counts into Listening Life if simple.
+- show total Moments
+- show reflections count
+- optional: show latest Moment preview
+- no redesign
+- no feed
+
+4. Keep /archive/moments working exactly as it does now.
+
+5. Verify:
+- profile counters update correctly
+- Explore your listening life opens /listening-life
+- /listening-life still contains its prior features/content
+- /listening-life links to /archive/moments
+- /archive/moments still shows all saved Moments
+- pnpm build passes

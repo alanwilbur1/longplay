@@ -4,6 +4,7 @@ import { ActiveListeningRoomScreen } from '@/components/active-listening-room-sc
 import { ProtectedLayout } from '@/components/protected-layout'
 import { getRoomBySlug as getDbRoom } from '@/lib/data/rooms'
 import { getRoomBySlug, ALL_ROOMS } from '@/lib/rooms'
+import { getMomentsByAlbumForCurrentUser } from '@/lib/data/moments'
 
 // Generate static params for all rooms
 export function generateStaticParams() {
@@ -36,11 +37,19 @@ export default async function ActiveRoomPage({ params }: { params: Promise<{ slu
 
   if (!room) notFound()
 
+  // Fetch user's moments for the current album — empty array if table not yet applied or unauthenticated
+  let initialMoments = undefined
+  try {
+    initialMoments = await getMomentsByAlbumForCurrentUser(room.currentAlbum.id)
+  } catch {
+    // moments table not yet applied — page still renders, composer will surface errors on save
+  }
+
   return (
     <ProtectedLayout>
       <Navigation />
       <main className="min-h-screen pb-20 md:pb-0 md:pt-16">
-        <ActiveListeningRoomScreen room={room} />
+        <ActiveListeningRoomScreen room={room} initialMoments={initialMoments} />
       </main>
     </ProtectedLayout>
   )

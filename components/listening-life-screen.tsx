@@ -15,7 +15,12 @@ import {
   YEAR_IN_REVIEW_2026,
 } from '@/lib/archive'
 
-export function ListeningLifeScreen() {
+interface ListeningLifeScreenProps {
+  totalMoments?: number
+  reflectionCount?: number
+}
+
+export function ListeningLifeScreen({ totalMoments = 0, reflectionCount = 0 }: ListeningLifeScreenProps) {
   const [activeSection, setActiveSection] = useState<string | null>(null)
   const [searchQuery, setSearchQuery] = useState('')
   const [selectedFacet, setSelectedFacet] = useState<string | null>(null)
@@ -68,23 +73,35 @@ export function ListeningLifeScreen() {
           </p>
           
           <div className="mt-16 flex items-center justify-center gap-3 text-muted-foreground text-sm">
-            <span>847 listening sessions</span>
+            <span>{totalMoments.toLocaleString()} listening moments</span>
             <span className="w-1 h-1 rounded-full bg-tobacco/40" />
-            <span>174 annotations</span>
+            <span>{reflectionCount} reflections</span>
             <span className="w-1 h-1 rounded-full bg-tobacco/40" />
             <span>Still unfolding</span>
           </div>
           
-          {/* Quick access to Past Cycles */}
-          <Link 
-            href="/archive/cycles"
-            className="inline-flex items-center gap-2 mt-10 text-sm text-tobacco hover:text-cream transition-colors"
-          >
-            <span>Browse Past Listening Cycles</span>
-            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="1.5">
-              <path strokeLinecap="round" strokeLinejoin="round" d="M13.5 4.5L21 12m0 0l-7.5 7.5M21 12H3" />
-            </svg>
-          </Link>
+          <div className="mt-10 flex flex-col items-center gap-4">
+            {/* Quick access to Moments Archive */}
+            <Link 
+              href="/archive/moments"
+              className="inline-flex items-center gap-2 text-sm text-tobacco hover:text-cream transition-colors"
+            >
+              <span>View Your Moments Archive</span>
+              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="1.5">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M13.5 4.5L21 12m0 0l-7.5 7.5M21 12H3" />
+              </svg>
+            </Link>
+            {/* Quick access to Past Cycles */}
+            <Link 
+              href="/archive/cycles"
+              className="inline-flex items-center gap-2 text-sm text-muted-foreground/60 hover:text-cream transition-colors"
+            >
+              <span>Browse Past Listening Cycles</span>
+              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="1.5">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M13.5 4.5L21 12m0 0l-7.5 7.5M21 12H3" />
+              </svg>
+            </Link>
+          </div>
         </div>
       </section>
 
@@ -459,12 +476,12 @@ export function ListeningLifeScreen() {
             
             <div className="flex items-center gap-4 mb-8 py-4 border-y border-border/20">
               <div className="text-center flex-1">
-                <p className="font-serif text-2xl text-cream">847</p>
-                <p className="text-xs text-muted-foreground">sessions</p>
+                <p className="font-serif text-2xl text-cream">{totalMoments.toLocaleString()}</p>
+                <p className="text-xs text-muted-foreground">moments</p>
               </div>
               <div className="text-center flex-1">
-                <p className="font-serif text-2xl text-cream">174</p>
-                <p className="text-xs text-muted-foreground">annotations</p>
+                <p className="font-serif text-2xl text-cream">{reflectionCount}</p>
+                <p className="text-xs text-muted-foreground">reflections</p>
               </div>
               <div className="text-center flex-1">
                 <p className="font-serif text-2xl text-cream">4</p>
