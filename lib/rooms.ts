@@ -180,6 +180,10 @@ export interface Room {
   // Visual aesthetics
   aesthetics: RoomAesthetics
   
+  // Current cycle DB id — used for presence substrate (Phase 3B.1A)
+  // Null for static/fallback rooms that have no live cycle row.
+  cycleId?: string | null
+
   // Current season (computed from date, but can be overridden)
   currentSeason?: Season
 }

@@ -10,6 +10,19 @@ export type StreamingService =
 export type MembershipTier = 'explorer' | 'member' | 'patron'
 export type MembershipStatus = 'active' | 'past-due' | 'canceled' | 'free'
 
+// Phase 3B.1A enums
+export type PresenceVisibilityEnum = 'counted' | 'identified'
+export type ListeningStateEnum = 'active' | 'paused' | 'idle'
+
+// jsonb return type for Supabase RPC functions
+export type Json =
+  | string
+  | number
+  | boolean
+  | null
+  | { [key: string]: Json }
+  | Json[]
+
 export interface Database {
   public: {
     Tables: {
@@ -323,9 +336,49 @@ export interface Database {
         }
         Update: Record<string, never>
       }
+      room_presence: {
+        Row: {
+          id: string
+          member_id: string
+          cycle_id: string
+          visibility_tier: PresenceVisibilityEnum | null
+          listening_state: ListeningStateEnum
+          current_track: number | null
+          progress_seconds: number | null
+          last_heartbeat: string
+          session_started: string
+        }
+        Insert: {
+          id?: string
+          member_id: string
+          cycle_id: string
+          visibility_tier?: PresenceVisibilityEnum | null
+          listening_state?: ListeningStateEnum
+          current_track?: number | null
+          progress_seconds?: number | null
+          last_heartbeat?: string
+          session_started?: string
+        }
+        Update: {
+          visibility_tier?: PresenceVisibilityEnum | null
+          listening_state?: ListeningStateEnum
+          current_track?: number | null
+          progress_seconds?: number | null
+          last_heartbeat?: string
+        }
+      }
     }
     Views: Record<string, never>
-    Functions: Record<string, never>
+    Functions: {
+      get_room_presence_snapshot: {
+        Args: { p_cycle_id: string }
+        Returns: Json
+      }
+      cleanup_room_presence: {
+        Args: Record<PropertyKey, never>
+        Returns: undefined
+      }
+    }
     Enums: {
       streaming_service: StreamingService
       membership_tier: MembershipTier
@@ -333,6 +386,8 @@ export interface Database {
       moment_type: 'mark' | 'annotation' | 'reflection' | 'prompt_response' | 'rating' | 'reply' | 'save'
       moment_visibility: 'private' | 'club' | 'connection' | 'public'
       participation_event_type: 'listen_start' | 'listen_complete' | 'cycle_join' | 'moment_create' | 'annotation_add' | 'reflection_submit' | 'prompt_respond' | 'album_save'
+      presence_visibility: PresenceVisibilityEnum
+      listening_state: ListeningStateEnum
     }
   }
 }

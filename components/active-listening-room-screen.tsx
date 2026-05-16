@@ -5,13 +5,16 @@ import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 import { AlbumCover } from '@/components/album-cover'
 import { MomentComposer } from '@/components/moment-composer'
+import { PresenceStrip } from '@/components/presence-strip'
 import { createMoment, type Moment } from '@/lib/actions/moments'
 import { cn } from '@/lib/utils'
 import { type Room } from '@/lib/rooms'
+import type { PresenceSnapshot } from '@/lib/data/presence'
 
 interface ActiveListeningRoomScreenProps {
   room: Room
   initialMoments?: Moment[]
+  initialPresenceSnapshot?: PresenceSnapshot
 }
 
 // Sample tracklist - would come from album data in production
@@ -64,7 +67,7 @@ const SAMPLE_MOMENTS = [
   { timestamp: "0:30", track: "Track 1", note: "First breath", savedBy: 15 },
 ]
 
-export function ActiveListeningRoomScreen({ room, initialMoments }: ActiveListeningRoomScreenProps) {
+export function ActiveListeningRoomScreen({ room, initialMoments, initialPresenceSnapshot }: ActiveListeningRoomScreenProps) {
   const router = useRouter()
   const [isPendingMark, startMarkTransition] = useTransition()
   const [selectedTrack, setSelectedTrack] = useState<number | null>(null)
@@ -175,10 +178,20 @@ export function ActiveListeningRoomScreen({ room, initialMoments }: ActiveListen
                 <h1 className="font-serif text-4xl md:text-5xl text-cream mb-3 tracking-tight">
                   {room.currentAlbum.title}
                 </h1>
-                <p className="text-xl text-muted-foreground mb-6">
+                <p className="text-xl text-muted-foreground mb-4">
                   {room.currentAlbum.artist} · {room.currentAlbum.year}
                 </p>
-                
+
+                {/* Ambient presence strip — renders nothing when count = 0 */}
+                {room.cycleId && initialPresenceSnapshot && (
+                  <div className="flex justify-center md:justify-start mb-6">
+                    <PresenceStrip
+                      cycleId={room.cycleId}
+                      initialSnapshot={initialPresenceSnapshot}
+                    />
+                  </div>
+                )}
+
                 {room.currentAlbum.description && (
                   <p className="font-serif text-lg text-cream/70 leading-relaxed max-w-md mb-8">
                     {room.currentAlbum.description}

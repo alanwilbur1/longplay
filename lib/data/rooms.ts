@@ -199,6 +199,7 @@ function assembleRoom(
     culture,
     aesthetics,
     currentSeason: (row.current_season as Room['currentSeason']) ?? undefined,
+    cycleId: (currentCycle?.id as string) ?? null,
   }
 }
 
