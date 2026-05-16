@@ -367,10 +367,10 @@ export function ActiveListeningRoomScreen({ room, initialMoments }: ActiveListen
             <MomentComposer albumId={room.currentAlbum.id} roomSlug={room.slug} />
           </div>
           
-          {/* Your Moments — real DB data when available; sample fallback when empty */}
+          {/* Moments — real DB data when available; sample fallback when empty */}
           <div>
             <p className="text-[10px] uppercase tracking-[0.3em] text-muted-foreground/60 mb-8">
-              Your Moments
+              {(initialMoments?.length ?? 0) > 0 ? 'Your Moments' : 'Sample Moments'}
             </p>
 
             {(initialMoments?.length ?? 0) > 0 ? (
@@ -403,7 +403,7 @@ export function ActiveListeningRoomScreen({ room, initialMoments }: ActiveListen
             ) : (
               <div>
                 <p className="text-sm text-muted-foreground/30 italic mb-10">
-                  No moments saved yet for this album.
+                  Nothing saved yet — these are examples of what your moments look like.
                 </p>
                 <div className="space-y-8 opacity-30 pointer-events-none select-none">
                   {SAMPLE_ANNOTATIONS.map((note) => (

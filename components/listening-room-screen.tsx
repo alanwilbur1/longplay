@@ -440,8 +440,17 @@ export function ListeningRoomScreen() {
                 value={annotation}
                 onChange={(e) => setAnnotation(e.target.value)}
                 placeholder="What are you hearing? A moment, a texture, a feeling that stays..."
+                maxLength={8000}
                 className="bg-transparent border-0 border-b border-border/20 rounded-none resize-none min-h-[120px] text-cream placeholder:text-muted-foreground/30 focus-visible:ring-0 focus-visible:border-tobacco/40 text-lg font-serif leading-relaxed px-0"
               />
+              {annotation.length >= 7000 && (
+                <p className={cn(
+                  'text-[10px] font-mono mt-1 text-right',
+                  annotation.length >= 8000 ? 'text-red-400/80' : 'text-tobacco/60'
+                )}>
+                  {(8000 - annotation.length).toLocaleString()} characters remaining
+                </p>
+              )}
               {/* Paper texture effect */}
               <div className="absolute left-0 top-0 bottom-0 w-px bg-burgundy/20" />
             </div>

@@ -1,19 +1,21 @@
 'use server'
 
 /**
- * lib/actions/moments.ts
+ * lib/actions/moments.ts — Phase 3A server actions (hardened).
  *
- * Server actions for the Moment system (Phase 3A).
- *
- * Design rules:
- * - No in-place content editing. A revision = new Moment with parent_moment_id.
- * - Visibility changes always write to moment_visibility_history.
- * - All mutations require an authenticated Supabase user.
- * - Users can only mutate their own Moments.
+ * Hardening applied (Phase 3A):
+ * - Visibility gate: only 'private' accepted until Phase 3B.
+ * - Duplicate protection for mark/save (per member+album+track+type).
+ * - Content length cap: 8 000 chars.
+ * - Deleted-moment safety: branchMoment and updateMomentVisibility reject deleted parents/targets.
+ * - Visibility history write failure is now returned as an error.
+ * - No supabase `as any` casts — client is createServerClient<Database>.
+ * - Revalidation expanded to /archive/moments, /profile, /listening-life, /room layout.
  */
 
 import { createSupabaseServerClient } from '@/lib/supabase/server'
 import { revalidatePath } from 'next/cache'
+import type { Database } from '@/lib/supabase/types'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -63,25 +65,36 @@ export interface ActionResult<T = null> {
   error?: string
 }
 
-// ── Helpers ───────────────────────────────────────────────────────────────────
+// ── Internal helpers ───────────────────────────────────────────────────────────
 
-function mapRow(row: Record<string, unknown>): Moment {
+type MomentRow = Database['public']['Tables']['moments']['Row']
+
+function mapRow(row: MomentRow): Moment {
   return {
-    id: row.id as string,
-    memberId: row.member_id as string,
+    id: row.id,
+    memberId: row.member_id,
     type: row.type as MomentType,
     visibility: row.visibility as MomentVisibility,
-    albumId: row.album_id as string,
-    content: row.content as string,
-    trackId: (row.track_id as string | null) ?? null,
-    timestampMs: (row.timestamp_ms as number | null) ?? null,
-    cycleId: (row.cycle_id as string | null) ?? null,
-    promptId: (row.prompt_id as string | null) ?? null,
-    parentMomentId: (row.parent_moment_id as string | null) ?? null,
-    deletedAt: (row.deleted_at as string | null) ?? null,
-    createdAt: row.created_at as string,
-    createdLocalTime: (row.created_local_time as string | null) ?? null,
+    albumId: row.album_id,
+    content: row.content,
+    trackId: row.track_id ?? null,
+    timestampMs: row.timestamp_ms ?? null,
+    cycleId: row.cycle_id ?? null,
+    promptId: row.prompt_id ?? null,
+    parentMomentId: row.parent_moment_id ?? null,
+    deletedAt: row.deleted_at ?? null,
+    createdAt: row.created_at,
+    createdLocalTime: row.created_local_time ?? null,
   }
+}
+
+const MAX_CONTENT_LENGTH = 8000
+
+function revalidateAll() {
+  revalidatePath('/archive/moments')
+  revalidatePath('/profile')
+  revalidatePath('/listening-life')
+  revalidatePath('/room', 'layout')
 }
 
 // ── createMoment ──────────────────────────────────────────────────────────────
@@ -91,20 +104,49 @@ export async function createMoment(
 ): Promise<ActionResult<Moment>> {
   const supabase = await createSupabaseServerClient()
 
-  const {
-    data: { user },
-    error: authError,
-  } = await supabase.auth.getUser()
+  const { data: { user }, error: authError } = await supabase.auth.getUser()
   if (authError || !user) return { success: false, error: 'Not authenticated' }
 
-  const { data, error } = await (supabase as any)
+  // Visibility gate — Phase 3B
+  const visibility = input.visibility ?? 'private'
+  if (visibility !== 'private') {
+    return { success: false, error: 'Visibility levels above private are not yet enabled.' }
+  }
+
+  // Content length cap
+  if (input.content.length > MAX_CONTENT_LENGTH) {
+    return { success: false, error: `Content must be ${MAX_CONTENT_LENGTH.toLocaleString()} characters or fewer.` }
+  }
+
+  // Duplicate protection for mark and save
+  if (input.type === 'mark' || input.type === 'save') {
+    let dupQuery = supabase
+      .from('moments')
+      .select('id')
+      .eq('member_id', user.id)
+      .eq('album_id', input.albumId)
+      .eq('type', input.type)
+      .is('deleted_at', null)
+
+    if (input.type === 'mark' && input.trackId) {
+      dupQuery = dupQuery.eq('track_id', input.trackId)
+    }
+
+    const { data: existing } = await dupQuery.limit(1)
+    if (existing && existing.length > 0) {
+      const label = input.type === 'mark' ? 'marked this' : 'saved this album'
+      return { success: false, error: `You've already ${label}.` }
+    }
+  }
+
+  const { data, error } = await supabase
     .from('moments')
     .insert({
       member_id: user.id,
       type: input.type,
       album_id: input.albumId,
       content: input.content,
-      visibility: input.visibility ?? 'private',
+      visibility,
       track_id: input.trackId ?? null,
       timestamp_ms: input.timestampMs ?? null,
       cycle_id: input.cycleId ?? null,
@@ -119,13 +161,12 @@ export async function createMoment(
     return { success: false, error: error.message }
   }
 
-  revalidatePath('/archive/moments')
-
-  return { success: true, data: mapRow(data as Record<string, unknown>) }
+  revalidateAll()
+  return { success: true, data: mapRow(data) }
 }
 
 // ── branchMoment ──────────────────────────────────────────────────────────────
-// Creates a new Moment that revises the parent. The original is never modified.
+// Creates a revision of the parent. The original is never modified.
 
 export async function branchMoment(
   parentMomentId: string,
@@ -133,32 +174,41 @@ export async function branchMoment(
 ): Promise<ActionResult<Moment>> {
   const supabase = await createSupabaseServerClient()
 
-  const {
-    data: { user },
-    error: authError,
-  } = await supabase.auth.getUser()
+  const { data: { user }, error: authError } = await supabase.auth.getUser()
   if (authError || !user) return { success: false, error: 'Not authenticated' }
 
-  // Verify the parent belongs to this user
-  const { data: parent, error: parentError } = await (supabase as any)
+  // Visibility gate
+  const visibility = input.visibility ?? 'private'
+  if (visibility !== 'private') {
+    return { success: false, error: 'Visibility levels above private are not yet enabled.' }
+  }
+
+  // Content length cap
+  if (input.content.length > MAX_CONTENT_LENGTH) {
+    return { success: false, error: `Content must be ${MAX_CONTENT_LENGTH.toLocaleString()} characters or fewer.` }
+  }
+
+  // Verify parent belongs to this user and is NOT deleted
+  const { data: parent, error: parentError } = await supabase
     .from('moments')
     .select('id, member_id, album_id, type')
     .eq('id', parentMomentId)
     .eq('member_id', user.id)
+    .is('deleted_at', null)
     .single()
 
   if (parentError || !parent) {
-    return { success: false, error: 'Parent moment not found or not owned by you' }
+    return { success: false, error: 'Parent moment not found, deleted, or not owned by you' }
   }
 
-  const { data, error } = await (supabase as any)
+  const { data, error } = await supabase
     .from('moments')
     .insert({
       member_id: user.id,
       type: input.type,
-      album_id: input.albumId ?? (parent as Record<string, unknown>).album_id,
+      album_id: input.albumId ?? parent.album_id,
       content: input.content,
-      visibility: input.visibility ?? 'private',
+      visibility,
       track_id: input.trackId ?? null,
       timestamp_ms: input.timestampMs ?? null,
       cycle_id: input.cycleId ?? null,
@@ -174,9 +224,8 @@ export async function branchMoment(
     return { success: false, error: error.message }
   }
 
-  revalidatePath('/archive/moments')
-
-  return { success: true, data: mapRow(data as Record<string, unknown>) }
+  revalidateAll()
+  return { success: true, data: mapRow(data) }
 }
 
 // ── updateMomentVisibility ────────────────────────────────────────────────────
@@ -187,32 +236,35 @@ export async function updateMomentVisibility(
 ): Promise<ActionResult> {
   const supabase = await createSupabaseServerClient()
 
-  const {
-    data: { user },
-    error: authError,
-  } = await supabase.auth.getUser()
+  const { data: { user }, error: authError } = await supabase.auth.getUser()
   if (authError || !user) return { success: false, error: 'Not authenticated' }
 
-  // Fetch current visibility to record history
-  const { data: current, error: fetchError } = await (supabase as any)
+  // Visibility gate — Phase 3B
+  if (newVisibility !== 'private') {
+    return { success: false, error: 'Visibility levels above private are not yet enabled.' }
+  }
+
+  // Fetch current — also rejects deleted moments
+  const { data: current, error: fetchError } = await supabase
     .from('moments')
     .select('visibility, member_id')
     .eq('id', momentId)
     .eq('member_id', user.id)
+    .is('deleted_at', null)
     .single()
 
   if (fetchError || !current) {
-    return { success: false, error: 'Moment not found or not owned by you' }
+    return { success: false, error: 'Moment not found, deleted, or not owned by you' }
   }
 
-  const previousVisibility = (current as Record<string, unknown>).visibility as MomentVisibility
+  const previousVisibility = current.visibility as MomentVisibility
 
+  // No-op guard — no history row written
   if (previousVisibility === newVisibility) {
     return { success: true }
   }
 
-  // Update visibility
-  const { error: updateError } = await (supabase as any)
+  const { error: updateError } = await supabase
     .from('moments')
     .update({ visibility: newVisibility, updated_at: new Date().toISOString() })
     .eq('id', momentId)
@@ -222,8 +274,8 @@ export async function updateMomentVisibility(
     return { success: false, error: updateError.message }
   }
 
-  // Write visibility history
-  const { error: historyError } = await (supabase as any)
+  // Write visibility history — now treated as a required step
+  const { error: historyError } = await supabase
     .from('moment_visibility_history')
     .insert({
       moment_id: momentId,
@@ -234,11 +286,13 @@ export async function updateMomentVisibility(
 
   if (historyError) {
     console.error('[updateMomentVisibility] history write failed:', historyError.message)
-    // Non-fatal: the update succeeded; log the failure
+    return {
+      success: false,
+      error: `Visibility updated but audit log failed: ${historyError.message}`,
+    }
   }
 
-  revalidatePath('/archive/moments')
-
+  revalidateAll()
   return { success: true }
 }
 
@@ -247,13 +301,10 @@ export async function updateMomentVisibility(
 export async function softDeleteMoment(momentId: string): Promise<ActionResult> {
   const supabase = await createSupabaseServerClient()
 
-  const {
-    data: { user },
-    error: authError,
-  } = await supabase.auth.getUser()
+  const { data: { user }, error: authError } = await supabase.auth.getUser()
   if (authError || !user) return { success: false, error: 'Not authenticated' }
 
-  const { error } = await (supabase as any)
+  const { error } = await supabase
     .from('moments')
     .update({ deleted_at: new Date().toISOString(), updated_at: new Date().toISOString() })
     .eq('id', momentId)
@@ -264,8 +315,7 @@ export async function softDeleteMoment(momentId: string): Promise<ActionResult> 
     return { success: false, error: error.message }
   }
 
-  revalidatePath('/archive/moments')
-
+  revalidateAll()
   return { success: true }
 }
 
@@ -284,13 +334,12 @@ export async function listMyMoments(
 ): Promise<ActionResult<Moment[]>> {
   const supabase = await createSupabaseServerClient()
 
-  const {
-    data: { user },
-    error: authError,
-  } = await supabase.auth.getUser()
+  const { data: { user }, error: authError } = await supabase.auth.getUser()
   if (authError || !user) return { success: false, error: 'Not authenticated', data: [] }
 
-  let query = (supabase as any)
+  // Build the query — Supabase v2 filter builder supports procedural chaining
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  let query: any = supabase
     .from('moments')
     .select('*')
     .eq('member_id', user.id)
@@ -301,7 +350,10 @@ export async function listMyMoments(
   if (filters.albumId) query = query.eq('album_id', filters.albumId)
   if (filters.cycleId) query = query.eq('cycle_id', filters.cycleId)
   if (filters.limit) query = query.limit(filters.limit)
-  if (filters.offset) query = query.range(filters.offset, (filters.offset ?? 0) + (filters.limit ?? 50) - 1)
+  if (filters.offset) query = query.range(
+    filters.offset,
+    filters.offset + (filters.limit ?? 50) - 1,
+  )
 
   const { data, error } = await query
 
@@ -310,10 +362,7 @@ export async function listMyMoments(
     return { success: false, error: error.message, data: [] }
   }
 
-  return {
-    success: true,
-    data: (data as Record<string, unknown>[]).map(mapRow),
-  }
+  return { success: true, data: (data as MomentRow[]).map(mapRow) }
 }
 
 // ── getMyMoment ───────────────────────────────────────────────────────────────
@@ -321,13 +370,10 @@ export async function listMyMoments(
 export async function getMyMoment(momentId: string): Promise<ActionResult<Moment>> {
   const supabase = await createSupabaseServerClient()
 
-  const {
-    data: { user },
-    error: authError,
-  } = await supabase.auth.getUser()
+  const { data: { user }, error: authError } = await supabase.auth.getUser()
   if (authError || !user) return { success: false, error: 'Not authenticated' }
 
-  const { data, error } = await (supabase as any)
+  const { data, error } = await supabase
     .from('moments')
     .select('*')
     .eq('id', momentId)
@@ -339,5 +385,5 @@ export async function getMyMoment(momentId: string): Promise<ActionResult<Moment
     return { success: false, error: 'Moment not found' }
   }
 
-  return { success: true, data: mapRow(data as Record<string, unknown>) }
+  return { success: true, data: mapRow(data as MomentRow) }
 }

@@ -1,32 +1,34 @@
 /**
- * lib/data/moments.ts
- *
- * Server-side data helpers for the Moment system (Phase 3A).
+ * lib/data/moments.ts — Phase 3A server-side data helpers (hardened).
  * All helpers require an authenticated Supabase session via cookies.
  * Returns typed, stable output — safe to pass to Server Components as props.
+ * No supabase `as any` casts — client is createServerClient<Database>.
  */
 
 import { createSupabaseServerClient } from '@/lib/supabase/server'
+import type { Database } from '@/lib/supabase/types'
 import type { Moment, MomentType } from '@/lib/actions/moments'
 
-// ── Internal row mapper ────────────────────────────────────────────────────────
+// ── Internal helpers ───────────────────────────────────────────────────────────
 
-function mapRow(row: Record<string, unknown>): Moment {
+type MomentRow = Database['public']['Tables']['moments']['Row']
+
+function mapRow(row: MomentRow): Moment {
   return {
-    id: row.id as string,
-    memberId: row.member_id as string,
+    id: row.id,
+    memberId: row.member_id,
     type: row.type as MomentType,
     visibility: row.visibility as Moment['visibility'],
-    albumId: row.album_id as string,
-    content: row.content as string,
-    trackId: (row.track_id as string | null) ?? null,
-    timestampMs: (row.timestamp_ms as number | null) ?? null,
-    cycleId: (row.cycle_id as string | null) ?? null,
-    promptId: (row.prompt_id as string | null) ?? null,
-    parentMomentId: (row.parent_moment_id as string | null) ?? null,
-    deletedAt: (row.deleted_at as string | null) ?? null,
-    createdAt: row.created_at as string,
-    createdLocalTime: (row.created_local_time as string | null) ?? null,
+    albumId: row.album_id,
+    content: row.content,
+    trackId: row.track_id ?? null,
+    timestampMs: row.timestamp_ms ?? null,
+    cycleId: row.cycle_id ?? null,
+    promptId: row.prompt_id ?? null,
+    parentMomentId: row.parent_moment_id ?? null,
+    deletedAt: row.deleted_at ?? null,
+    createdAt: row.created_at,
+    createdLocalTime: row.created_local_time ?? null,
   }
 }
 
@@ -39,7 +41,7 @@ export async function getMyArchiveMoments(): Promise<Moment[]> {
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return []
 
-  const { data, error } = await (supabase as any)
+  const { data, error } = await supabase
     .from('moments')
     .select('*')
     .eq('member_id', user.id)
@@ -53,7 +55,7 @@ export async function getMyArchiveMoments(): Promise<Moment[]> {
     return []
   }
 
-  return (data as Record<string, unknown>[]).map(mapRow)
+  return (data as MomentRow[]).map(mapRow)
 }
 
 // ── getMomentsByAlbumForCurrentUser ───────────────────────────────────────────
@@ -64,7 +66,7 @@ export async function getMomentsByAlbumForCurrentUser(albumId: string): Promise<
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return []
 
-  const { data, error } = await (supabase as any)
+  const { data, error } = await supabase
     .from('moments')
     .select('*')
     .eq('member_id', user.id)
@@ -79,7 +81,7 @@ export async function getMomentsByAlbumForCurrentUser(albumId: string): Promise<
     return []
   }
 
-  return (data as Record<string, unknown>[]).map(mapRow)
+  return (data as MomentRow[]).map(mapRow)
 }
 
 // ── getMomentBranchChain ──────────────────────────────────────────────────────
@@ -91,12 +93,11 @@ export async function getMomentBranchChain(momentId: string): Promise<Moment[]> 
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return []
 
-  // Walk up to the root (follow parent_moment_id chain)
   const chain: Moment[] = []
   let currentId: string | null = momentId
 
   while (currentId) {
-    const { data, error } = await (supabase as any)
+    const { data, error } = await supabase
       .from('moments')
       .select('*')
       .eq('id', currentId)
@@ -105,8 +106,8 @@ export async function getMomentBranchChain(momentId: string): Promise<Moment[]> 
 
     if (error || !data) break
 
-    const moment = mapRow(data as Record<string, unknown>)
-    chain.unshift(moment) // prepend to get root-first order
+    const moment = mapRow(data as MomentRow)
+    chain.unshift(moment)
     currentId = moment.parentMomentId
   }
 
@@ -114,9 +115,7 @@ export async function getMomentBranchChain(momentId: string): Promise<Moment[]> 
 }
 
 // ── getCycleDiscussionMoments ─────────────────────────────────────────────────
-// Returns non-deleted moments for a cycle visible to the current user.
-// NOTE: Club-visibility gating is deferred to Phase 3B (see schema note).
-// Currently returns only the current user's own moments for the cycle.
+// Returns non-deleted moments for a cycle. Owner-only until Phase 3B.
 
 export async function getCycleDiscussionMoments(cycleId: string): Promise<Moment[]> {
   const supabase = await createSupabaseServerClient()
@@ -124,7 +123,7 @@ export async function getCycleDiscussionMoments(cycleId: string): Promise<Moment
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return []
 
-  const { data, error } = await (supabase as any)
+  const { data, error } = await supabase
     .from('moments')
     .select('*')
     .eq('cycle_id', cycleId)
@@ -139,7 +138,7 @@ export async function getCycleDiscussionMoments(cycleId: string): Promise<Moment
     return []
   }
 
-  return (data as Record<string, unknown>[]).map(mapRow)
+  return (data as MomentRow[]).map(mapRow)
 }
 
 // ── searchMyMoments ───────────────────────────────────────────────────────────
@@ -153,7 +152,7 @@ export async function searchMyMoments(query: string): Promise<Moment[]> {
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return []
 
-  const { data, error } = await (supabase as any)
+  const { data, error } = await supabase
     .from('moments')
     .select('*')
     .eq('member_id', user.id)
@@ -169,5 +168,5 @@ export async function searchMyMoments(query: string): Promise<Moment[]> {
     return []
   }
 
-  return (data as Record<string, unknown>[]).map(mapRow)
+  return (data as MomentRow[]).map(mapRow)
 }

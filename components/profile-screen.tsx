@@ -329,7 +329,7 @@ export function ProfileScreen() {
           </div>
           <div className="p-4 border border-border/20">
             <p className="font-serif text-3xl text-cream mb-1">{safeUser.savedMoments}</p>
-            <p className="text-xs text-muted-foreground">saved reflections</p>
+            <p className="text-xs text-muted-foreground">reflections</p>
           </div>
         </div>
 

@@ -1,0 +1,105 @@
+Implement Phase 3A hardening fixes only.
+
+Current branch:
+chore/phase-3a-hardening
+
+Do not add Phase 3B features.
+Do not implement AI, snapshots, feeds, compatibility, resurfacing, Spotify, or realtime.
+Do not redesign UI.
+
+Focus only on stability, correctness, and archive quality.
+
+Implement these fixes:
+
+1. Duplicate Mark/Save prevention
+- Add server-side duplicate protection for mark/save moments.
+- Prevent duplicate mark/save rows for the same member + album + track + type.
+- Handle duplicate DB errors with friendly copy:
+  “You already marked/saved this.”
+- Add client-side pending/disabled protection against rapid double-clicks.
+
+2. Visibility hardening
+- Until Phase 3B, user-facing visibility must remain private only.
+- Do not expose public/club/connection as usable choices yet.
+- If createMoment/updateMomentVisibility receives anything other than private, return:
+  “Visibility levels above private are not yet enabled.”
+- Keep the DB enum as-is for future use.
+
+3. Deleted moment safety
+- branchMoment must reject deleted parent moments.
+- updateMomentVisibility must reject deleted moments.
+- softDeleteMoment should remain soft-delete only.
+- Do not build Trash UI yet.
+
+4. Visibility history correctness
+- Make updateMomentVisibility atomic if reasonable.
+- Preferred: SQL RPC/function that updates visibility and writes moment_visibility_history in one transaction.
+- If not feasible in this pass, at minimum make history-write failure return an error instead of silently succeeding.
+- Do not allow no-op history rows where previous_visibility === new_visibility.
+
+5. Remove Supabase `as any` casts
+- Use generated Database typings in lib/supabase/types.ts.
+- Remove unnecessary `(supabase as any)` casts from:
+  - lib/actions/moments.ts
+  - lib/data/moments.ts
+
+6. Revalidation gaps
+After create/branch/update visibility/soft delete, revalidate:
+- /archive/moments
+- /profile
+- /listening-life
+- relevant room paths if available
+
+7. Content length cap
+- Add DB-level content length cap around 8000 chars.
+- Add matching client-side maxLength to annotation/reflection textareas.
+- Show a clear error if content is too long.
+
+8. Archive quality
+- Add basic pagination or load-more to /archive/moments.
+- Render album title/artist instead of raw album slug when available.
+- Gracefully fall back to slug if lookup missing.
+- Ensure long annotations wrap cleanly on desktop and mobile.
+
+9. Sample moment labeling
+- In empty state, do not label demo/sample annotations as “Your Moments.”
+- Either rename the empty-state ghost block to “Sample Moments” or remove it.
+- Do not imply fake content belongs to the user.
+
+10. Auth loading flicker
+- MomentComposer should not briefly show “sign in” while auth is still loading.
+- Show loading/skeleton or nothing until auth resolves.
+
+11. Visible error handling
+- Ensure markError/saveError is rendered wherever it can be set.
+- No silent failures.
+
+Also:
+- Decide profile counter copy clearly:
+  - total moments = all non-deleted Moments
+  - saved = type === save
+  - reflections = type === reflection
+- Do not keep a misleading “saved reflections” label unless it actually counts reflections.
+
+Verification:
+- pnpm build
+- create Mark twice rapidly: only one row or friendly duplicate error
+- create Save twice rapidly: only one row or friendly duplicate error
+- create Annotation and Reflection
+- 9000-char Reflection is rejected cleanly
+- deleted Moment cannot be branched
+- deleted Moment visibility cannot be changed
+- /archive/moments shows album title/artist when available
+- /profile counters are accurate
+- /listening-life counters are accurate
+- no fake sample content appears under “Your Moments”
+- no hydration errors
+- no silent save/mark failures
+
+Return:
+1. files changed
+2. schema changes
+3. action changes
+4. UI changes
+5. verification results
+6. deferred items

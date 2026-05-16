@@ -1,11 +1,12 @@
 'use client'
 
 /**
- * MomentComposer — Phase 3A minimal moment creation UI.
+ * MomentComposer — Phase 3A minimal moment creation UI (hardened).
  *
  * Supports: Mark · Annotate · Reflect · Save
  * All moments default to visibility=private.
  * Requires authentication; shows sign-in prompt for anonymous users.
+ * Hardening: auth loading skeleton, content length cap (8 000 chars), router.refresh() on save.
  */
 
 import { useState, useTransition } from 'react'
@@ -14,6 +15,9 @@ import { useRouter } from 'next/navigation'
 import { cn } from '@/lib/utils'
 import { useAuth } from '@/components/auth-provider'
 import { createMoment, type MomentType } from '@/lib/actions/moments'
+
+const MAX_CONTENT = 8000
+const WARN_CONTENT = 7000
 
 interface MomentComposerProps {
   albumId: string
@@ -69,7 +73,7 @@ const DEV_MODE = process.env.NODE_ENV === 'development'
 
 export function MomentComposer({ albumId, cycleId }: MomentComposerProps) {
   const router = useRouter()
-  const { isAuthenticated } = useAuth()
+  const { isAuthenticated, isLoading: authLoading } = useAuth()
   const [activeTab, setActiveTab] = useState<Tab>('annotate')
   const [content, setContent] = useState('')
   const [isPending, startTransition] = useTransition()
@@ -77,9 +81,12 @@ export function MomentComposer({ albumId, cycleId }: MomentComposerProps) {
   const [errorMsg, setErrorMsg] = useState('')
 
   const config = TAB_CONFIG[activeTab]
+  const charsLeft = MAX_CONTENT - content.length
+  const nearLimit = content.length >= WARN_CONTENT
 
   const handleSubmit = () => {
     if (config.needsContent && !content.trim()) return
+    if (content.length > MAX_CONTENT) return
     setStatus('idle')
     setErrorMsg('')
 
@@ -109,6 +116,11 @@ export function MomentComposer({ albumId, cycleId }: MomentComposerProps) {
         setErrorMsg(result.error ?? 'Something went wrong')
       }
     })
+  }
+
+  // Auth still resolving — show nothing to avoid sign-in flicker
+  if (authLoading) {
+    return <div className="h-24 animate-pulse bg-card/10 rounded" />
   }
 
   // Unauthenticated state
@@ -154,19 +166,30 @@ export function MomentComposer({ albumId, cycleId }: MomentComposerProps) {
 
       {/* Input area */}
       {config.needsContent ? (
-        <textarea
-          value={content}
-          onChange={e => setContent(e.target.value)}
-          placeholder={config.placeholder}
-          rows={config.rows}
-          disabled={isPending}
-          className={cn(
-            'w-full bg-transparent border-0 border-b border-border/20 rounded-none resize-none',
-            'text-cream placeholder:text-muted-foreground/30 font-serif text-lg leading-relaxed',
-            'focus:outline-none focus:border-tobacco/40 transition-colors duration-300',
-            'disabled:opacity-50 px-0 py-2'
+        <div className="relative">
+          <textarea
+            value={content}
+            onChange={e => setContent(e.target.value)}
+            placeholder={config.placeholder}
+            rows={config.rows}
+            maxLength={MAX_CONTENT}
+            disabled={isPending}
+            className={cn(
+              'w-full bg-transparent border-0 border-b border-border/20 rounded-none resize-none',
+              'text-cream placeholder:text-muted-foreground/30 font-serif text-lg leading-relaxed',
+              'focus:outline-none focus:border-tobacco/40 transition-colors duration-300',
+              'disabled:opacity-50 px-0 py-2'
+            )}
+          />
+          {nearLimit && (
+            <p className={cn(
+              'text-[10px] font-mono mt-1 text-right',
+              charsLeft <= 0 ? 'text-red-400/80' : 'text-tobacco/60'
+            )}>
+              {charsLeft.toLocaleString()} characters remaining
+            </p>
           )}
-        />
+        </div>
       ) : (
         <p className="text-sm text-muted-foreground/50 py-2">
           {activeTab === 'mark' && 'Mark this moment in the album. No text needed.'}
@@ -187,7 +210,11 @@ export function MomentComposer({ albumId, cycleId }: MomentComposerProps) {
         ) : (
           <button
             onClick={handleSubmit}
-            disabled={isPending || (config.needsContent && !content.trim())}
+            disabled={
+              isPending ||
+              (config.needsContent && !content.trim()) ||
+              content.length > MAX_CONTENT
+            }
             className={cn(
               'px-6 py-2 text-sm border border-tobacco/30 text-tobacco',
               'hover:bg-tobacco/10 transition-all duration-500',
@@ -199,7 +226,7 @@ export function MomentComposer({ albumId, cycleId }: MomentComposerProps) {
         )}
       </div>
 
-      {/* Error — always visible so save failures are never silent */}
+      {/* Error — always visible so failures are never silent */}
       {status === 'error' && errorMsg && (
         <p className="text-[11px] text-red-400/80 font-mono mt-1">
           ⚠ {DEV_MODE ? errorMsg : 'Could not save. Please try again.'}
