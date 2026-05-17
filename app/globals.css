@@ -298,6 +298,63 @@
 }
 
 /* ============================================ */
+/* CYCLE PHASE MODULATION — Phase 3B.1B */
+/* ============================================ */
+/*
+ * Very subtle warming of baseline tokens when the cycle has opened into
+ * discussion or curator's-note phase. Token deltas are < 0.02 in OKLCH;
+ * the shift should be felt, not seen. Slow easing on the underlying
+ * properties; no animation, no pulse, no breathing.
+ *
+ * Layered with .after-midnight: late-hours warmth + cycle-open warmth
+ * compose additively at the token level.
+ */
+
+.cycle-discussion-open {
+  --background: oklch(0.135 0.022 45);
+  --card: oklch(0.20 0.025 45);
+}
+
+/* Slow easing on color tokens — so transitions between phases (and between
+   late-night and day) feel like ambient light shifting in a room, not like
+   a UI state change. Limited to elements that consume these tokens. */
+.cycle-discussion-open,
+.after-midnight {
+  transition: background-color 8s ease, color 8s ease;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .cycle-discussion-open,
+  .after-midnight {
+    transition: none;
+  }
+}
+
+/* ============================================ */
+/* PRESENCE FACE-ROW CROSSFADE — Phase 3B.1B */
+/* ============================================ */
+/*
+ * Single-direction fade-in applied when the identified-face set changes.
+ * Triggered via React key remount in PresenceStrip; the old set is replaced
+ * and the new row eases in over 900ms. Stable face sets never re-trigger.
+ */
+
+@keyframes presenceFadeIn {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+
+.presence-fade-in {
+  animation: presenceFadeIn 900ms ease-out;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .presence-fade-in {
+    animation: none;
+  }
+}
+
+/* ============================================ */
 /* ROOM THEME SYSTEMS - Distinct Cultural Worlds */
 /* ============================================ */
 

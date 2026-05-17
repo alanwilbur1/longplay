@@ -10,6 +10,7 @@ import { createMoment, type Moment } from '@/lib/actions/moments'
 import { cn } from '@/lib/utils'
 import { type Room } from '@/lib/rooms'
 import type { PresenceSnapshot } from '@/lib/data/presence'
+import { cyclePhaseModulationClass } from '@/lib/presence/atmosphere'
 
 interface ActiveListeningRoomScreenProps {
   room: Room
@@ -108,10 +109,13 @@ export function ActiveListeningRoomScreen({ room, initialMoments, initialPresenc
     })
   }
 
+  const phaseModulation = cyclePhaseModulationClass(room.weeklyPhase)
+
   return (
     <div className={cn(
       "grain relative pb-24 md:pb-0 min-h-screen",
-      isLateNight && "after-midnight"
+      isLateNight && "after-midnight",
+      phaseModulation,
     )}>
       
       {/* ============================================ */}
@@ -187,6 +191,7 @@ export function ActiveListeningRoomScreen({ room, initialMoments, initialPresenc
                   <div className="flex justify-center md:justify-start mb-6">
                     <PresenceStrip
                       cycleId={room.cycleId}
+                      roomSlug={room.slug}
                       initialSnapshot={initialPresenceSnapshot ?? { presenceCount: 0, faces: [] }}
                     />
                   </div>

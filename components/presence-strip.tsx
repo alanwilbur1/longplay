@@ -13,10 +13,11 @@
  *   - The heartbeat is a no-op when tier=invisible (prevents row re-creation)
  */
 
-import { Fragment, useState, useEffect, useRef } from 'react'
+import { Fragment, useState, useEffect, useRef, useMemo } from 'react'
 import Image from 'next/image'
 import { cn } from '@/lib/utils'
 import { presenceCountLabel } from '@/lib/presence/count-language'
+import { absenceFiller, sessionDurationLabel } from '@/lib/presence/atmosphere'
 import {
   upsertPresence,
   removePresence,
@@ -29,6 +30,7 @@ import { useAuth } from '@/components/auth-provider'
 interface PresenceStripProps {
   cycleId: string
   initialSnapshot: PresenceSnapshot
+  roomSlug: string
   className?: string
 }
 
@@ -50,7 +52,7 @@ const HEARTBEAT_MS = 30_000
 const POLL_MS = 30_000
 const DEV_MODE = process.env.NODE_ENV === 'development'
 
-export function PresenceStrip({ cycleId, initialSnapshot, className }: PresenceStripProps) {
+export function PresenceStrip({ cycleId, initialSnapshot, roomSlug, className }: PresenceStripProps) {
   const { user } = useAuth()
   const myId = user?.id ?? null
 
@@ -59,6 +61,48 @@ export function PresenceStrip({ cycleId, initialSnapshot, className }: PresenceS
 
   // Ref so heartbeat interval always reads latest tier without re-registering
   const tierRef = useRef<Tier>('invisible')
+
+  // ── Self-only session duration ────────────────────────────────────
+  // Tracks foreground time only. Pauses while the tab is hidden so the
+  // line never lies about how long the listener has been present.
+  // Never sent to the server; never persisted.
+  const accumulatedMsRef = useRef(0)
+  const lastVisibleAtRef = useRef<number | null>(null)
+  const [sessionMinutes, setSessionMinutes] = useState(0)
+
+  useEffect(() => {
+    // Initialise the "visible since" marker on mount (client-only — avoids
+    // SSR/hydration mismatch by deferring all timing math to useEffect).
+    if (typeof document === 'undefined') return
+    lastVisibleAtRef.current = document.hidden ? null : Date.now()
+
+    const onVisibility = () => {
+      if (document.hidden) {
+        if (lastVisibleAtRef.current != null) {
+          accumulatedMsRef.current += Date.now() - lastVisibleAtRef.current
+          lastVisibleAtRef.current = null
+        }
+      } else if (lastVisibleAtRef.current == null) {
+        lastVisibleAtRef.current = Date.now()
+      }
+    }
+    document.addEventListener('visibilitychange', onVisibility)
+
+    const tick = () => {
+      const live = lastVisibleAtRef.current != null
+        ? Date.now() - lastVisibleAtRef.current
+        : 0
+      const totalMs = accumulatedMsRef.current + live
+      setSessionMinutes(Math.floor(totalMs / 60_000))
+    }
+    tick() // compute once after mount so SSR placeholder is replaced cleanly
+    const minuteId = setInterval(tick, 60_000)
+
+    return () => {
+      clearInterval(minuteId)
+      document.removeEventListener('visibilitychange', onVisibility)
+    }
+  }, [])
 
   // ── Tier-aware heartbeat ──────────────────────────────────────
   // No-op when invisible — must not re-create a row that was removed.
@@ -125,6 +169,22 @@ export function PresenceStrip({ cycleId, initialSnapshot, className }: PresenceS
 
   const { presenceCount, faces } = snapshot
 
+  // Stable signature so the face row only crossfades when the set of
+  // identified members actually changes — not on every 30s poll.
+  const facesSignature = useMemo(
+    () => faces.slice(0, 8).map(f => f.memberId).sort().join(','),
+    [faces],
+  )
+
+  // Variant is deterministic from (roomSlug, dayBucket): SSR HTML matches
+  // the first client render, rotates once per local day.
+  const fillerLine = useMemo(
+    () => absenceFiller(roomSlug),
+    [roomSlug],
+  )
+
+  const sessionLine = sessionDurationLabel(sessionMinutes)
+
   return (
     <div className={cn('flex flex-col gap-1.5', className)}>
 
@@ -135,7 +195,10 @@ export function PresenceStrip({ cycleId, initialSnapshot, className }: PresenceS
           aria-label={presenceCountLabel(presenceCount)}
         >
           {faces.length > 0 && (
-            <div className="flex -space-x-1.5">
+            <div
+              key={facesSignature}
+              className="flex -space-x-1.5 presence-fade-in"
+            >
               {faces.slice(0, 8).map(face => (
                 <FaceAvatar key={face.memberId} face={face} />
               ))}
@@ -145,6 +208,15 @@ export function PresenceStrip({ cycleId, initialSnapshot, className }: PresenceS
             {presenceCountLabel(presenceCount)}
           </span>
         </div>
+      )}
+
+      {/* Curator-voiced absence filler — only when room is empty.
+          Italic, low-contrast, restrained spacing. Replaces no copy — it
+          fills the visual slot the count line would have occupied. */}
+      {presenceCount === 0 && (
+        <p className="text-[11px] italic text-muted-foreground/35 leading-snug max-w-[28ch]">
+          {fillerLine}
+        </p>
       )}
 
       {/* Tier control — always visible when strip is mounted */}
@@ -168,6 +240,15 @@ export function PresenceStrip({ cycleId, initialSnapshot, className }: PresenceS
           </Fragment>
         ))}
       </div>
+
+      {/* Self-only reflective line — visible only to the current viewer.
+          Computed entirely client-side from foreground-time accumulator;
+          never sent to the server, never compared, never persisted. */}
+      {sessionLine && (
+        <p className="text-[10px] italic text-muted-foreground/25 tracking-wide leading-none mt-0.5">
+          {sessionLine}
+        </p>
+      )}
 
       {/* Dev-only diagnostic */}
       {DEV_MODE && (
