@@ -121,6 +121,12 @@ export function OnboardingScreen() {
   const [buildProgress, setBuildProgress] = useState(0)
   const [isInitialized, setIsInitialized] = useState(false)
   const [debugStatus, setDebugStatus] = useState('loading onboarding state')
+  const [devDiagInfo, setDevDiagInfo] = useState<{
+    authenticated: boolean
+    userId: string
+    onboardingCompleted: boolean
+    decision: string
+  } | null>(null)
 
   // Check if onboarding is already completed.
   // Auth must resolve before we trust any completion flag:
@@ -162,6 +168,7 @@ export function OnboardingScreen() {
           } else {
             setDebugStatus('unauthenticated — showing auth flow')
           }
+          if (DEV_MODE) setDevDiagInfo({ authenticated: false, userId: '', onboardingCompleted: false, decision: 'show auth / onboarding flow' })
           showOnboardingFlow()
           return
         }
@@ -169,12 +176,13 @@ export function OnboardingScreen() {
         // Authenticated — fast-path: localStorage says complete, trust it.
         if (isOnboardingCompleted()) {
           setDebugStatus('completed (localStorage) — redirecting to home')
+          if (DEV_MODE) setDevDiagInfo({ authenticated: true, userId: user.id, onboardingCompleted: true, decision: 'redirect → / (localStorage)' })
           router.replace('/')
           return
         }
 
-        // Authenticated — slow path: check DB (covers sign-out + sign-back-in
-        // after localStorage was cleared).
+        // Authenticated — DB is source of truth. Covers returning users who
+        // cleared localStorage or signed in on a new device.
         return supabase
           .from('user_profiles')
           .select('onboarding_completed')
@@ -182,7 +190,9 @@ export function OnboardingScreen() {
           .single()
           .then(({ data }) => {
             const profile = data as { onboarding_completed: boolean } | null
-            if (profile?.onboarding_completed) {
+            const completed = profile?.onboarding_completed ?? false
+            if (DEV_MODE) setDevDiagInfo({ authenticated: true, userId: user.id, onboardingCompleted: completed, decision: completed ? 'redirect → / (DB)' : 'show onboarding flow' })
+            if (completed) {
               setDebugStatus('completed (db) — redirecting to home')
               router.replace('/')
             } else {
@@ -262,12 +272,31 @@ export function OnboardingScreen() {
   // Called right after OTP verification succeeds at the end of full onboarding.
   // Persists completion to Supabase (source of truth) and localStorage (cache).
   const handleAuthSuccess = async () => {
-    // Persist to DB first — this is what makes returning-user login work.
-    await saveOnboardingCompletion({
+    // Primary: persist via server action (reads session from cookies).
+    const saveResult = await saveOnboardingCompletion({
       archetype: 'The Midnight Archivist',
       connectedServices,
       calibrationAnswers,
     })
+
+    // Fallback: if server action couldn't see the session cookie (Replit
+    // cross-site iframe timing), use the browser client to write directly.
+    // This ensures onboarding_completed = true is reliably persisted in DB
+    // so returning users are never re-routed through onboarding.
+    if (!saveResult.success) {
+      const supabaseBrowser = getSupabaseBrowserClient()
+      const { data: { user: authUser } } = await supabaseBrowser.auth.getUser()
+      if (authUser) {
+        await supabaseBrowser
+          .from('user_profiles')
+          .update({
+            onboarding_completed: true,
+            onboarding_completed_at: new Date().toISOString(),
+          })
+          .eq('id', authUser.id)
+      }
+    }
+
     completeOnboarding({
       archetype: 'The Midnight Archivist',
       connectedServices,
@@ -399,6 +428,15 @@ export function OnboardingScreen() {
         )}
       </div>
       </>
+      )}
+
+      {/* Dev-mode diagnostic overlay — remove before launch */}
+      {DEV_MODE && devDiagInfo && (
+        <div className="fixed bottom-3 left-3 z-50 text-[9px] font-mono text-muted-foreground/25 leading-relaxed pointer-events-none select-none">
+          <p>auth:{String(devDiagInfo.authenticated)} · uid:{devDiagInfo.userId ? devDiagInfo.userId.slice(0, 8) + '…' : '—'}</p>
+          <p>completed:{String(devDiagInfo.onboardingCompleted)}</p>
+          <p>→ {devDiagInfo.decision}</p>
+        </div>
       )}
     </div>
   )
@@ -1416,10 +1454,25 @@ function LoginStep({
 
     await ensureUserProfile(user.id, user.email ?? '', user.user_metadata ?? {})
 
-    // Use the server action to check onboarding status — avoids RLS timing issues
-    // that can cause the browser client to return null right after session establishment.
-    // The server action reads the session from cookies which are reliably set by verifyOtp.
-    const status = await getOnboardingStatus()
+    // Primary: server action reads session from cookies.
+    let status = await getOnboardingStatus()
+
+    // Fallback: if server action couldn't authenticate (Replit cross-site
+    // cookie timing after verifyOtp), use the browser client — the session IS
+    // established because verifyOtp succeeded and we have the user object.
+    if (!status.authenticated) {
+      const { data: fallbackProfile } = await supabase
+        .from('user_profiles')
+        .select('onboarding_completed')
+        .eq('id', user.id)
+        .single()
+      status = {
+        authenticated: true,
+        onboardingCompleted:
+          (fallbackProfile as { onboarding_completed: boolean } | null)
+            ?.onboarding_completed ?? false,
+      }
+    }
 
     const decision = status.onboardingCompleted ? 'home' : 'onboarding'
 
