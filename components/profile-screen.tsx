@@ -5,6 +5,7 @@ import { useRouter, usePathname } from 'next/navigation'
 import Link from 'next/link'
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar'
 import { resetOnboarding, getOnboardingState } from '@/lib/onboarding-state'
+import { clearLastRoom } from '@/lib/last-room'
 import { useAuth } from '@/components/auth-provider'
 import { getSupabaseBrowserClient } from '@/lib/supabase/client'
 import { getOnboardingStatus } from '@/lib/actions/onboarding'
@@ -236,7 +237,8 @@ export function ProfileScreen() {
     await supabase.auth.signOut()                               // a) clear localStorage session
     resetOnboarding()                                           // b) clear longplay_onboarding
     sessionStorage.removeItem('longplay_onboarding_synced')    // c) clear OnboardingSync flag
-    router.push('/onboarding')                                  // d) navigate to onboarding
+    clearLastRoom()                                             // d) clear resume-listening bookmark
+    router.push('/onboarding')                                  // e) navigate to onboarding
   }
 
   const handleRestartOnboarding = () => {
