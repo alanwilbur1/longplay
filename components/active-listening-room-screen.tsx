@@ -12,6 +12,7 @@ import { type Room } from '@/lib/rooms'
 import type { PresenceSnapshot } from '@/lib/data/presence'
 import { cyclePhaseModulationClass } from '@/lib/presence/atmosphere'
 import { setLastRoom } from '@/lib/last-room'
+import { useRitualPhase, roomToneLine, emptyStateLine } from '@/lib/cadence'
 
 interface ActiveListeningRoomScreenProps {
   room: Room
@@ -117,12 +118,14 @@ export function ActiveListeningRoomScreen({ room, initialMoments, initialPresenc
   }
 
   const phaseModulation = cyclePhaseModulationClass(room.weeklyPhase)
+  const ritualPhase = useRitualPhase()
 
   return (
     <div className={cn(
       "grain relative pb-24 md:pb-0 min-h-screen",
       isLateNight && "after-midnight",
       phaseModulation,
+      ritualPhase?.atmosphereClass,
     )}>
       
       {/* ============================================ */}
@@ -154,22 +157,32 @@ export function ActiveListeningRoomScreen({ room, initialMoments, initialPresenc
         <div className="relative px-6 pt-8 pb-8 md:px-12 lg:px-24">
           <div className="max-w-4xl mx-auto">
             
-            {/* Phase indicator */}
-            <div className="flex items-center gap-3 mb-8 animate-fade-in">
-              <span className="text-[10px] uppercase tracking-[0.3em] text-muted-foreground">
-                {room.phaseDay}
-              </span>
-              <span className="text-muted-foreground/40">·</span>
-              <span className="text-[10px] uppercase tracking-[0.3em] text-tobacco">
-                {room.weeklyPhase.replace('-', ' ')}
-              </span>
-              {isPrivatePhase && (
-                <>
-                  <span className="text-muted-foreground/40">·</span>
-                  <span className="text-[10px] uppercase tracking-[0.2em] text-olive/80">
-                    Private
-                  </span>
-                </>
+            {/* Phase indicator — cycle phase (room-side) + ritual tone (listener-side).
+                Cycle phase tells you what content the room has opened this week;
+                the ritual line tells you what today is asking of you as a listener.
+                Both are present, neither performative. */}
+            <div className="mb-8 animate-fade-in">
+              <div className="flex items-center gap-3">
+                <span className="text-[10px] uppercase tracking-[0.3em] text-muted-foreground">
+                  {room.phaseDay}
+                </span>
+                <span className="text-muted-foreground/40">·</span>
+                <span className="text-[10px] uppercase tracking-[0.3em] text-tobacco">
+                  {room.weeklyPhase.replace('-', ' ')}
+                </span>
+                {isPrivatePhase && (
+                  <>
+                    <span className="text-muted-foreground/40">·</span>
+                    <span className="text-[10px] uppercase tracking-[0.2em] text-olive/80">
+                      Private
+                    </span>
+                  </>
+                )}
+              </div>
+              {ritualPhase && (
+                <p className="text-sm text-muted-foreground/45 italic mt-3 max-w-md leading-relaxed">
+                  {roomToneLine(ritualPhase.phase)}
+                </p>
               )}
             </div>
             
@@ -433,7 +446,13 @@ export function ActiveListeningRoomScreen({ room, initialMoments, initialPresenc
             ) : (
               <div>
                 <p className="text-sm text-muted-foreground/30 italic mb-10">
-                  Nothing saved yet — these are examples of what your moments look like.
+                  {ritualPhase
+                    ? emptyStateLine('no-moments-active-room', ritualPhase.phase)
+                    : 'No marks yet.'}
+                  {' '}
+                  <span className="text-muted-foreground/20 not-italic">
+                    These are examples.
+                  </span>
                 </p>
                 <div className="space-y-8 opacity-30 pointer-events-none select-none">
                   {SAMPLE_ANNOTATIONS.map((note) => (

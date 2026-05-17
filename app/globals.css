@@ -298,6 +298,63 @@
 }
 
 /* ============================================ */
+/* RITUAL PHASE MODULATION — Phase 3C.1 */
+/* ============================================ */
+/*
+ * Listener-side day-of-week ritual phase. Distinct from cycle-phase
+ * modulation above: ritual phase is universal across rooms; cycle phase
+ * is room-specific content state. They compose additively.
+ *
+ * Discipline:
+ *   - token deltas are at most 0.025 in OKLCH
+ *   - changes felt as ambient light, not as theme switches
+ *   - only the most distinct phases (difficult-listening, synthesis,
+ *     carry-forward) actually shift tokens; others keep baseline so the
+ *     atmosphere class is data-stable across the engine even when it has
+ *     no visual effect
+ *   - same slow easing as .cycle-discussion-open (8s) applies to any
+ *     phase class that touches color tokens, via the shared rule below
+ */
+
+/* Mid-week: a touch denser, slightly deeper background. Discomfort tone. */
+.ritual-difficult-listening {
+  --background: oklch(0.115 0.014 65);
+  --card: oklch(0.165 0.018 65);
+}
+
+/* Friday: warmer, resolved. The album as a whole. */
+.ritual-synthesis {
+  --background: oklch(0.135 0.024 35);
+  --card: oklch(0.20 0.026 35);
+}
+
+/* Weekend: cooler, archival residue. Slightly more remove. */
+.ritual-carry-forward {
+  --background: oklch(0.115 0.012 240);
+  --card: oklch(0.165 0.015 240);
+}
+
+/* Monday / Tuesday / Thursday: classes apply but keep the baseline so
+   engine data shape stays consistent. No selector needed — absence of
+   an override IS the design. */
+
+/* Shared slow ease for any ritual-* token shift. Composes with the
+   existing transitions on .cycle-discussion-open and .after-midnight. */
+.ritual-difficult-listening,
+.ritual-synthesis,
+.ritual-carry-forward {
+  transition: background-color 8s ease, color 8s ease;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ritual-difficult-listening,
+  .ritual-synthesis,
+  .ritual-carry-forward {
+    transition: none;
+  }
+}
+
+/* ============================================ */
 /* CYCLE PHASE MODULATION — Phase 3B.1B */
 /* ============================================ */
 /*

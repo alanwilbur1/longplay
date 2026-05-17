@@ -11,6 +11,7 @@ import { useState } from 'react'
 import Link from 'next/link'
 import { cn } from '@/lib/utils'
 import { getAlbumById } from '@/lib/albums'
+import { useRitualPhase, emptyStateLine } from '@/lib/cadence'
 import type { Moment, MomentType } from '@/lib/actions/moments'
 
 interface MomentsArchiveProps {
@@ -63,12 +64,17 @@ function resolveAlbum(albumId: string): { title: string; artist: string } | null
 export function MomentsArchive({ moments }: MomentsArchiveProps) {
   const [activeFilter, setActiveFilter] = useState<FilterTab>('all')
   const [visibleCount, setVisibleCount] = useState(PAGE_SIZE)
+  const ritualPhase = useRitualPhase()
 
   // Empty / not-yet-seeded state
   if (!moments || moments.length === 0) {
     return (
       <div className="py-20 text-center">
-        <p className="font-serif text-xl text-cream/40 mb-4">No moments yet.</p>
+        <p className="font-serif text-xl text-cream/40 mb-4">
+          {ritualPhase
+            ? emptyStateLine('no-moments-archive', ritualPhase.phase)
+            : 'No moments yet.'}
+        </p>
         <p className="text-sm text-muted-foreground/40 max-w-sm mx-auto mb-8">
           Moments you mark, annotate, reflect on, or save while listening will appear here.
           They are private by default — only you can see them.

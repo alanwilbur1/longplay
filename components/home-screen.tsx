@@ -1,10 +1,12 @@
 'use client'
 
 import { useEffect, useState } from 'react'
+import { cn } from '@/lib/utils'
 import Link from 'next/link'
 import { AlbumCover } from '@/components/album-cover'
 import { LongPlayLogo } from '@/components/navigation'
 import { getLastRoom, type LastRoom } from '@/lib/last-room'
+import { useRitualPhase } from '@/lib/cadence'
 import type { Room } from '@/lib/rooms'
 
 interface HomeScreenProps {
@@ -15,46 +17,24 @@ interface HomeScreenProps {
  * Homepage = ritual + orientation.
  *
  * Three sections, no more:
- *   1. Ritual Header — day, one universal listening prompt, one CTA
+ *   1. Ritual Header — day, the week's ritual prompt, one CTA
  *   2. Your Rooms    — familiar corners of the house, frictionless re-entry
  *   3. Identity      — a single reflective invitation
  *
- * Everything else (cycle hero, curatorial note preview, resurfaced moments,
- * past cycles rail, affinity displays, tomorrow footer) has moved off the
- * homepage. Those surfaces still exist at their own routes; the homepage
- * is no longer the place to read them.
+ * Editorial copy and the day's ritual all come from lib/cadence — the
+ * homepage holds no ritual strings of its own. Other surfaces consume
+ * the same engine so the listener moves through a coherent week.
  */
-
-/**
- * One universal listening ritual per day. Tone: literary, calm,
- * second-person, no marketing register, no LongPlay self-reference.
- */
-const DAILY_RITUAL: Record<number, string> = {
-  0: 'Sit with one album from start to finish today.',
-  1: 'Return to a record without multitasking.',
-  2: 'Hear something you have been avoiding.',
-  3: 'Listen in the quietest room of the house.',
-  4: 'Find the track that does not want your attention.',
-  5: 'Tonight is for attentive listening.',
-  6: 'Let one song be longer than you remember.',
-}
-
-const DAY_NAMES = [
-  'Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday',
-]
-
 export function HomeScreen({ joinedRooms }: HomeScreenProps) {
-  // Day-of-week resolved on the client to honor local time. Initial SSR
-  // render uses a single placeholder string to avoid hydration mismatch.
-  const [today, setToday] = useState<{ name: string; ritual: string } | null>(null)
+  const ritualPhase = useRitualPhase()
+
+  // Late-night modulation honours the user's local clock; first paint
+  // uses the daylight baseline to avoid hydration mismatch.
   const [isAfterMidnight, setIsAfterMidnight] = useState(false)
   const [lastRoom, setLastRoomState] = useState<LastRoom | null>(null)
 
   useEffect(() => {
-    const now = new Date()
-    const dow = now.getDay()
-    setToday({ name: DAY_NAMES[dow], ritual: DAILY_RITUAL[dow] })
-    const hour = now.getHours()
+    const hour = new Date().getHours()
     setIsAfterMidnight(hour >= 23 || hour < 5)
     setLastRoomState(getLastRoom())
   }, [])
@@ -74,7 +54,13 @@ export function HomeScreen({ joinedRooms }: HomeScreenProps) {
       : 'Enter Your Rooms'
 
   return (
-    <div className={`grain relative pb-24 md:pb-0 ${isAfterMidnight ? 'after-midnight' : ''}`}>
+    <div
+      className={cn(
+        'grain relative pb-24 md:pb-0',
+        isAfterMidnight && 'after-midnight',
+        ritualPhase?.atmosphereClass,
+      )}
+    >
 
       {/* ============================================================== */}
       {/* SECTION 1 — RITUAL HEADER                                       */}
@@ -92,12 +78,18 @@ export function HomeScreen({ joinedRooms }: HomeScreenProps) {
           <LongPlayLogo className="mb-8" />
 
           <p className="text-[10px] uppercase tracking-[0.5em] text-cream/50 mb-3">
-            {today?.name ?? ' '}
+            {ritualPhase ? `${ritualPhase.day} · ${ritualPhase.title}` : ' '}
           </p>
 
-          <h1 className="font-serif text-2xl md:text-3xl text-cream/90 italic leading-relaxed text-balance mb-8 min-h-[4rem]">
-            {today?.ritual ?? ' '}
+          <h1 className="font-serif text-2xl md:text-3xl text-cream/90 italic leading-relaxed text-balance mb-5 min-h-[4rem]">
+            {ritualPhase?.ritual ?? ' '}
           </h1>
+
+          {ritualPhase && (
+            <p className="text-sm text-muted-foreground/55 italic max-w-md mx-auto mb-8 leading-relaxed">
+              {ritualPhase.observation}
+            </p>
+          )}
 
           <div className="w-16 h-px bg-gradient-to-r from-transparent via-tobacco/30 to-transparent mx-auto mb-10" />
 
