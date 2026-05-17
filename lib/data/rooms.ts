@@ -141,10 +141,15 @@ function assembleRoom(
     seasonalMoods,
   }
 
-  // weeklyPhase: prefer stored value, fall back to current cycle's phase
+  // weeklyPhase: the LIVE cycle phase wins. culture_extras.weeklyPhase
+  // is a seed-time fallback used only when no current cycle exists
+  // (e.g. a brand-new room before the progression engine has activated
+  // its first cycle). Reading the seed value as primary would freeze
+  // the room's displayed phase to its initial state and silently
+  // override the cycle progression engine — Phase 3E reversed this.
   const rawPhase =
-    (cultureExtras.weeklyPhase as string) ??
     (currentCycle?.current_phase as string) ??
+    (cultureExtras.weeklyPhase as string) ??
     'private'
 
   // Map DB phase names to Room.weeklyPhase union

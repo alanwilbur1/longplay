@@ -3,6 +3,7 @@ import { RoomsScreen } from '@/components/rooms-screen'
 import { ProtectedLayout } from '@/components/protected-layout'
 import { listAllRooms } from '@/lib/data/rooms'
 import { getMyMemberships } from '@/lib/actions/membership'
+import { maybeAdvanceCyclePhasesOpportunistically } from '@/lib/cycles/progression'
 import { EDITORIAL_ROOMS, GENRE_ROOMS, CREATOR_ROOMS } from '@/lib/rooms'
 import type { Room } from '@/lib/rooms'
 
@@ -12,6 +13,12 @@ export const metadata = {
 }
 
 export default async function RoomsPage() {
+  // Opportunistic cycle progression. Throttled to one call per 5 minutes
+  // per process. Cheap when nothing's stale. pg_cron / Vercel cron remain
+  // the real scheduler when configured; this is the dev-environment
+  // fallback so cycles still advance without external infrastructure.
+  await maybeAdvanceCyclePhasesOpportunistically()
+
   let editorialRooms: Room[]
   let genreRooms: Room[]
   let creatorRooms: Room[]
