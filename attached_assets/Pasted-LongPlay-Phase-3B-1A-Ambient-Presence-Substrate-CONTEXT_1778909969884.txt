@@ -1,0 +1,116 @@
+LongPlay — Phase 3B.1A: Ambient Presence Substrate
+
+CONTEXT
+
+Phase 3A Moments are live and stable (tag v0.3-phase3a-stable). This task adds the substrate for Ambient Presence per the locked Phase 3B.1 sub-spec:
+
+- room_presence table
+- heartbeat lifecycle (30 s heartbeat, 90 s active, 5 min removal)
+- polling read (30 s) — no Supabase Realtime
+- default-invisible visibility with two opt-in tiers (counted / identified)
+- exact-up-to-12 / editorial-above count, ≤ 8 faces
+- a single small presence strip in the existing room header
+
+That is the entire scope.
+
+Do NOT build:
+- activity rail
+- shared/public Moments
+- aggregation
+- realtime/websockets
+- AI
+- snapshots
+- compatibility
+- notifications
+- feeds
+- chat
+- DMs
+- follows
+
+The album remains protagonist. Presence is atmospheric.
+
+Current branch already exists:
+feat/phase-3b-1a-presence-substrate
+
+==============================================================
+SQL — lib/schema-phase3b1a-presence.sql
+==============================================================
+
+Create an additive, idempotent migration.
+
+Include:
+
+- presence_visibility enum ('counted','identified')
+- listening_state enum ('active','paused','idle')
+
+room_presence table:
+- id uuid primary key default gen_random_uuid()
+- member_id uuid references user_profiles(id)
+- cycle_id uuid references cycles(id)
+- visibility_tier nullable
+- listening_state default 'active'
+- current_track nullable integer
+- progress_seconds nullable integer
+- last_heartbeat timestamptz default now()
+- session_started timestamptz default now()
+
+Constraints:
+- unique(member_id, cycle_id)
+- current_track and progress_seconds must both be null or both populated
+- current_track only allowed when visibility_tier='identified'
+
+Indexes:
+- active-cycle partial index
+- member-cycle lookup
+- heartbeat lookup
+
+RLS:
+- visible rows readable by authenticated users
+- invisible rows readable only by owner
+- owner-only insert/update/delete
+
+RPC:
+get_room_presence_snapshot(p_cycle_id uuid)
+
+Returns:
+- presence_count
+- faces jsonb (max 8)
+
+Must:
+- apply 90-second freshness filter
+- include only visibility_tier IS NOT NULL
+- identified faces only
+- stable ordering (avoid face churn)
+
+Cleanup:
+cleanup_room_presence()
+
+Delete rows older than 5 minutes.
+
+If pg_cron is available:
+- add hourly cleanup schedule
+
+If not:
+- document fallback strategy in PR notes.
+
+==============================================================
+Types
+==============================================================
+
+Regenerate:
+lib/supabase/types.ts
+
+No `(supabase as any)` anywhere in new code.
+
+==============================================================
+Pure helper
+==============================================================
+
+Create:
+lib/presence/count-language.ts
+
+Export:
+
+presenceCountLabel(n: number): string
+
+Rules

@@ -5,6 +5,7 @@ import { ProtectedLayout } from '@/components/protected-layout'
 import { getRoomBySlug as getDbRoom } from '@/lib/data/rooms'
 import { getRoomBySlug, ALL_ROOMS } from '@/lib/rooms'
 import { getMomentsByAlbumForCurrentUser } from '@/lib/data/moments'
+import { getRoomPresenceSnapshot } from '@/lib/data/presence'
 
 // Generate static params for all rooms
 export function generateStaticParams() {
@@ -37,19 +38,25 @@ export default async function ActiveRoomPage({ params }: { params: Promise<{ slu
 
   if (!room) notFound()
 
-  // Fetch user's moments for the current album — empty array if table not yet applied or unauthenticated
-  let initialMoments = undefined
-  try {
-    initialMoments = await getMomentsByAlbumForCurrentUser(room.currentAlbum.id)
-  } catch {
-    // moments table not yet applied — page still renders, composer will surface errors on save
-  }
+  // Parallel fetch: user moments + initial presence snapshot
+  const [initialMoments, initialPresenceSnapshot] = await Promise.all([
+    room.currentAlbum.id
+      ? getMomentsByAlbumForCurrentUser(room.currentAlbum.id).catch(() => undefined)
+      : Promise.resolve(undefined),
+    room.cycleId
+      ? getRoomPresenceSnapshot(room.cycleId).catch(() => undefined)
+      : Promise.resolve(undefined),
+  ])
 
   return (
     <ProtectedLayout>
       <Navigation />
       <main className="min-h-screen pb-20 md:pb-0 md:pt-16">
-        <ActiveListeningRoomScreen room={room} initialMoments={initialMoments} />
+        <ActiveListeningRoomScreen
+          room={room}
+          initialMoments={initialMoments}
+          initialPresenceSnapshot={initialPresenceSnapshot}
+        />
       </main>
     </ProtectedLayout>
   )
