@@ -473,7 +473,8 @@ export function ProfileScreen() {
         ) : null}
       </section>
 
-      {/* ── Auth & Debug Panel ────────────────────────────────────────────── */}
+      {/* ── Auth & Debug Panel — development only ─────────────────────────── */}
+      {process.env.NODE_ENV === 'development' && (
       <section className="px-6 py-6 md:px-12 lg:px-24 border-t-2 border-dashed border-tobacco/20 bg-card/5">
         <p className="text-[10px] uppercase tracking-[0.3em] text-tobacco/60 mb-5">
           Auth Debug Panel
@@ -570,9 +571,10 @@ export function ProfileScreen() {
         </div>
 
         <p className="text-[10px] text-muted-foreground/30 mt-4">
-          This panel is visible in all environments for testing. Remove before launch.
+          Development-only panel.
         </p>
       </section>
+      )}
     </div>
   )
 }

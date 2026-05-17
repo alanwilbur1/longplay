@@ -20,55 +20,11 @@ interface ActiveListeningRoomScreenProps {
   initialPresenceSnapshot?: PresenceSnapshot
 }
 
-// Sample tracklist - would come from album data in production
-const SAMPLE_TRACKLIST = [
-  { number: 1, title: "Track 1", duration: "4:12" },
-  { number: 2, title: "Track 2", duration: "3:45" },
-  { number: 3, title: "Track 3", duration: "5:18" },
-  { number: 4, title: "Track 4", duration: "4:02" },
-  { number: 5, title: "Track 5", duration: "6:33" },
-  { number: 6, title: "Track 6", duration: "3:58" },
-  { number: 7, title: "Track 7", duration: "4:44" },
-  { number: 8, title: "Track 8", duration: "5:21" },
-]
-
-// Sample annotations for this room
-const SAMPLE_ANNOTATIONS = [
-  {
-    id: 1,
-    timestamp: "2:47",
-    track: "Track 3",
-    trackNumber: 3,
-    content: "There's something in the way this moment opens up—like a door you didn't know was there.",
-    author: "Elena",
-    emotion: "revelation",
-  },
-  {
-    id: 2,
-    timestamp: "0:30",
-    track: "Track 1",
-    trackNumber: 1,
-    content: "The first thirty seconds tell you everything you need to know about what's coming.",
-    author: "Marcus",
-    emotion: "anticipation",
-  },
-  {
-    id: 3,
-    timestamp: "4:18",
-    track: "Track 5",
-    trackNumber: 5,
-    content: "This is where the album stops asking and starts telling.",
-    author: "Sofia",
-    emotion: "intensity",
-  },
-]
-
-// Saved moments
-const SAMPLE_MOMENTS = [
-  { timestamp: "2:47", track: "Track 3", note: "The opening", savedBy: 23 },
-  { timestamp: "4:18", track: "Track 5", note: "The shift", savedBy: 18 },
-  { timestamp: "0:30", track: "Track 1", note: "First breath", savedBy: 15 },
-]
+// Track-level data is not yet in the schema. Until album_tracks lands,
+// the listening room renders a numbered fallback so the Mark interaction
+// remains available — but the room does NOT invent track titles. Track
+// numbers are honest; titles and durations are absent on purpose.
+const FALLBACK_TRACK_COUNT = 8
 
 export function ActiveListeningRoomScreen({ room, initialMoments, initialPresenceSnapshot }: ActiveListeningRoomScreenProps) {
   const router = useRouter()
@@ -318,26 +274,30 @@ export function ActiveListeningRoomScreen({ room, initialMoments, initialPresenc
       </section>
 
       {/* ============================================ */}
-      {/* TRACKLIST WITH MOMENTS */}
+      {/* TRACKLIST WITH MOMENTS                          */}
+      {/* Track titles, durations, and per-track "saved  */}
+      {/* by N" counts are not yet backed by real data — */}
+      {/* the schema has no album_tracks table yet. The  */}
+      {/* Mark interaction remains available against     */}
+      {/* honest track numbers. No false specificity.    */}
       {/* ============================================ */}
       <section className="px-6 py-12 md:px-12 lg:px-24 border-t border-border/10 bg-navy/10">
         <div className="max-w-4xl mx-auto">
           <p className="text-[10px] uppercase tracking-[0.3em] text-muted-foreground/60 mb-8">
             Save a Moment
           </p>
-          
+
           <div className="space-y-1">
-            {SAMPLE_TRACKLIST.map((track) => {
-              const moments = SAMPLE_MOMENTS.filter(m => m.track === track.title)
-              const isSelected = selectedTrack === track.number
-              
+            {Array.from({ length: FALLBACK_TRACK_COUNT }, (_, i) => i + 1).map((trackNumber) => {
+              const isSelected = selectedTrack === trackNumber
+
               return (
                 <div
-                  key={track.number}
+                  key={trackNumber}
                   role="button"
                   tabIndex={0}
-                  onClick={() => setSelectedTrack(isSelected ? null : track.number)}
-                  onKeyDown={(e) => (e.key === 'Enter' || e.key === ' ') && setSelectedTrack(isSelected ? null : track.number)}
+                  onClick={() => setSelectedTrack(isSelected ? null : trackNumber)}
+                  onKeyDown={(e) => (e.key === 'Enter' || e.key === ' ') && setSelectedTrack(isSelected ? null : trackNumber)}
                   className={cn(
                     "w-full text-left p-4 transition-all duration-500 border border-transparent cursor-pointer",
                     isSelected
@@ -347,45 +307,28 @@ export function ActiveListeningRoomScreen({ room, initialMoments, initialPresenc
                 >
                   <div className="flex items-center gap-4">
                     <span className="text-sm text-muted-foreground/40 w-6 font-mono">
-                      {track.number}
+                      {trackNumber}
                     </span>
                     <span className={cn(
-                      "flex-1 transition-colors",
-                      isSelected ? "text-cream" : "text-cream/70"
+                      "flex-1 transition-colors text-sm",
+                      isSelected ? "text-cream/80" : "text-cream/50"
                     )}>
-                      {track.title}
+                      Track {trackNumber}
                     </span>
-                    <span className="text-sm text-muted-foreground/40 font-mono">
-                      {track.duration}
-                    </span>
-                    {moments.length > 0 && (
-                      <span className="text-xs text-tobacco">
-                        {moments.length} moment{moments.length > 1 ? 's' : ''}
-                      </span>
-                    )}
                   </div>
-                  
+
                   {isSelected && (
-                    <div className="mt-4 pl-10 space-y-3 animate-fade-in">
-                      {moments.map((moment, i) => (
-                        <div key={i} className="flex items-center gap-3 text-sm">
-                          <span className="text-tobacco font-mono">{moment.timestamp}</span>
-                          <span className="text-cream/60">{moment.note}</span>
-                          <span className="text-muted-foreground/40 text-xs">
-                            {moment.savedBy} saved
-                          </span>
-                        </div>
-                      ))}
+                    <div className="mt-4 pl-10 animate-fade-in">
                       <button
-                        onClick={(e) => { e.stopPropagation(); handleMarkTrack(track.number, track.title) }}
-                        disabled={markingTrack === track.number || isPendingMark}
+                        onClick={(e) => { e.stopPropagation(); handleMarkTrack(trackNumber, `Track ${trackNumber}`) }}
+                        disabled={markingTrack === trackNumber || isPendingMark}
                         className="flex items-center gap-2 text-olive/80 hover:text-olive text-sm transition-colors disabled:opacity-50"
                       >
                         <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="1.5">
                           <path strokeLinecap="round" strokeLinejoin="round" d="M12 4.5v15m7.5-7.5h-15" />
                         </svg>
                         <span>
-                          {markSuccess === track.number ? '✓ Marked' : markingTrack === track.number ? 'Marking…' : 'Mark a moment'}
+                          {markSuccess === trackNumber ? '✓ Marked' : markingTrack === trackNumber ? 'Marking…' : 'Mark a moment'}
                         </span>
                       </button>
                     </div>
@@ -410,10 +353,12 @@ export function ActiveListeningRoomScreen({ room, initialMoments, initialPresenc
             <MomentComposer albumId={room.currentAlbum.id} roomSlug={room.slug} />
           </div>
           
-          {/* Moments — real DB data when available; sample fallback when empty */}
+          {/* Your Moments — owner-only, honest empty when absent. No ghost
+              annotations, no fictional authors, no "these are examples"
+              caveat. If there is nothing real to show, the room is quiet. */}
           <div>
             <p className="text-[10px] uppercase tracking-[0.3em] text-muted-foreground/60 mb-8">
-              {(initialMoments?.length ?? 0) > 0 ? 'Your Moments' : 'Sample Moments'}
+              Your Moments
             </p>
 
             {(initialMoments?.length ?? 0) > 0 ? (
@@ -444,37 +389,11 @@ export function ActiveListeningRoomScreen({ room, initialMoments, initialPresenc
                 ))}
               </div>
             ) : (
-              <div>
-                <p className="text-sm text-muted-foreground/30 italic mb-10">
-                  {ritualPhase
-                    ? emptyStateLine('no-moments-active-room', ritualPhase.phase)
-                    : 'No marks yet.'}
-                  {' '}
-                  <span className="text-muted-foreground/20 not-italic">
-                    These are examples.
-                  </span>
-                </p>
-                <div className="space-y-8 opacity-30 pointer-events-none select-none">
-                  {SAMPLE_ANNOTATIONS.map((note) => (
-                    <div key={note.id} className="group relative pl-8 border-l border-burgundy/20">
-                      <div className="absolute -left-1.5 top-0 w-3 h-3 rounded-full bg-burgundy/40" />
-                      <div className="flex items-center gap-3 mb-3">
-                        <span className="text-xs text-tobacco font-mono">
-                          {note.timestamp} · {note.track}
-                        </span>
-                        {note.emotion && (
-                          <span className="text-[10px] uppercase tracking-[0.15em] text-muted-foreground/40">
-                            {note.emotion}
-                          </span>
-                        )}
-                      </div>
-                      <p className="font-serif text-lg text-cream/80 leading-relaxed mb-3">
-                        {note.content}
-                      </p>
-                    </div>
-                  ))}
-                </div>
-              </div>
+              <p className="font-serif text-base text-muted-foreground/40 italic leading-relaxed max-w-md">
+                {ritualPhase
+                  ? emptyStateLine('no-moments-active-room', ritualPhase.phase)
+                  : 'No marks yet.'}
+              </p>
             )}
 
             {markError && (

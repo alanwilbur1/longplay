@@ -79,11 +79,6 @@ export function MomentsArchive({ moments }: MomentsArchiveProps) {
           Moments you mark, annotate, reflect on, or save while listening will appear here.
           They are private by default — only you can see them.
         </p>
-        {!moments && (
-          <p className="text-[10px] uppercase tracking-[0.3em] text-muted-foreground/30 mb-6">
-            Apply lib/schema-phase3a-moments.sql in Supabase to enable moments.
-          </p>
-        )}
         <Link
           href="/rooms"
           className="text-xs uppercase tracking-[0.3em] text-tobacco hover:text-cream transition-colors"
