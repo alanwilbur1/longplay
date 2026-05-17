@@ -6,10 +6,10 @@ import { cn } from '@/lib/utils'
 
 /**
  * LongPlay Navigation - Aligned with Business Plan
- * 
+ *
  * Five core tabs reflecting the product architecture:
  * 1. Home - Editorial front door
- * 2. Clubs - Listening club discovery and membership
+ * 2. Rooms - Listening room discovery and membership
  * 3. Room - Active listening/reflection space
  * 4. Identity - The signature output (emotional product)
  * 5. Profile - Account/membership layer
@@ -17,7 +17,7 @@ import { cn } from '@/lib/utils'
 
 const primaryNavItems = [
   { href: '/', label: 'Home', mobileLabel: 'Home', icon: HomeIcon },
-  { href: '/clubs', label: 'Clubs', mobileLabel: 'Clubs', icon: ClubsIcon },
+  { href: '/rooms', label: 'Rooms', mobileLabel: 'Rooms', icon: RoomsIcon },
   { href: '/room', label: 'Room', mobileLabel: 'Room', icon: RoomIcon },
   { href: '/identity', label: 'Identity', mobileLabel: 'Identity', icon: IdentityIcon },
   { href: '/profile', label: 'Profile', mobileLabel: 'Profile', icon: ProfileIcon },
@@ -31,8 +31,10 @@ export function Navigation() {
     return null
   }
 
-  // Determine active states for room-related pages
-  const isClubsActive = pathname === '/clubs' || pathname.startsWith('/clubs/') || pathname.startsWith('/rooms/')
+  // Determine active states for room-related pages.
+  // "Rooms" tab is active on discovery (/rooms, /rooms/[slug]) and on
+  // the legacy /clubs alias that still renders the same surface.
+  const isRoomsActive = pathname === '/rooms' || pathname.startsWith('/rooms/') || pathname === '/clubs' || pathname.startsWith('/clubs/')
   const isRoomActive = pathname === '/room' || pathname.startsWith('/room/')
 
   return (
@@ -41,10 +43,10 @@ export function Navigation() {
       <nav className="fixed bottom-0 left-0 right-0 z-50 border-t border-border/30 bg-background/95 backdrop-blur-md md:hidden safe-area-pb">
         <div className="flex items-center justify-around py-2">
           {primaryNavItems.map((item) => {
-            // Special handling for Clubs and Room tabs
+            // Special handling for Rooms (discovery) and Room (active) tabs
             let isActive: boolean
-            if (item.href === '/clubs') {
-              isActive = isClubsActive
+            if (item.href === '/rooms') {
+              isActive = isRoomsActive
             } else if (item.href === '/room') {
               isActive = isRoomActive
             } else if (item.href === '/') {
@@ -106,15 +108,15 @@ export function Navigation() {
               </Link>
               
               <Link
-                href="/clubs"
+                href="/rooms"
                 className={cn(
                   'text-sm tracking-wide transition-all duration-500',
-                  isClubsActive
-                    ? 'text-cream' 
+                  isRoomsActive
+                    ? 'text-cream'
                     : 'text-muted-foreground hover:text-cream/80'
                 )}
               >
-                Clubs
+                Rooms
               </Link>
               
               <Link
@@ -213,8 +215,8 @@ function HomeIcon({ className }: { className?: string }) {
   )
 }
 
-// Clubs Icon - Community/group listening spaces
-function ClubsIcon({ className }: { className?: string }) {
+// Rooms Icon - Community/group listening spaces
+function RoomsIcon({ className }: { className?: string }) {
   return (
     <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
       {/* Multiple people / community motif */}
