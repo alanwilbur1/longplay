@@ -11,12 +11,24 @@ interface RoomsScreenProps {
   joinedRooms: Room[]
 }
 
+/**
+ * Routing rule (Phase 3B navigation simplification):
+ *   - Joined rooms always deep-link to /room/[slug] (active listening room).
+ *   - Non-joined rooms link to /rooms/[slug] (editorial profile / join flow).
+ * This applies to every card on this surface, not just the "Your Rooms" row.
+ */
+function roomHref(slug: string, joined: boolean): string {
+  return joined ? `/room/${slug}` : `/rooms/${slug}`
+}
+
 export function RoomsScreen({
   editorialRooms,
   genreRooms,
   creatorRooms,
   joinedRooms,
 }: RoomsScreenProps) {
+  const joinedSlugs = new Set(joinedRooms.map(r => r.slug))
+
   return (
     <div className="grain relative pb-32 md:pb-16 md:pt-24">
       {/* Hero - Discovery Frame */}
@@ -26,13 +38,13 @@ export function RoomsScreen({
             Listening Rooms
           </h1>
           <p className="text-lg text-muted-foreground leading-relaxed">
-            Rooms for the kind of listener you are. Each space has its own 
+            Rooms for the kind of listener you are. Each space has its own
             emotional cadence, weekly album, and community of intent.
           </p>
         </div>
       </section>
 
-      {/* Your Rooms - If member of any */}
+      {/* Your Rooms - If member of any. Cards deep-link straight into the active room. */}
       <section className="px-6 py-8 md:px-12 lg:px-24 border-t border-border/20">
         <div className="flex items-center justify-between mb-6">
           <h2 className="text-xs uppercase tracking-[0.2em] text-muted-foreground">Your Rooms</h2>
@@ -40,13 +52,13 @@ export function RoomsScreen({
             {joinedRooms.length > 0 ? `${joinedRooms.length} active` : 'none joined'}
           </span>
         </div>
-        
+
         {joinedRooms.length > 0 ? (
           <div className="flex gap-4 overflow-x-auto pb-2 -mx-6 px-6 md:mx-0 md:px-0 md:overflow-visible scrollbar-hide">
             {joinedRooms.slice(0, 3).map((room) => (
-              <Link 
-                key={room.id} 
-                href={`/rooms/${room.slug}`}
+              <Link
+                key={room.id}
+                href={`/room/${room.slug}`}
                 className="group shrink-0 w-32 md:w-40"
               >
                 <div className="relative aspect-square mb-3 overflow-hidden bg-muted rounded">
@@ -80,10 +92,14 @@ export function RoomsScreen({
       {/* Editorial Rooms - Featured */}
       <section className="px-6 py-12 md:px-12 lg:px-24">
         <h2 className="text-xs uppercase tracking-[0.2em] text-muted-foreground mb-8">Editorial Rooms</h2>
-        
+
         <div className="space-y-8 md:space-y-0 md:grid md:grid-cols-2 md:gap-8">
           {editorialRooms.map((room) => (
-            <EditorialRoomCard key={room.id} room={room} />
+            <EditorialRoomCard
+              key={room.id}
+              room={room}
+              href={roomHref(room.slug, joinedSlugs.has(room.slug))}
+            />
           ))}
         </div>
       </section>
@@ -91,10 +107,14 @@ export function RoomsScreen({
       {/* Genre & Aesthetic Rooms */}
       <section className="px-6 py-12 md:px-12 lg:px-24 border-t border-border/20">
         <h2 className="text-xs uppercase tracking-[0.2em] text-muted-foreground mb-8">By Sound & Feeling</h2>
-        
+
         <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
           {genreRooms.map((room) => (
-            <GenreRoomCard key={room.id} room={room} />
+            <GenreRoomCard
+              key={room.id}
+              room={room}
+              href={roomHref(room.slug, joinedSlugs.has(room.slug))}
+            />
           ))}
         </div>
       </section>
@@ -102,10 +122,14 @@ export function RoomsScreen({
       {/* Creator-Led Rooms */}
       <section className="px-6 py-12 md:px-12 lg:px-24 border-t border-border/20">
         <h2 className="text-xs uppercase tracking-[0.2em] text-muted-foreground mb-8">Curator-Led</h2>
-        
+
         <div className="space-y-4">
           {creatorRooms.map((room) => (
-            <CreatorRoomCard key={room.id} room={room} />
+            <CreatorRoomCard
+              key={room.id}
+              room={room}
+              href={roomHref(room.slug, joinedSlugs.has(room.slug))}
+            />
           ))}
         </div>
       </section>
@@ -128,10 +152,10 @@ export function RoomsScreen({
   )
 }
 
-function EditorialRoomCard({ room }: { room: Room }) {
+function EditorialRoomCard({ room, href }: { room: Room; href: string }) {
   return (
-    <Link 
-      href={`/rooms/${room.slug}`}
+    <Link
+      href={href}
       className="group block bg-card/30 border border-border/20 p-6 transition-all duration-500 hover:border-border/40"
     >
       {/* Album samples */}
@@ -174,10 +198,10 @@ function EditorialRoomCard({ room }: { room: Room }) {
   )
 }
 
-function GenreRoomCard({ room }: { room: Room }) {
+function GenreRoomCard({ room, href }: { room: Room; href: string }) {
   return (
-    <Link 
-      href={`/rooms/${room.slug}`}
+    <Link
+      href={href}
       className="group block p-4 border border-border/20 hover:border-border/40 transition-all duration-500"
     >
       <h3 className="font-serif text-base text-cream mb-1 group-hover:text-cream/80 transition-colors">
@@ -191,10 +215,10 @@ function GenreRoomCard({ room }: { room: Room }) {
   )
 }
 
-function CreatorRoomCard({ room }: { room: Room }) {
+function CreatorRoomCard({ room, href }: { room: Room; href: string }) {
   return (
-    <Link 
-      href={`/rooms/${room.slug}`}
+    <Link
+      href={href}
       className="group flex items-center gap-4 p-4 border border-border/20 hover:border-border/40 transition-all duration-500"
     >
       <div className="w-12 h-12 rounded-full bg-tobacco/20 border border-tobacco/30 flex items-center justify-center shrink-0">

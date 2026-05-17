@@ -5,7 +5,6 @@ import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 import { cn } from '@/lib/utils'
 import { AlbumCover } from '@/components/album-cover'
-import { RoomEntryRitual } from '@/components/room-entry-ritual'
 import { type Room, getRelatedRooms, getRoomSeasonalMood, getRoomBySlug } from '@/lib/rooms'
 import { joinRoom, leaveRoom } from '@/lib/actions/membership'
 import { useAuth } from '@/components/auth-provider'
@@ -18,15 +17,15 @@ interface RoomDetailScreenProps {
 }
 
 /**
- * Room Detail Screen — A Club Landing Page
- * 
- * This is NOT a feature page.
- * This is a cultural publication landing — a distinct world with its own voice.
- * 
- * Each room should feel like entering a different editorial environment:
- * - authored by a distinct curatorial voice
- * - aesthetically unique
- * - emotionally specific
+ * Room Detail Screen — Editorial profile / join flow.
+ *
+ * Discovery surface only. Members of a room should reach the active
+ * listening room (/room/[slug]) directly from "Your Rooms" or any other
+ * deep-link surface. This page is for non-members and editorial browsing.
+ *
+ * There is no entry ritual / interstitial. The Enter CTA navigates
+ * directly to the active room; the Join CTA joins, then the same CTA
+ * becomes the Enter link.
  */
 export function RoomDetailScreen({ room, initialIsJoined = false }: RoomDetailScreenProps) {
   const router = useRouter()
@@ -35,13 +34,12 @@ export function RoomDetailScreen({ room, initialIsJoined = false }: RoomDetailSc
   const [showFullNote, setShowFullNote] = useState(false)
   const [showManifesto, setShowManifesto] = useState(false)
   const [showCuratorProfile, setShowCuratorProfile] = useState(false)
-  const [showEntryRitual, setShowEntryRitual] = useState(false)
   const [membershipError, setMembershipError] = useState<string | null>(null)
   const [isPending, startTransition] = useTransition()
-  
+
   const seasonalMood = getRoomSeasonalMood(room)
   const relatedRooms = getRelatedRooms(room)
-  
+
   // Map room aesthetic theme classes to CSS themes
   const themeClassMap: Record<string, string> = {
     'nocturnal-room': 'room-theme-nocturnal',
@@ -54,29 +52,14 @@ export function RoomDetailScreen({ room, initialIsJoined = false }: RoomDetailSc
     'criterion-listening': 'room-theme-criterion',
     'pitchfork-deep': 'room-theme-pitchfork',
   }
-  
+
   const roomTheme = themeClassMap[room.aesthetics.themeClass] || ''
   const typographyClass = `room-typography-${room.aesthetics.typographyStyle}`
   const spacingClass = `room-spacing-${room.aesthetics.spacingRhythm}`
-  
-  // Handle entry ritual
-  const handleEnterRoom = () => {
-    setShowEntryRitual(false)
-    router.push(`/room/${room.slug}`)
-  }
 
   return (
     <>
-      {/* Entry Ritual Overlay */}
-      {showEntryRitual && (
-        <RoomEntryRitual 
-          room={room} 
-          onEnter={handleEnterRoom}
-          onDecline={() => setShowEntryRitual(false)}
-        />
-      )}
-      
-      <div 
+      <div
         className={cn(
           "grain relative min-h-screen pb-32 md:pb-16",
           roomTheme,
@@ -431,21 +414,25 @@ export function RoomDetailScreen({ room, initialIsJoined = false }: RoomDetailSc
                   )}
                 </div>
                 
-                {/* Enter room CTA — triggers ritual */}
-                <button
-                  onClick={() => setShowEntryRitual(true)}
-                  className={cn(
-                    "inline-flex items-center gap-3 px-8 py-4 text-cream text-sm tracking-wide transition-all",
-                    room.aesthetics.primaryAccent.replace('text-', 'bg-').replace('/70', '/80').replace('/80', '/90'),
-                    "hover:opacity-90"
-                  )}
-                  style={{ transitionDuration: 'var(--room-transition, 500ms)' }}
-                >
-                  <span>{room.culture.entryPhrase}</span>
-                  <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="1.5">
-                    <path strokeLinecap="round" strokeLinejoin="round" d="M13.5 4.5L21 12m0 0l-7.5 7.5M21 12H3" />
-                  </svg>
-                </button>
+                {/* Enter / Join CTA — direct navigation, no interstitial.
+                    Joined members go straight to the active room; non-members
+                    see the full Join flow in the section below. */}
+                {isJoined && (
+                  <Link
+                    href={`/room/${room.slug}`}
+                    className={cn(
+                      "inline-flex items-center gap-3 px-8 py-4 text-cream text-sm tracking-wide transition-all",
+                      room.aesthetics.primaryAccent.replace('text-', 'bg-').replace('/70', '/80').replace('/80', '/90'),
+                      "hover:opacity-90"
+                    )}
+                    style={{ transitionDuration: 'var(--room-transition, 500ms)' }}
+                  >
+                    <span>Enter Listening Room</span>
+                    <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="1.5">
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M13.5 4.5L21 12m0 0l-7.5 7.5M21 12H3" />
+                    </svg>
+                  </Link>
+                )}
               </div>
             </div>
           </div>
@@ -803,8 +790,8 @@ export function RoomDetailScreen({ room, initialIsJoined = false }: RoomDetailSc
               <div className="flex gap-4">
                 {isJoined ? (
                   <>
-                    <button
-                      onClick={() => setShowEntryRitual(true)}
+                    <Link
+                      href={`/room/${room.slug}`}
                       className={cn(
                         "px-8 py-4 text-cream text-sm tracking-wide transition-all",
                         room.aesthetics.primaryAccent.replace('text-', 'bg-').replace('/70', '/80').replace('/80', '/90'),
@@ -812,8 +799,8 @@ export function RoomDetailScreen({ room, initialIsJoined = false }: RoomDetailSc
                       )}
                       style={{ transitionDuration: 'var(--room-transition, 500ms)' }}
                     >
-                      {room.culture.entryPhrase}
-                    </button>
+                      Enter Listening Room
+                    </Link>
                     <button
                       disabled={isPending}
                       onClick={() => {

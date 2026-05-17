@@ -34,8 +34,10 @@ export function Navigation() {
     return null
   }
 
-  // Determine active states for room-related pages
-  const isRoomsActive = pathname === '/rooms' || pathname.startsWith('/rooms/')
+  // Determine active states for room-related pages.
+  // "Rooms" tab is active on discovery (/rooms, /rooms/[slug]) and on
+  // the legacy /clubs alias that still renders the same surface.
+  const isRoomsActive = pathname === '/rooms' || pathname.startsWith('/rooms/') || pathname === '/clubs' || pathname.startsWith('/clubs/')
   const isRoomActive = pathname === '/room' || pathname.startsWith('/room/')
 
   return (
@@ -44,7 +46,7 @@ export function Navigation() {
       <nav className="fixed bottom-0 left-0 right-0 z-50 border-t border-border/30 bg-background/95 backdrop-blur-md md:hidden safe-area-pb">
         <div className="flex items-center justify-around py-2">
           {primaryNavItems.map((item) => {
-            // Special handling for Rooms and Room tabs
+            // Special handling for Rooms (discovery) and Room (active) tabs
             let isActive: boolean
             if (item.href === '/rooms') {
               isActive = isRoomsActive
@@ -113,7 +115,7 @@ export function Navigation() {
                 className={cn(
                   'text-sm tracking-wide transition-all duration-500',
                   isRoomsActive
-                    ? 'text-cream' 
+                    ? 'text-cream'
                     : 'text-muted-foreground hover:text-cream/80'
                 )}
               >
