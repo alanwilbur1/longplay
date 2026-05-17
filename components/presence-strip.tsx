@@ -3,17 +3,14 @@
 /**
  * PresenceStrip — Phase 3B.1A ambient presence component.
  *
- * Renders the visibility tier control (always, when cycleId is present)
- * and — when presenceCount > 0 — the faces + count label.
+ * Tier semantics:
+ *   invisible   → row removed from room_presence entirely
+ *   counted     → row with visibility_tier='counted'  (in count, no face)
+ *   identified  → row with visibility_tier='identified' (in count + face)
  *
- * Tier control: Invisible · Counted · Identified
- *   Invisible   → visibility_tier = null  (not counted, not shown)
- *   Counted     → visibility_tier = 'counted'  (counted, no face)
- *   Identified  → visibility_tier = 'identified' (counted + face)
- *
- * Heartbeat is managed here (not via usePresenceHeartbeat) so the
- * correct tier is sent on every beat. usePresenceHeartbeat always
- * sends tier=null and would override the user's choice every 30 s.
+ * Heartbeat is managed here instead of via usePresenceHeartbeat so:
+ *   - The correct tier is sent on every beat
+ *   - The heartbeat is a no-op when tier=invisible (prevents row re-creation)
  */
 
 import { Fragment, useState, useEffect, useRef } from 'react'
@@ -27,6 +24,7 @@ import {
 } from '@/lib/actions/presence'
 import type { PresenceVisibility } from '@/lib/actions/presence'
 import type { PresenceSnapshot, PresenceFace } from '@/lib/data/presence'
+import { useAuth } from '@/components/auth-provider'
 
 interface PresenceStripProps {
   cycleId: string
@@ -53,32 +51,34 @@ const POLL_MS = 30_000
 const DEV_MODE = process.env.NODE_ENV === 'development'
 
 export function PresenceStrip({ cycleId, initialSnapshot, className }: PresenceStripProps) {
+  const { user } = useAuth()
+  const myId = user?.id ?? null
+
   const [snapshot, setSnapshot] = useState<PresenceSnapshot>(initialSnapshot)
   const [tier, setTier] = useState<Tier>('invisible')
 
-  // Use a ref so the heartbeat interval always reads the latest tier
-  // without needing to be re-registered on every tier change.
+  // Ref so heartbeat interval always reads latest tier without re-registering
   const tierRef = useRef<Tier>('invisible')
 
   // ── Tier-aware heartbeat ──────────────────────────────────────
-  // Replaces usePresenceHeartbeat so the correct visibility_tier is
-  // sent on every beat. usePresenceHeartbeat always sends null tier.
+  // No-op when invisible — must not re-create a row that was removed.
   useEffect(() => {
     if (!cycleId) return
 
     const beat = () => {
+      if (tierRef.current === 'invisible') return
       upsertPresence({
         cycleId,
         visibilityTier: tierToVisibility(tierRef.current),
       }).catch(() => {})
     }
 
-    beat() // immediate on mount
-
+    // Do NOT fire on mount — user starts invisible, nothing to write
     const heartbeatId = setInterval(beat, HEARTBEAT_MS)
 
     return () => {
       clearInterval(heartbeatId)
+      // Best-effort removal on unmount regardless of tier
       removePresence(cycleId).catch(() => {})
     }
   }, [cycleId])
@@ -87,25 +87,40 @@ export function PresenceStrip({ cycleId, initialSnapshot, className }: PresenceS
   useEffect(() => {
     if (!cycleId) return
 
-    const refresh = () => {
+    const pollId = setInterval(() => {
       getPresenceSnapshotAction(cycleId)
         .then(setSnapshot)
         .catch(() => {})
-    }
+    }, POLL_MS)
 
-    const pollId = setInterval(refresh, POLL_MS)
     return () => clearInterval(pollId)
   }, [cycleId])
 
   // ── Tier change handler ───────────────────────────────────────
   const handleTierChange = (newTier: Tier) => {
+    if (newTier === tier) return
+
     tierRef.current = newTier
     setTier(newTier)
-    // Fire immediately — don't wait for the next heartbeat beat
-    upsertPresence({
-      cycleId,
-      visibilityTier: tierToVisibility(newTier),
-    }).catch(() => {})
+
+    if (newTier === 'invisible') {
+      // Optimistic: remove self from count and faces immediately
+      setSnapshot(prev => ({
+        presenceCount: Math.max(0, prev.presenceCount - 1),
+        faces: myId ? prev.faces.filter(f => f.memberId !== myId) : prev.faces,
+      }))
+      // Remove row then confirm with a fresh snapshot
+      removePresence(cycleId)
+        .then(() => getPresenceSnapshotAction(cycleId))
+        .then(setSnapshot)
+        .catch(() => {})
+    } else {
+      // Upsert with new tier, confirm with a fresh snapshot
+      upsertPresence({ cycleId, visibilityTier: tierToVisibility(newTier) })
+        .then(() => getPresenceSnapshotAction(cycleId))
+        .then(setSnapshot)
+        .catch(() => {})
+    }
   }
 
   const { presenceCount, faces } = snapshot
