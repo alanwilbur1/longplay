@@ -182,12 +182,12 @@ export function ActiveListeningRoomScreen({ room, initialMoments, initialPresenc
                   {room.currentAlbum.artist} · {room.currentAlbum.year}
                 </p>
 
-                {/* Ambient presence strip — renders nothing when count = 0 */}
-                {room.cycleId && initialPresenceSnapshot && (
+                {/* Presence strip — tier control always visible when cycleId exists */}
+                {room.cycleId && (
                   <div className="flex justify-center md:justify-start mb-6">
                     <PresenceStrip
                       cycleId={room.cycleId}
-                      initialSnapshot={initialPresenceSnapshot}
+                      initialSnapshot={initialPresenceSnapshot ?? { presenceCount: 0, faces: [] }}
                     />
                   </div>
                 )}
