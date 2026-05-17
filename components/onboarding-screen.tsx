@@ -1454,40 +1454,52 @@ function LoginStep({
 
     await ensureUserProfile(user.id, user.email ?? '', user.user_metadata ?? {})
 
-    // Primary: server action reads session from cookies.
-    let status = await getOnboardingStatus()
+    // Step 1 — try the server action (fast path when cookies are readable).
+    // Only trust it when it positively confirms onboarding_completed = true.
+    // A false/null result from the server side is always reverified below.
+    let dbCheckSource: 'server-action' | 'browser-client' = 'server-action'
+    let onboardingCompleted = false
 
-    // Fallback: if server action couldn't authenticate (Replit cross-site
-    // cookie timing after verifyOtp), use the browser client — the session IS
-    // established because verifyOtp succeeded and we have the user object.
-    if (!status.authenticated) {
-      const { data: fallbackProfile } = await supabase
+    const serverStatus = await getOnboardingStatus()
+
+    if (serverStatus.authenticated && serverStatus.onboardingCompleted) {
+      // Server confirmed true — no further check needed.
+      dbCheckSource = 'server-action'
+      onboardingCompleted = true
+    } else {
+      // Server returned false or unauthenticated.
+      // Always re-verify with the browser client using the exact user.id from
+      // verifyOtp — this is immune to cross-site cookie timing and auth uid
+      // mismatches between the server session and the verifyOtp response.
+      dbCheckSource = 'browser-client'
+      const { data: profileRow } = await supabase
         .from('user_profiles')
         .select('onboarding_completed')
         .eq('id', user.id)
         .single()
-      status = {
-        authenticated: true,
-        onboardingCompleted:
-          (fallbackProfile as { onboarding_completed: boolean } | null)
-            ?.onboarding_completed ?? false,
-      }
+      onboardingCompleted =
+        (profileRow as { onboarding_completed: boolean } | null)
+          ?.onboarding_completed ?? false
     }
 
-    const decision = status.onboardingCompleted ? 'home' : 'onboarding'
+    // Hard guard: if DB says completed, never call onContinueOnboarding.
+    const finalDecision: 'home' | 'onboarding' = onboardingCompleted ? 'home' : 'onboarding'
 
     if (process.env.NODE_ENV === 'development') {
       setDevDiag(
-        `uid:${user.id.slice(0, 8)}… auth:${status.authenticated} completed:${status.onboardingCompleted} → ${decision}`
+        `dbSource:${dbCheckSource} completed:${String(onboardingCompleted)} → ${finalDecision}`
       )
     }
 
     setPhase('success')
 
-    if (status.onboardingCompleted) {
+    if (finalDecision === 'home') {
+      // Sync localStorage with DB truth so the fast path works on the next visit.
+      if (!isOnboardingCompleted()) {
+        completeOnboarding({})
+      }
       setTimeout(() => router.replace('/'), 1000)
     } else {
-      // New or incomplete — resume onboarding from the connect step
       setTimeout(() => onContinueOnboarding(), 1000)
     }
   }
