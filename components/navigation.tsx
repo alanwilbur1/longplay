@@ -1,8 +1,10 @@
 'use client'
 
+import { useEffect, useState } from 'react'
 import { usePathname } from 'next/navigation'
 import Link from 'next/link'
 import { cn } from '@/lib/utils'
+import { getLastRoom, type LastRoom } from '@/lib/last-room'
 
 /**
  * LongPlay Navigation - Aligned with Business Plan
@@ -26,6 +28,15 @@ const primaryNavItems = [
 export function Navigation() {
   const pathname = usePathname()
 
+  // ── Resume-listening memory ──────────────────────────────────────────
+  // The "Listening Room" item should one-tap return the user to whatever
+  // active room they were last inside. Read on client-mount only so the
+  // SSR href stays /rooms — avoids hydration mismatch on the Link.
+  const [lastRoom, setLastRoomState] = useState<LastRoom | null>(null)
+  useEffect(() => {
+    setLastRoomState(getLastRoom())
+  }, [pathname])
+
   // Don't show navigation on onboarding
   if (pathname.startsWith('/onboarding')) {
     return null
@@ -36,6 +47,12 @@ export function Navigation() {
   // the legacy /clubs alias that still renders the same surface.
   const isRoomsActive = pathname === '/rooms' || pathname.startsWith('/rooms/') || pathname === '/clubs' || pathname.startsWith('/clubs/')
   const isRoomActive = pathname === '/room' || pathname.startsWith('/room/')
+
+  // Resolve the destination for the "Listening Room" nav item. SSR uses
+  // /rooms (a safe public surface); client-mount may upgrade to the
+  // user's last active room. Falling back to /rooms when no last room
+  // exists keeps the item useful even for new sessions.
+  const listeningRoomHref = lastRoom?.slug ? `/room/${lastRoom.slug}` : '/rooms'
 
   return (
     <>
@@ -57,13 +74,17 @@ export function Navigation() {
             const Icon = item.icon
             const isIdentity = item.href === '/identity'
             
+            // Resume-listening: the Room tab routes to the last visited
+            // active room when known. Falls back to /rooms.
+            const resolvedHref = item.href === '/room' ? listeningRoomHref : item.href
+
             return (
               <Link
                 key={item.href}
-                href={item.href}
+                href={resolvedHref}
                 className={cn(
                   'flex flex-col items-center gap-1 px-3 py-2 transition-all duration-500',
-                  isActive 
+                  isActive
                     ? 'text-burgundy'
                     : 'text-muted-foreground hover:text-cream/70'
                 )}
@@ -119,16 +140,25 @@ export function Navigation() {
                 Rooms
               </Link>
               
+              {/* Listening Room — resume-aware. The visible label stays
+                  "Listening Room"; when a last-visited room is known,
+                  render a quiet contextual subline below it that reads
+                  e.g. "Return to The Nocturnal Room". */}
               <Link
-                href="/room"
+                href={listeningRoomHref}
                 className={cn(
-                  'text-sm tracking-wide transition-all duration-500',
+                  'group flex flex-col items-start leading-none transition-all duration-500',
                   isRoomActive
-                    ? 'text-cream' 
+                    ? 'text-cream'
                     : 'text-muted-foreground hover:text-cream/80'
                 )}
               >
-                Listening Room
+                <span className="text-sm tracking-wide">Listening Room</span>
+                {lastRoom && (
+                  <span className="mt-1 text-[10px] italic text-muted-foreground/50 group-hover:text-muted-foreground/70 tracking-wide transition-colors duration-500">
+                    Return to {lastRoom.name}
+                  </span>
+                )}
               </Link>
               
               {/* Identity - Primary CTA styling */}

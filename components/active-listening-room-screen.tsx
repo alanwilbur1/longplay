@@ -11,6 +11,7 @@ import { cn } from '@/lib/utils'
 import { type Room } from '@/lib/rooms'
 import type { PresenceSnapshot } from '@/lib/data/presence'
 import { cyclePhaseModulationClass } from '@/lib/presence/atmosphere'
+import { setLastRoom } from '@/lib/last-room'
 
 interface ActiveListeningRoomScreenProps {
   room: Room
@@ -81,6 +82,12 @@ export function ActiveListeningRoomScreen({ room, initialMoments, initialPresenc
     const hour = new Date().getHours()
     setIsLateNight(hour >= 23 || hour < 5)
   }, [])
+
+  // Remember this room as the user's last-visited active room. Reads in
+  // the nav "Listening Room" item to provide a one-tap return path.
+  useEffect(() => {
+    if (room.slug && room.name) setLastRoom(room.slug, room.name)
+  }, [room.slug, room.name])
 
   const isPrivatePhase = room.weeklyPhase === 'arrival' || room.weeklyPhase === 'private'
 
