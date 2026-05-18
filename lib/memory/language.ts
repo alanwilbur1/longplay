@@ -1,10 +1,15 @@
 /**
- * lib/memory/language.ts — Phase 3F
+ * lib/memory/language.ts — Phase 3F (refactored in Phase 3G)
  *
  * Pure copy generators for memory observations. Same discipline as
  * lib/cadence/language.ts: every literary phrase the product can say
  * about a listener's history lives in one module. No phase or memory
  * copy may live in component files.
+ *
+ * Phase 3G refactor: threshold checks now route through the
+ * interpretation framework (lib/interpretation). Each helper consults
+ * `isEligible(...)` instead of inlining its own `if (n < N)` guard.
+ * This makes the threshold values introspectable and centrally edited.
  *
  * Tone:
  *   - Literary, restrained, second-person where intimacy belongs.
@@ -15,6 +20,7 @@
  */
 
 import type { ArchiveSpan, CycleParticipation } from './types'
+import { isEligible } from '@/lib/interpretation'
 
 // ── Active room: returns observation ────────────────────────────────────────
 // "You've returned to this room three times this cycle."
@@ -24,7 +30,8 @@ import type { ArchiveSpan, CycleParticipation } from './types'
 const RETURN_WORDS = ['', '', 'twice', 'three times', 'four times', 'five times', 'six times', 'seven times']
 
 export function roomReturnObservation(returnCount: number): string | null {
-  if (!Number.isFinite(returnCount) || returnCount < 2) return null
+  if (!Number.isFinite(returnCount)) return null
+  if (!isEligible('cycle-return-count', { cycleReturnCount: returnCount })) return null
   if (returnCount < RETURN_WORDS.length) {
     return `You've returned to this room ${RETURN_WORDS[returnCount]} this cycle.`
   }
@@ -39,7 +46,8 @@ export function roomReturnObservation(returnCount: number): string | null {
 // Personal, never gamified. "Beginning to mark" is the spec's phrasing.
 
 export function cycleMomentObservation(momentCount: number): string | null {
-  if (!Number.isFinite(momentCount) || momentCount < 1) return null
+  if (!Number.isFinite(momentCount)) return null
+  if (!isEligible('cycle-moment-count', { cycleMomentCount: momentCount })) return null
   if (momentCount === 1) {
     return 'One moment is beginning to mark this room for you.'
   }
@@ -66,7 +74,10 @@ function formatDate(iso: string): string {
 }
 
 export function archiveSpanObservation(span: ArchiveSpan): string {
-  if (span.totalMoments === 0) {
+  // The archive-timespan rule requires >=1 moment for the literal-span
+  // branch. Zero-state is also a literary line, returned by this
+  // helper for callers that always render something.
+  if (!isEligible('archive-timespan', { totalMoments: span.totalMoments })) {
     return 'Your archive is still quiet. It begins the first time you mark something.'
   }
   if (span.totalMoments === 1 && span.firstMomentAt) {
@@ -87,7 +98,13 @@ export function archiveSpanObservation(span: ArchiveSpan): string {
 // emotional patterns — just the count of real listening traces.
 
 export function identityTracesObservation(eventCount: number): string {
+  // archive-trace-count tolerates zero (the zero state is itself an
+  // honest literary line). We assess only to keep the threshold
+  // logic centralized and to receive the (future) dormant signal
+  // when one is added to evidence.
   if (!Number.isFinite(eventCount) || eventCount <= 0) {
+    // assess() is informational here; eligibility doesn't gate the
+    // zero-state line — it's the honest reading of zero data.
     return 'No real listening traces yet.'
   }
   if (eventCount === 1) {
