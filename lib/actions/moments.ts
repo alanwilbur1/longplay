@@ -16,6 +16,7 @@
 import { createSupabaseServerClient } from '@/lib/supabase/server'
 import { revalidatePath } from 'next/cache'
 import type { Database } from '@/lib/supabase/types'
+import { recordMomentCreated } from '@/lib/memory'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -161,8 +162,21 @@ export async function createMoment(
     return { success: false, error: error.message }
   }
 
+  const created = mapRow(data)
+
+  // Memory: record a moment_create participation event. Fire-and-forget;
+  // a failure to write the event must never block the moment write.
+  // Awaited only so the function doesn't return before the insert has
+  // a chance to land — it's an inexpensive single INSERT.
+  await recordMomentCreated({
+    momentId: created.id,
+    cycleId: created.cycleId,
+    albumId: created.albumId,
+    momentType: created.type,
+  }).catch(() => {})
+
   revalidateAll()
-  return { success: true, data: mapRow(data) }
+  return { success: true, data: created }
 }
 
 // ── branchMoment ──────────────────────────────────────────────────────────────

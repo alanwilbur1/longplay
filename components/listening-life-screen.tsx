@@ -17,15 +17,21 @@
 import { useEffect, useState } from 'react'
 import Link from 'next/link'
 import { useRitualPhase } from '@/lib/cadence'
+import { archiveSpanObservation, type ArchiveSpan } from '@/lib/memory'
 
 interface ListeningLifeScreenProps {
   totalMoments?: number
   reflectionCount?: number
+  /** Real archive span derived from moments. When provided, the page
+   *  surfaces the first/last marks as a literary timespan. Absent
+   *  callers still get an honest "still gathering" rendering. */
+  archiveSpan?: ArchiveSpan
 }
 
 export function ListeningLifeScreen({
   totalMoments = 0,
   reflectionCount = 0,
+  archiveSpan,
 }: ListeningLifeScreenProps) {
   const ritualPhase = useRitualPhase()
   const [isLateNight, setIsLateNight] = useState(false)
@@ -109,19 +115,28 @@ export function ListeningLifeScreen({
       </section>
 
       {/* ──────────────────────────────────────────────────────────────
-          ACKNOWLEDGMENT — what is not yet here, framed as patience
+          ARCHIVE TIMESPAN — the only longitudinal claim the data
+          honestly supports today. Phase 3F surfaces the literal
+          first/last marks when they exist; otherwise the patient
+          framing remains.
           ────────────────────────────────────────────────────────────── */}
       <section className="px-6 py-20 md:px-12 lg:px-24 border-t border-border/10">
         <div className="max-w-2xl mx-auto">
           <p className="text-[10px] uppercase tracking-[0.4em] text-muted-foreground/70 mb-8">
-            Still gathering
+            {archiveSpan && archiveSpan.totalMoments > 0 ? 'Your archive' : 'Still gathering'}
           </p>
 
-          <p className="font-serif text-xl md:text-2xl text-cream/70 leading-relaxed italic">
-            Resurfaced moments, listening eras, archetype evolution,
-            year-in-review — these surface from accumulated listening,
-            not from a profile filled out at the start.
-          </p>
+          {archiveSpan && archiveSpan.totalMoments > 0 ? (
+            <p className="font-serif text-xl md:text-2xl text-cream/80 leading-relaxed">
+              {archiveSpanObservation(archiveSpan)}
+            </p>
+          ) : (
+            <p className="font-serif text-xl md:text-2xl text-cream/70 leading-relaxed italic">
+              Resurfaced moments, listening eras, archetype evolution,
+              year-in-review — these surface from accumulated listening,
+              not from a profile filled out at the start.
+            </p>
+          )}
 
           <p className="font-serif text-base text-cream/45 mt-8 leading-relaxed">
             The archive will begin speaking more clearly the longer

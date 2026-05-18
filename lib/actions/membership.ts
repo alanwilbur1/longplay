@@ -9,6 +9,7 @@
 
 import { createSupabaseServerClient } from '@/lib/supabase/server'
 import { revalidatePath } from 'next/cache'
+import { recordCycleJoin } from '@/lib/memory'
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -65,6 +66,23 @@ export async function joinRoom(
   if (error) {
     console.error('[joinRoom] upsert error:', error.message, error)
     return { success: false, error: error.message }
+  }
+
+  // Memory: record a cycle_join participation event keyed to the room's
+  // current cycle. Dedup'd (one per user+cycle), fire-and-forget — a
+  // failure here must never block the membership write.
+  try {
+    const { data: roomRow } = await supabase
+      .from('rooms')
+      .select('current_cycle_id')
+      .eq('id', roomId)
+      .single()
+    const currentCycleId = (roomRow as { current_cycle_id: string | null } | null)?.current_cycle_id
+    if (currentCycleId) {
+      await recordCycleJoin(currentCycleId).catch(() => {})
+    }
+  } catch {
+    // ignored — memory write must never block joinRoom
   }
 
   revalidatePath('/rooms')

@@ -13,11 +13,13 @@ import type { PresenceSnapshot } from '@/lib/data/presence'
 import { cyclePhaseModulationClass } from '@/lib/presence/atmosphere'
 import { setLastRoom } from '@/lib/last-room'
 import { useRitualPhase, roomToneLine, emptyStateLine } from '@/lib/cadence'
+import { recordRoomEntry, activeRoomMemoryLine, type CycleParticipation } from '@/lib/memory'
 
 interface ActiveListeningRoomScreenProps {
   room: Room
   initialMoments?: Moment[]
   initialPresenceSnapshot?: PresenceSnapshot
+  initialCycleParticipation?: CycleParticipation
 }
 
 // Track-level data is not yet in the schema. Until album_tracks lands,
@@ -26,7 +28,12 @@ interface ActiveListeningRoomScreenProps {
 // numbers are honest; titles and durations are absent on purpose.
 const FALLBACK_TRACK_COUNT = 8
 
-export function ActiveListeningRoomScreen({ room, initialMoments, initialPresenceSnapshot }: ActiveListeningRoomScreenProps) {
+export function ActiveListeningRoomScreen({
+  room,
+  initialMoments,
+  initialPresenceSnapshot,
+  initialCycleParticipation,
+}: ActiveListeningRoomScreenProps) {
   const router = useRouter()
   const [isPendingMark, startMarkTransition] = useTransition()
   const [selectedTrack, setSelectedTrack] = useState<number | null>(null)
@@ -45,6 +52,29 @@ export function ActiveListeningRoomScreen({ room, initialMoments, initialPresenc
   useEffect(() => {
     if (room.slug && room.name) setLastRoom(room.slug, room.name)
   }, [room.slug, room.name])
+
+  // Memory: record a listen_start event when entering an active cycle.
+  // Throttled client-side via localStorage (10-minute window) so HMR,
+  // refreshes, and route revisits inside a session don't inflate the
+  // return count. The server action does a final dedup as the truthful
+  // safety net — clearing localStorage cannot pad the count.
+  useEffect(() => {
+    if (!room.cycleId) return
+    if (typeof window === 'undefined') return
+    const key = `lp_listen_start_${room.cycleId}`
+    const last = Number(window.localStorage.getItem(key) || '0')
+    if (Date.now() - last < 10 * 60 * 1000) return
+    window.localStorage.setItem(key, String(Date.now()))
+    recordRoomEntry(room.cycleId, room.currentAlbum?.id ?? null).catch(() => {})
+  }, [room.cycleId, room.currentAlbum?.id])
+
+  // The single literary memory line, computed from real participation
+  // data passed down from the page server component. Returns null when
+  // the data does not yet support an observation (no padding, no
+  // apology, no placeholder).
+  const memoryLine = initialCycleParticipation
+    ? activeRoomMemoryLine(initialCycleParticipation)
+    : null
 
   const isPrivatePhase = room.weeklyPhase === 'arrival' || room.weeklyPhase === 'private'
 
@@ -138,6 +168,15 @@ export function ActiveListeningRoomScreen({ room, initialMoments, initialPresenc
               {ritualPhase && (
                 <p className="text-sm text-muted-foreground/45 italic mt-3 max-w-md leading-relaxed">
                   {roomToneLine(ritualPhase.phase)}
+                </p>
+              )}
+              {/* Memory: self-only observation derived from real
+                  participation data. Renders only when the data
+                  supports a literary line (≥2 returns or ≥1 moment
+                  in this cycle). Honest silence otherwise. */}
+              {memoryLine && (
+                <p className="text-xs text-muted-foreground/40 mt-2 max-w-md leading-relaxed">
+                  {memoryLine}
                 </p>
               )}
             </div>

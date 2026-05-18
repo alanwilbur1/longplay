@@ -27,12 +27,14 @@ import Link from 'next/link'
 import { useAuth } from '@/components/auth-provider'
 import { useRitualPhase } from '@/lib/cadence'
 import { listMyMoments } from '@/lib/actions/moments'
+import { getMyArchiveSpan, identityTracesObservation } from '@/lib/memory'
 
 export function IdentityProfileScreen() {
   const { user, isAuthenticated, isLoading: authLoading } = useAuth()
   const ritualPhase = useRitualPhase()
 
   const [momentCount, setMomentCount] = useState<number | null>(null)
+  const [traceCount, setTraceCount] = useState<number | null>(null)
   const [isLateNight, setIsLateNight] = useState(false)
 
   useEffect(() => {
@@ -43,11 +45,18 @@ export function IdentityProfileScreen() {
   useEffect(() => {
     if (!isAuthenticated) {
       setMomentCount(0)
+      setTraceCount(0)
       return
     }
+    // Two parallel reads: moments (the user's deliberate marks) and the
+    // archive span (total participation event count, the broader
+    // "listening traces" signal — room entries, cycle joins, marks).
     listMyMoments()
       .then(r => setMomentCount(r.success && r.data ? r.data.length : 0))
       .catch(() => setMomentCount(0))
+    getMyArchiveSpan()
+      .then(s => setTraceCount(s.participationEventCount))
+      .catch(() => setTraceCount(0))
   }, [isAuthenticated])
 
   // Anchor copy. The page is the same shape for every viewer until the
@@ -128,6 +137,14 @@ export function IdentityProfileScreen() {
                   : `${momentCount} moments so far. The shape is beginning to settle.`
                 : 'No moments yet. Listening leaves traces the longer you stay.'}
             </p>
+            {/* Memory: the broader "traces" count — every recorded
+                participation event, not just moments. A single
+                factual line below the moments observation. */}
+            {traceCount !== null && (
+              <p className="text-xs text-muted-foreground/45 mt-3 leading-relaxed">
+                {identityTracesObservation(traceCount)}
+              </p>
+            )}
           </div>
         </div>
       </section>

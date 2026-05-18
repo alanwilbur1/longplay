@@ -6,6 +6,7 @@ import { getRoomBySlug as getDbRoom } from '@/lib/data/rooms'
 import { getRoomBySlug, ALL_ROOMS } from '@/lib/rooms'
 import { getMomentsByAlbumForCurrentUser } from '@/lib/data/moments'
 import { getRoomPresenceSnapshot } from '@/lib/data/presence'
+import { getMyCycleParticipation } from '@/lib/memory'
 
 // Generate static params for all rooms
 export function generateStaticParams() {
@@ -38,13 +39,16 @@ export default async function ActiveRoomPage({ params }: { params: Promise<{ slu
 
   if (!room) notFound()
 
-  // Parallel fetch: user moments + initial presence snapshot
-  const [initialMoments, initialPresenceSnapshot] = await Promise.all([
+  // Parallel fetch: user moments + initial presence + cycle participation memory
+  const [initialMoments, initialPresenceSnapshot, initialCycleParticipation] = await Promise.all([
     room.currentAlbum.id
       ? getMomentsByAlbumForCurrentUser(room.currentAlbum.id).catch(() => undefined)
       : Promise.resolve(undefined),
     room.cycleId
       ? getRoomPresenceSnapshot(room.cycleId).catch(() => undefined)
+      : Promise.resolve(undefined),
+    room.cycleId
+      ? getMyCycleParticipation(room.cycleId).catch(() => undefined)
       : Promise.resolve(undefined),
   ])
 
@@ -56,6 +60,7 @@ export default async function ActiveRoomPage({ params }: { params: Promise<{ slu
           room={room}
           initialMoments={initialMoments}
           initialPresenceSnapshot={initialPresenceSnapshot}
+          initialCycleParticipation={initialCycleParticipation}
         />
       </main>
     </ProtectedLayout>
