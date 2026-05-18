@@ -4,6 +4,7 @@ import { RoomDetailScreen } from '@/components/room-detail-screen'
 import { ProtectedLayout } from '@/components/protected-layout'
 import { getRoomBySlug as getDbRoom } from '@/lib/data/rooms'
 import { isRoomMember } from '@/lib/actions/membership'
+import { getRoomCultureObservations } from '@/lib/room-culture'
 import { getRoomBySlug, ALL_ROOMS } from '@/lib/rooms'
 
 // Static params from known slugs (build-time; no DB required)
@@ -63,11 +64,20 @@ export default async function RoomDetailPage({
     // unauthenticated — stays false
   }
 
+  // Room Culture (Phase 4C): aggregate observations about this room
+  // across all listeners. Empty array on insufficient evidence /
+  // unknown room — surface renders no section in that case.
+  const cultureObservations = await getRoomCultureObservations(slug).catch(() => [])
+
   return (
     <ProtectedLayout>
       <Navigation />
       <main className="min-h-screen pb-20 md:pb-0 md:pt-16">
-        <RoomDetailScreen room={room} initialIsJoined={initialIsJoined} />
+        <RoomDetailScreen
+          room={room}
+          initialIsJoined={initialIsJoined}
+          cultureObservations={cultureObservations}
+        />
       </main>
     </ProtectedLayout>
   )

@@ -54,6 +54,9 @@ export type InterpretationKind =
   | 'room-culture-evolution'    // "this room has become more reflective"
   | 'album-recurrence'          // Phase 4B — "an album keeps returning across cycles"
   | 'room-persistence'          // Phase 4B — "this room has remained close to listening life"
+  | 'room-pace-shift'           // Phase 4C — "this room has grown quieter / busier"
+  | 'room-marking-character'    // Phase 4C — "reflections tend to linger here / marks tend to stay brief"
+  | 'room-return-character'     // Phase 4C — "listeners often return / attention passes through"
 
 export type ObservationKind = FactKind | InterpretationKind
 
@@ -114,6 +117,29 @@ export interface Evidence {
   recurringAlbumCount?: number
   /** Count of rooms that meet the room-persistence threshold. */
   persistentRoomCount?: number
+
+  // ── Room culture signals (Phase 4C) ──────────────────────────────────────
+  // Aggregates ABOUT a specific room, computed across all listeners.
+  // Anonymity discipline: these are counts and ratios only — never per-
+  // member fields. The aggregator returns aggregates; no individual
+  // user data may flow into the rules.
+
+  /** Total cycles this room has ever had (any phase). */
+  roomTotalCycles?: number
+  /** Cycles in this room that have reached the archived phase. */
+  roomCompletedCycles?: number
+  /** Total non-deleted moments across all this room's cycles, all users. */
+  roomTotalMoments?: number
+  /** Ratio of (avg moments/cycle in last 3 archived cycles) /
+   *  (avg moments/cycle in earlier archived cycles). 1.0 = no shift. */
+  roomRecentToHistoricalMomentRatio?: number
+  /** Fraction of room moments that are 'reflection' type, across all
+   *  the room's cycles, all users. */
+  roomReflectionRatio?: number
+  /** Fraction of distinct members who have made moments in ≥2 of this
+   *  room's cycles. (Members who came once and never returned bring
+   *  this ratio down.) */
+  roomMemberReturnRatio?: number
 
   // Variance / contradiction signal — populated by future analyses
   /** True when the most recent signals contradict earlier patterns. */

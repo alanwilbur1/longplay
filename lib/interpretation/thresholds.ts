@@ -205,6 +205,57 @@ const roomPersistenceRule: ThresholdRule = (e) => {
   return makeAssessment('recurring-tendency', true, 'room-persistence-emerging')
 }
 
+// ── Phase 4C: room culture rules ────────────────────────────────────────────
+// All three rules require multi-cycle history before any room is
+// allowed to "speak about itself". Anonymity is structural: the rules
+// only read aggregates; no per-member field is exposed in Evidence.
+
+const roomPaceShiftRule: ThresholdRule = (e) => {
+  // Compares recent vs historical moments-per-cycle density. Requires
+  // ≥6 completed cycles so the comparison has both windows. The shift
+  // must be substantial (≥40% deviation in either direction) — small
+  // wiggles are not culture.
+  const completed = e.roomCompletedCycles ?? 0
+  if (completed < 6) return makeAssessment('insufficient', false, 'too-few-completed-cycles')
+  if (e.contradicts) return makeAssessment('contradictory', false, 'signals-conflict')
+  const ratio = e.roomRecentToHistoricalMomentRatio ?? 1
+  if (!Number.isFinite(ratio) || Math.abs(ratio - 1) < 0.4) {
+    return makeAssessment('ambiguous', false, 'shift-not-clear')
+  }
+  return makeAssessment('recurring-tendency', true, 'pace-shift-detected')
+}
+
+const roomMarkingCharacterRule: ThresholdRule = (e) => {
+  // Reflection ratio across all the room's moments. Requires a
+  // meaningful sample (≥4 completed cycles AND ≥30 moments) AND a
+  // clear character: reflections dominate (>50%) or are scarce
+  // (<20%). The middle band is genuine mixed activity and stays silent.
+  const cycles = e.roomCompletedCycles ?? 0
+  const total = e.roomTotalMoments ?? 0
+  if (cycles < 4 || total < 30) return makeAssessment('insufficient', false, 'too-thin')
+  if (e.contradicts) return makeAssessment('contradictory', false, 'signals-conflict')
+  const ratio = e.roomReflectionRatio ?? 0
+  if (ratio > 0.5 || ratio < 0.2) {
+    return makeAssessment('recurring-tendency', true, 'character-clear')
+  }
+  return makeAssessment('ambiguous', false, 'mixed-marking-style')
+}
+
+const roomReturnCharacterRule: ThresholdRule = (e) => {
+  // Fraction of distinct members who have marked moments in ≥2 of
+  // this room's cycles. Requires ≥4 completed cycles. Clear character:
+  // most members return (>50%) or most pass through (<20%). Middle
+  // band is normal heterogeneous activity and stays silent.
+  const cycles = e.roomCompletedCycles ?? 0
+  if (cycles < 4) return makeAssessment('insufficient', false, 'too-few-completed-cycles')
+  if (e.contradicts) return makeAssessment('contradictory', false, 'signals-conflict')
+  const ratio = e.roomMemberReturnRatio ?? 0
+  if (ratio > 0.5 || ratio < 0.2) {
+    return makeAssessment('recurring-tendency', true, 'return-character-clear')
+  }
+  return makeAssessment('ambiguous', false, 'mixed-return-pattern')
+}
+
 const roomCultureEvolutionRule: ThresholdRule = (e) => {
   // Claims about how a room itself has changed need many cycles of
   // observation. Conservative gate to prevent the "this room has
@@ -234,4 +285,8 @@ export const RULES: Record<ObservationKind, ThresholdRule> = {
   // Phase 4B
   'album-recurrence': albumRecurrenceRule,
   'room-persistence': roomPersistenceRule,
+  // Phase 4C
+  'room-pace-shift': roomPaceShiftRule,
+  'room-marking-character': roomMarkingCharacterRule,
+  'room-return-character': roomReturnCharacterRule,
 }

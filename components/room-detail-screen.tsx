@@ -8,12 +8,21 @@ import { AlbumCover } from '@/components/album-cover'
 import { type Room, getRelatedRooms, getRoomSeasonalMood, getRoomBySlug } from '@/lib/rooms'
 import { joinRoom, leaveRoom } from '@/lib/actions/membership'
 import { useAuth } from '@/components/auth-provider'
+import {
+  roomCultureSectionHeader,
+  roomCultureFootnote,
+  type RoomObservation,
+} from '@/lib/room-culture'
 
 const DEV_MODE = process.env.NODE_ENV === 'development'
 
 interface RoomDetailScreenProps {
   room: Room
   initialIsJoined?: boolean
+  /** Room Culture observations (Phase 4C). Rendered as a small
+   *  "How this room has gathered attention" section when at least
+   *  one observation has a line. Empty → section not rendered. */
+  cultureObservations?: RoomObservation[]
 }
 
 /**
@@ -27,7 +36,11 @@ interface RoomDetailScreenProps {
  * directly to the active room; the Join CTA joins, then the same CTA
  * becomes the Enter link.
  */
-export function RoomDetailScreen({ room, initialIsJoined = false }: RoomDetailScreenProps) {
+export function RoomDetailScreen({
+  room,
+  initialIsJoined = false,
+  cultureObservations = [],
+}: RoomDetailScreenProps) {
   const router = useRouter()
   const { isAuthenticated } = useAuth()
   const [isJoined, setIsJoined] = useState(initialIsJoined)
@@ -561,6 +574,48 @@ export function RoomDetailScreen({ room, initialIsJoined = false }: RoomDetailSc
             </div>
           </div>
         </section>
+
+        {/* ============================================ */}
+        {/* ROOM CULTURE — Phase 4C                       */}
+        {/* How the room has gathered attention over     */}
+        {/* time. Renders only when at least one         */}
+        {/* observation has earned a line. Collective    */}
+        {/* and atmospheric — never names individuals.   */}
+        {/* ============================================ */}
+        {cultureObservations.length > 0 && (
+          <section className={cn(
+            "px-6 py-12 md:px-12 lg:px-24 border-t",
+            room.aesthetics.borderTint
+          )}>
+            <div className="max-w-3xl">
+              <p className={cn(
+                "text-[10px] uppercase tracking-[0.3em] mb-8",
+                room.aesthetics.primaryAccent
+              )}>
+                {roomCultureSectionHeader()}
+              </p>
+
+              <div className="space-y-6">
+                {cultureObservations.map(o => (
+                  o.line && (
+                    <p
+                      key={o.kind}
+                      className="font-serif text-lg md:text-xl text-cream/80 leading-relaxed italic"
+                    >
+                      {o.line}
+                    </p>
+                  )
+                ))}
+              </div>
+
+              <div className="mt-10 pt-6 border-t border-border/10">
+                <p className="font-serif text-sm text-muted-foreground/50 italic leading-relaxed">
+                  {roomCultureFootnote()}
+                </p>
+              </div>
+            </div>
+          </section>
+        )}
 
         {/* ============================================ */}
         {/* ASSOCIATED ARCHETYPES */}

@@ -67,6 +67,9 @@ const INTERPRETATION_KINDS: ReadonlySet<InterpretationKind> = new Set([
   'room-culture-evolution',
   'album-recurrence',
   'room-persistence',
+  'room-pace-shift',
+  'room-marking-character',
+  'room-return-character',
 ])
 
 export function isFactKind(kind: ObservationKind): kind is FactKind {
