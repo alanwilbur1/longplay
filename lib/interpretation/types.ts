@@ -52,6 +52,8 @@ export type InterpretationKind =
   | 'compatibility-observation' // "shares gravitational pull with X" — deferred indefinitely
   | 'resurfacing-candidate'     // "this passage still resonates"
   | 'room-culture-evolution'    // "this room has become more reflective"
+  | 'album-recurrence'          // Phase 4B — "an album keeps returning across cycles"
+  | 'room-persistence'          // Phase 4B — "this room has remained close to listening life"
 
 export type ObservationKind = FactKind | InterpretationKind
 
@@ -91,6 +93,27 @@ export interface Evidence {
 
   // Future / cross-listener
   connectionCount?: number
+
+  // ── Resonance signals (Phase 4B) ──────────────────────────────────────────
+  // Aggregated from the user's moments joined to cycles. Each pair
+  // (count + span) captures both "how many cycles" and "how spread
+  // out in time" — the time-spread guard prevents a single-week binge
+  // from reading as recurrence.
+
+  /** Maximum number of distinct cycles ANY single album has moments in. */
+  maxAlbumRecurrence?: number
+  /** Span (in days) between earliest and latest cycle of the
+   *  most-recurrent album. */
+  maxAlbumRecurrenceDays?: number
+  /** Maximum number of distinct cycles ANY single room has user-moments in. */
+  maxRoomPersistence?: number
+  /** Span (in days) between earliest and latest cycle of the
+   *  most-persistent room. */
+  maxRoomPersistenceDays?: number
+  /** Count of albums that meet the album-recurrence threshold. */
+  recurringAlbumCount?: number
+  /** Count of rooms that meet the room-persistence threshold. */
+  persistentRoomCount?: number
 
   // Variance / contradiction signal — populated by future analyses
   /** True when the most recent signals contradict earlier patterns. */

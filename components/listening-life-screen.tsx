@@ -18,6 +18,11 @@ import { useEffect, useState } from 'react'
 import Link from 'next/link'
 import { useRitualPhase } from '@/lib/cadence'
 import { archiveSpanObservation, type ArchiveSpan } from '@/lib/memory'
+import {
+  resonanceSectionHeader,
+  resonanceFootnote,
+  type Resonance,
+} from '@/lib/resonance'
 
 interface ListeningLifeScreenProps {
   totalMoments?: number
@@ -26,12 +31,17 @@ interface ListeningLifeScreenProps {
    *  surfaces the first/last marks as a literary timespan. Absent
    *  callers still get an honest "still gathering" rendering. */
   archiveSpan?: ArchiveSpan
+  /** Resonances (Phase 4B). Renders the "what keeps returning" section
+   *  when at least one resonance has a line. Empty otherwise → section
+   *  not rendered at all. */
+  resonances?: Resonance[]
 }
 
 export function ListeningLifeScreen({
   totalMoments = 0,
   reflectionCount = 0,
   archiveSpan,
+  resonances = [],
 }: ListeningLifeScreenProps) {
   const ritualPhase = useRitualPhase()
   const [isLateNight, setIsLateNight] = useState(false)
@@ -144,6 +154,42 @@ export function ListeningLifeScreen({
           </p>
         </div>
       </section>
+
+      {/* ──────────────────────────────────────────────────────────────
+          RESONANCE — Phase 4B
+          Renders only when at least one resonance has earned a line.
+          Observations of what continues returning, never of what the
+          listener prefers. The footer reminds the reader that
+          recurrence is not ranking.
+          ────────────────────────────────────────────────────────────── */}
+      {resonances.length > 0 && (
+        <section className="px-6 py-20 md:px-12 lg:px-24 border-t border-border/10">
+          <div className="max-w-2xl mx-auto">
+            <p className="text-[10px] uppercase tracking-[0.4em] text-muted-foreground/70 mb-12">
+              {resonanceSectionHeader()}
+            </p>
+
+            <div className="space-y-8">
+              {resonances.map(r => (
+                r.line && (
+                  <p
+                    key={r.kind}
+                    className="font-serif text-xl md:text-2xl text-cream/80 leading-relaxed italic"
+                  >
+                    {r.line}
+                  </p>
+                )
+              ))}
+            </div>
+
+            <div className="mt-16 pt-8 border-t border-border/10">
+              <p className="font-serif text-sm text-muted-foreground/50 italic leading-relaxed">
+                {resonanceFootnote()}
+              </p>
+            </div>
+          </div>
+        </section>
+      )}
     </div>
   )
 }

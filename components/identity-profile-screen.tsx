@@ -33,6 +33,7 @@ import {
   emergenceFootnote,
   type Tendency,
 } from '@/lib/identity-emergence'
+import { getSpokenResonances, type Resonance } from '@/lib/resonance'
 
 export function IdentityProfileScreen() {
   const { user, isAuthenticated, isLoading: authLoading } = useAuth()
@@ -41,6 +42,7 @@ export function IdentityProfileScreen() {
   const [momentCount, setMomentCount] = useState<number | null>(null)
   const [traceCount, setTraceCount] = useState<number | null>(null)
   const [tendencies, setTendencies] = useState<Tendency[]>([])
+  const [resonances, setResonances] = useState<Resonance[]>([])
   const [isLateNight, setIsLateNight] = useState(false)
 
   useEffect(() => {
@@ -53,6 +55,7 @@ export function IdentityProfileScreen() {
       setMomentCount(0)
       setTraceCount(0)
       setTendencies([])
+      setResonances([])
       return
     }
     // Three parallel reads: moments (deliberate marks), the archive
@@ -65,6 +68,9 @@ export function IdentityProfileScreen() {
     getSpokenTendencies()
       .then(setTendencies)
       .catch(() => setTendencies([]))
+    getSpokenResonances()
+      .then(setResonances)
+      .catch(() => setResonances([]))
     getMyArchiveSpan()
       .then(s => setTraceCount(s.participationEventCount))
       .catch(() => setTraceCount(0))
@@ -166,7 +172,7 @@ export function IdentityProfileScreen() {
           Lines describe shape of behavior, not personality. The
           "still faint" footnote always closes the section.
           ────────────────────────────────────────────────────────────── */}
-      {tendencies.length > 0 && (
+      {(tendencies.length > 0 || resonances.some(r => r.line)) && (
         <section className="px-6 py-20 md:px-12 lg:px-24 border-t border-border/10">
           <div className="max-w-2xl mx-auto">
             <p className="text-[10px] uppercase tracking-[0.4em] text-muted-foreground/70 mb-12">
@@ -184,6 +190,25 @@ export function IdentityProfileScreen() {
                   </p>
                 )
               ))}
+              {/* Phase 4B: at most ONE resonance line on Identity.
+                  Prefer room-persistence (the stronger claim) when
+                  available; otherwise fall through to whichever
+                  resonance has surfaced. Resonance on Identity is
+                  deliberately rare — /archive is the primary surface. */}
+              {(() => {
+                const primary =
+                  resonances.find(r => r.kind === 'room-persistence' && r.line) ??
+                  resonances.find(r => r.line)
+                if (!primary?.line) return null
+                return (
+                  <p
+                    key={`resonance-${primary.kind}`}
+                    className="font-serif text-xl md:text-2xl text-cream/80 leading-relaxed italic"
+                  >
+                    {primary.line}
+                  </p>
+                )
+              })()}
             </div>
 
             <div className="mt-16 pt-8 border-t border-border/10">

@@ -169,6 +169,42 @@ const resurfacingCandidateRule: ThresholdRule = (e) => {
   return makeAssessment('weak-signal', false, 'surface-must-filter')
 }
 
+// ── Phase 4B: resonance rules ───────────────────────────────────────────────
+// Both rules use a count + time-spread pair so a single-cycle binge
+// cannot read as recurrence. Spans are measured between the earliest
+// and latest cycle.start_date for the entity in question.
+
+const albumRecurrenceRule: ThresholdRule = (e) => {
+  // Album recurrence: the same album appears in this user's moments
+  // across multiple cycles. Three cycles is the eligibility floor;
+  // two-cycle pairs stay silent because they could be coincidence.
+  const cycles = e.maxAlbumRecurrence ?? 0
+  const span = e.maxAlbumRecurrenceDays ?? 0
+  if (cycles < 2 || span < 21) return makeAssessment('insufficient', false, 'no-album-recurrence')
+  if (e.contradicts) return makeAssessment('contradictory', false, 'signals-conflict')
+  if (isDormant(e)) return makeAssessment('dormant', false, 'listener-absent')
+  if (cycles >= 3 && span >= 56) {
+    return makeAssessment('recurring-tendency', true, 'strong-album-recurrence')
+  }
+  return makeAssessment('emerging-pattern', false, 'recurrence-faint')
+}
+
+const roomPersistenceRule: ThresholdRule = (e) => {
+  // Room persistence: the same room shows up in the user's moments
+  // across many cycles, with substantial time spread. A stronger
+  // claim than album recurrence — "this room has remained" is a
+  // longer arc than "this album returned". Higher bar.
+  const cycles = e.maxRoomPersistence ?? 0
+  const span = e.maxRoomPersistenceDays ?? 0
+  if (cycles < 3 || span < 42) return makeAssessment('insufficient', false, 'no-room-persistence')
+  if (e.contradicts) return makeAssessment('contradictory', false, 'signals-conflict')
+  if (isDormant(e)) return makeAssessment('dormant', false, 'listener-absent')
+  if (cycles >= 5 && span >= 84) {
+    return makeAssessment('strong-longitudinal', true, 'strong-room-persistence')
+  }
+  return makeAssessment('recurring-tendency', true, 'room-persistence-emerging')
+}
+
 const roomCultureEvolutionRule: ThresholdRule = (e) => {
   // Claims about how a room itself has changed need many cycles of
   // observation. Conservative gate to prevent the "this room has
@@ -195,4 +231,7 @@ export const RULES: Record<ObservationKind, ThresholdRule> = {
   'compatibility-observation': compatibilityObservationRule,
   'resurfacing-candidate': resurfacingCandidateRule,
   'room-culture-evolution': roomCultureEvolutionRule,
+  // Phase 4B
+  'album-recurrence': albumRecurrenceRule,
+  'room-persistence': roomPersistenceRule,
 }

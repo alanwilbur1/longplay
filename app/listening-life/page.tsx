@@ -3,6 +3,7 @@ import { ListeningLifeScreen } from '@/components/listening-life-screen'
 import { ProtectedLayout } from '@/components/protected-layout'
 import { listMyMoments } from '@/lib/actions/moments'
 import { getMyArchiveSpan } from '@/lib/memory'
+import { getSpokenResonances } from '@/lib/resonance'
 
 export default async function ListeningLifePage() {
   let totalMoments = 0
@@ -17,8 +18,8 @@ export default async function ListeningLifePage() {
     // moments table not yet applied — page still renders with zero counts
   }
 
-  // Memory: real archive span. Soft-failing.
   const archiveSpan = await getMyArchiveSpan().catch(() => undefined)
+  const resonances = await getSpokenResonances().catch(() => [])
 
   return (
     <ProtectedLayout>
@@ -28,6 +29,7 @@ export default async function ListeningLifePage() {
           totalMoments={totalMoments}
           reflectionCount={reflectionCount}
           archiveSpan={archiveSpan}
+          resonances={resonances}
         />
       </main>
     </ProtectedLayout>

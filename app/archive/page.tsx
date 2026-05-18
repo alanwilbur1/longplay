@@ -3,6 +3,7 @@ import { ListeningLifeScreen } from '@/components/listening-life-screen'
 import { ProtectedLayout } from '@/components/protected-layout'
 import { listMyMoments } from '@/lib/actions/moments'
 import { getMyArchiveSpan } from '@/lib/memory'
+import { getSpokenResonances } from '@/lib/resonance'
 
 export const metadata = {
   title: 'Your Listening Life | LongPlay',
@@ -38,6 +39,11 @@ export default async function ArchivePage() {
   // memory layer is unreachable.
   const archiveSpan = await getMyArchiveSpan().catch(() => undefined)
 
+  // Resonance: things that keep returning across cycles. Empty array
+  // for new users / weak evidence; the surface renders nothing in
+  // that case.
+  const resonances = await getSpokenResonances().catch(() => [])
+
   return (
     <ProtectedLayout>
       <Navigation />
@@ -46,6 +52,7 @@ export default async function ArchivePage() {
           totalMoments={totalMoments}
           reflectionCount={reflectionCount}
           archiveSpan={archiveSpan}
+          resonances={resonances}
         />
       </main>
     </ProtectedLayout>
