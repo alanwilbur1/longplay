@@ -35,6 +35,9 @@ interface ListeningLifeScreenProps {
    *  when at least one resonance has a line. Empty otherwise → section
    *  not rendered at all. */
   resonances?: Resonance[]
+  /** Continuity (Phase 5A): at most one temporal line above the
+   *  hero. Mostly returning-after-absence on this surface. */
+  continuityLine?: string | null
 }
 
 export function ListeningLifeScreen({
@@ -42,6 +45,7 @@ export function ListeningLifeScreen({
   reflectionCount = 0,
   archiveSpan,
   resonances = [],
+  continuityLine = null,
 }: ListeningLifeScreenProps) {
   const ritualPhase = useRitualPhase()
   const [isLateNight, setIsLateNight] = useState(false)
@@ -69,6 +73,14 @@ export function ListeningLifeScreen({
         </div>
 
         <div className="text-center max-w-xl mx-auto animate-fade-in-slow">
+          {/* Phase 5A continuity: at most one quiet line above the
+              archive label. Acknowledges returning after absence. */}
+          {continuityLine && (
+            <p className="font-serif text-sm md:text-base text-cream/55 italic leading-relaxed mb-8 max-w-md mx-auto">
+              {continuityLine}
+            </p>
+          )}
+
           <p className="text-[10px] uppercase tracking-[0.5em] text-tobacco mb-10">
             A Lifelong Archive
           </p>

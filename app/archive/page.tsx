@@ -4,6 +4,7 @@ import { ProtectedLayout } from '@/components/protected-layout'
 import { listMyMoments } from '@/lib/actions/moments'
 import { getMyArchiveSpan } from '@/lib/memory'
 import { getSpokenResonances } from '@/lib/resonance'
+import { getUserContinuity } from '@/lib/continuity'
 
 export const metadata = {
   title: 'Your Listening Life | LongPlay',
@@ -44,6 +45,10 @@ export default async function ArchivePage() {
   // that case.
   const resonances = await getSpokenResonances().catch(() => [])
 
+  // Phase 5A continuity: the archive is one of the slowest surfaces
+  // in the product — returning-after-absence is most felt here.
+  const continuity = await getUserContinuity().catch(() => null)
+
   return (
     <ProtectedLayout>
       <Navigation />
@@ -53,6 +58,7 @@ export default async function ArchivePage() {
           reflectionCount={reflectionCount}
           archiveSpan={archiveSpan}
           resonances={resonances}
+          continuityLine={continuity?.line ?? null}
         />
       </main>
     </ProtectedLayout>

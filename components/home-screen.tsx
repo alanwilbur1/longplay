@@ -11,6 +11,9 @@ import type { Room } from '@/lib/rooms'
 
 interface HomeScreenProps {
   joinedRooms: Room[]
+  /** Phase 5A: at most one quiet temporal acknowledgment above the
+   *  ritual prompt. Null when no continuity state applies. */
+  continuityLine?: string | null
 }
 
 /**
@@ -25,7 +28,7 @@ interface HomeScreenProps {
  * homepage holds no ritual strings of its own. Other surfaces consume
  * the same engine so the listener moves through a coherent week.
  */
-export function HomeScreen({ joinedRooms }: HomeScreenProps) {
+export function HomeScreen({ joinedRooms, continuityLine = null }: HomeScreenProps) {
   const ritualPhase = useRitualPhase()
 
   // Late-night modulation honours the user's local clock; first paint
@@ -76,6 +79,16 @@ export function HomeScreen({ joinedRooms }: HomeScreenProps) {
 
         <div className="text-center max-w-2xl animate-fade-in-slow">
           <LongPlayLogo className="mb-8" />
+
+          {/* Phase 5A: continuity line — at most one. Sits above the
+              day/phase label as the page's first acknowledgment of
+              time, before the ritual prompt arrives. Renders nothing
+              when no temporal state applies. */}
+          {continuityLine && (
+            <p className="font-serif text-sm md:text-base text-cream/55 italic leading-relaxed mb-6 max-w-md mx-auto">
+              {continuityLine}
+            </p>
+          )}
 
           <p className="text-[10px] uppercase tracking-[0.5em] text-cream/50 mb-3">
             {ritualPhase ? `${ritualPhase.day} · ${ritualPhase.title}` : ' '}

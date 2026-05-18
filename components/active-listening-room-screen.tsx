@@ -20,6 +20,9 @@ interface ActiveListeningRoomScreenProps {
   initialMoments?: Moment[]
   initialPresenceSnapshot?: PresenceSnapshot
   initialCycleParticipation?: CycleParticipation
+  /** Phase 5A: at most one continuity line. Null when no temporal
+   *  state applies (the common case for steady weekday visits). */
+  continuityLine?: string | null
 }
 
 // Track-level data is not yet in the schema. Until album_tracks lands,
@@ -33,6 +36,7 @@ export function ActiveListeningRoomScreen({
   initialMoments,
   initialPresenceSnapshot,
   initialCycleParticipation,
+  continuityLine = null,
 }: ActiveListeningRoomScreenProps) {
   const router = useRouter()
   const [isPendingMark, startMarkTransition] = useTransition()
@@ -168,6 +172,15 @@ export function ActiveListeningRoomScreen({
               {ritualPhase && (
                 <p className="text-sm text-muted-foreground/45 italic mt-3 max-w-md leading-relaxed">
                   {roomToneLine(ritualPhase.phase)}
+                </p>
+              )}
+              {/* Phase 5A continuity: at most one line. Cycle-arrival,
+                  cycle-closing, or returning-after-absence. Renders
+                  only when a temporal state has earned the right to
+                  speak. */}
+              {continuityLine && (
+                <p className="text-sm text-muted-foreground/45 italic mt-3 max-w-md leading-relaxed">
+                  {continuityLine}
                 </p>
               )}
               {/* Memory: self-only observation derived from real
