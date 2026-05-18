@@ -28,6 +28,11 @@ import { useAuth } from '@/components/auth-provider'
 import { useRitualPhase } from '@/lib/cadence'
 import { listMyMoments } from '@/lib/actions/moments'
 import { getMyArchiveSpan, identityTracesObservation } from '@/lib/memory'
+import {
+  getSpokenTendencies,
+  emergenceFootnote,
+  type Tendency,
+} from '@/lib/identity-emergence'
 
 export function IdentityProfileScreen() {
   const { user, isAuthenticated, isLoading: authLoading } = useAuth()
@@ -35,6 +40,7 @@ export function IdentityProfileScreen() {
 
   const [momentCount, setMomentCount] = useState<number | null>(null)
   const [traceCount, setTraceCount] = useState<number | null>(null)
+  const [tendencies, setTendencies] = useState<Tendency[]>([])
   const [isLateNight, setIsLateNight] = useState(false)
 
   useEffect(() => {
@@ -46,14 +52,19 @@ export function IdentityProfileScreen() {
     if (!isAuthenticated) {
       setMomentCount(0)
       setTraceCount(0)
+      setTendencies([])
       return
     }
-    // Two parallel reads: moments (the user's deliberate marks) and the
-    // archive span (total participation event count, the broader
-    // "listening traces" signal — room entries, cycle joins, marks).
+    // Three parallel reads: moments (deliberate marks), the archive
+    // span (broader "listening traces" count), and the spoken
+    // tendencies from the identity-emergence layer. All three soft-
+    // fail to honest zero/empty states.
     listMyMoments()
       .then(r => setMomentCount(r.success && r.data ? r.data.length : 0))
       .catch(() => setMomentCount(0))
+    getSpokenTendencies()
+      .then(setTendencies)
+      .catch(() => setTendencies([]))
     getMyArchiveSpan()
       .then(s => setTraceCount(s.participationEventCount))
       .catch(() => setTraceCount(0))
@@ -148,6 +159,41 @@ export function IdentityProfileScreen() {
           </div>
         </div>
       </section>
+
+      {/* ──────────────────────────────────────────────────────────────
+          EARLY EMERGENCE — Phase 4A
+          Renders only when at least one tendency has earned a line.
+          Lines describe shape of behavior, not personality. The
+          "still faint" footnote always closes the section.
+          ────────────────────────────────────────────────────────────── */}
+      {tendencies.length > 0 && (
+        <section className="px-6 py-20 md:px-12 lg:px-24 border-t border-border/10">
+          <div className="max-w-2xl mx-auto">
+            <p className="text-[10px] uppercase tracking-[0.4em] text-muted-foreground/70 mb-12">
+              Early Emergence
+            </p>
+
+            <div className="space-y-8">
+              {tendencies.map(t => (
+                t.line && (
+                  <p
+                    key={t.kind}
+                    className="font-serif text-xl md:text-2xl text-cream/80 leading-relaxed italic"
+                  >
+                    {t.line}
+                  </p>
+                )
+              ))}
+            </div>
+
+            <div className="mt-16 pt-8 border-t border-border/10">
+              <p className="font-serif text-sm text-muted-foreground/50 italic leading-relaxed">
+                {emergenceFootnote()}
+              </p>
+            </div>
+          </div>
+        </section>
+      )}
 
       {/* ──────────────────────────────────────────────────────────────
           INVITATION — quiet, two-route

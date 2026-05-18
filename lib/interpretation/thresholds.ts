@@ -105,13 +105,25 @@ const roomTendencyRule: ThresholdRule = (e) => {
 }
 
 const crossRoomPatternRule: ThresholdRule = (e) => {
-  // Cross-room patterns ("favours rooms with X atmosphere") require
-  // the user to have meaningfully engaged with multiple rooms.
+  // Cross-room patterns ("favours rooms with X atmosphere", "your
+  // listening is moving across rooms") require the user to have
+  // meaningfully engaged with multiple rooms over real time. The bar
+  // is intentionally high.
+  //
+  // Phase 4A amendment: escalates to recurring-tendency (the
+  // interpretation eligibility floor) only when evidence is strong:
+  // ≥6 distinct rooms AND ≥56 days active AND ≥3 cycles. Below that
+  // the rule still returns emerging-pattern, which surfaces stay
+  // silent on (the framework default).
   const rooms = e.distinctRoomsTouched ?? 0
   const days = e.daysActive ?? 0
+  const cycles = e.cyclesParticipated ?? 0
   if (rooms < 3 || days < 28) return makeAssessment('insufficient', false, 'too-few-rooms-or-time')
   if (e.contradicts) return makeAssessment('contradictory', false, 'signals-conflict')
   if (isDormant(e)) return makeAssessment('dormant', false, 'listener-absent')
+  if (rooms >= 6 && days >= 56 && cycles >= 3) {
+    return makeAssessment('recurring-tendency', true, 'strong-cross-room-evidence')
+  }
   return makeAssessment('emerging-pattern', false, 'pattern-faint')
 }
 
