@@ -57,6 +57,9 @@ export type InterpretationKind =
   | 'room-pace-shift'           // Phase 4C — "this room has grown quieter / busier"
   | 'room-marking-character'    // Phase 4C — "reflections tend to linger here / marks tend to stay brief"
   | 'room-return-character'     // Phase 4C — "listeners often return / attention passes through"
+  | 'archive-softening'         // Phase 5B — "some traces have begun settling deeper"
+  | 'persistent-traces'         // Phase 5B — "certain reflections continue surviving long absences"
+  | 'room-drift'                // Phase 5B — "a room has drifted into a slower season"
 
 export type ObservationKind = FactKind | InterpretationKind
 
@@ -140,6 +143,28 @@ export interface Evidence {
    *  room's cycles. (Members who came once and never returned bring
    *  this ratio down.) */
   roomMemberReturnRatio?: number
+
+  // ── Fading / persistence signals (Phase 5B) ──────────────────────────────
+  // All per-user aggregates over the listener's own archive. Each
+  // counts a class of moment by its age + continued-relevance
+  // properties. The persistence bar is intentionally higher than
+  // Phase 4B's recurrence: persistence requires AGE, not just
+  // recurrence count.
+
+  /** Total non-deleted moments the user has — Phase 5B's archive-
+   *  softening detector consults this alongside the old-moment count.
+   *  Distinct from Phase 3G's totalMoments only by being explicit
+   *  about the count's role; the same underlying number is fine. */
+  fadingTotalMoments?: number
+  /** Count of user moments whose cycle was archived ≥30 days ago. */
+  fadingOldMomentCount?: number
+  /** Count of user moments that are ≥60 days old AND have a same-
+   *  album moment in a cycle starting ≥30 days after the moment's
+   *  cycle. */
+  fadingPersistentMomentCount?: number
+  /** Count of rooms where the user's moment activity spans ≥30 days
+   *  AND most recent moment is ≥21 days ago. */
+  fadingDriftedRoomCount?: number
 
   // Variance / contradiction signal — populated by future analyses
   /** True when the most recent signals contradict earlier patterns. */

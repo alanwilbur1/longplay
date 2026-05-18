@@ -5,6 +5,7 @@ import { listMyMoments } from '@/lib/actions/moments'
 import { getMyArchiveSpan } from '@/lib/memory'
 import { getSpokenResonances } from '@/lib/resonance'
 import { getUserContinuity } from '@/lib/continuity'
+import { getSpokenFadingObservations } from '@/lib/fading'
 
 export const metadata = {
   title: 'Your Listening Life | LongPlay',
@@ -49,6 +50,11 @@ export default async function ArchivePage() {
   // in the product — returning-after-absence is most felt here.
   const continuity = await getUserContinuity().catch(() => null)
 
+  // Phase 5B fading: how the archive has aged. Multiple observations
+  // can coexist because they describe orthogonal axes (whole-archive
+  // softening, specific persistent traces, drifted rooms).
+  const fadingObservations = await getSpokenFadingObservations().catch(() => [])
+
   return (
     <ProtectedLayout>
       <Navigation />
@@ -59,6 +65,7 @@ export default async function ArchivePage() {
           archiveSpan={archiveSpan}
           resonances={resonances}
           continuityLine={continuity?.line ?? null}
+          fadingObservations={fadingObservations}
         />
       </main>
     </ProtectedLayout>

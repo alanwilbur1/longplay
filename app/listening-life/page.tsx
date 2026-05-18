@@ -5,6 +5,7 @@ import { listMyMoments } from '@/lib/actions/moments'
 import { getMyArchiveSpan } from '@/lib/memory'
 import { getSpokenResonances } from '@/lib/resonance'
 import { getUserContinuity } from '@/lib/continuity'
+import { getSpokenFadingObservations } from '@/lib/fading'
 
 export default async function ListeningLifePage() {
   let totalMoments = 0
@@ -22,6 +23,7 @@ export default async function ListeningLifePage() {
   const archiveSpan = await getMyArchiveSpan().catch(() => undefined)
   const resonances = await getSpokenResonances().catch(() => [])
   const continuity = await getUserContinuity().catch(() => null)
+  const fadingObservations = await getSpokenFadingObservations().catch(() => [])
 
   return (
     <ProtectedLayout>
@@ -33,6 +35,7 @@ export default async function ListeningLifePage() {
           archiveSpan={archiveSpan}
           resonances={resonances}
           continuityLine={continuity?.line ?? null}
+          fadingObservations={fadingObservations}
         />
       </main>
     </ProtectedLayout>

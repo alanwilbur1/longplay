@@ -256,6 +256,57 @@ const roomReturnCharacterRule: ThresholdRule = (e) => {
   return makeAssessment('ambiguous', false, 'mixed-return-pattern')
 }
 
+// ── Phase 5B: fading & persistence rules ────────────────────────────────────
+// Persistence is structurally HARDER to earn than recurrence. Each
+// rule requires age plus continued-relevance, not just recurrence
+// count. Default silent; all three apply universal dormancy +
+// contradicts demotions.
+
+const archiveSofteningRule: ThresholdRule = (e) => {
+  // Archive has settled when the user has a meaningful archive AND a
+  // substantial fraction is from old (archived ≥30-day) cycles AND
+  // there is also a recency gap (≥7 days since last activity). Without
+  // the recency gap, "old archive" is just history — not softening.
+  const total = e.fadingTotalMoments ?? e.totalMoments ?? 0
+  const old = e.fadingOldMomentCount ?? 0
+  const daysGap = e.daysSinceLastActivity ?? 0
+  if (total < 10) return makeAssessment('insufficient', false, 'archive-too-shallow')
+  if (daysGap < 7) return makeAssessment('insufficient', false, 'recent-activity-still-present')
+  if (e.contradicts) return makeAssessment('contradictory', false, 'signals-conflict')
+  const oldRatio = old / total
+  if (oldRatio < 0.3) return makeAssessment('insufficient', false, 'too-little-old-material')
+  if (isDormant(e)) return makeAssessment('dormant', true, 'dormant-listener', 'time-passed')
+  return makeAssessment('recurring-tendency', true, 'archive-has-settled')
+}
+
+const persistentTracesRule: ThresholdRule = (e) => {
+  // Persistence is the strongest temporal claim the system makes. A
+  // moment is persistent only when it is OLD (≥60 days) AND its
+  // album has continued to appear in cycles after its creation. A
+  // recent burst of activity across 3 cycles in one month does not
+  // qualify — that's Phase 4B recurrence.
+  const persistent = e.fadingPersistentMomentCount ?? 0
+  if (persistent < 3) return makeAssessment('insufficient', false, 'too-few-persistent-moments')
+  if (e.contradicts) return makeAssessment('contradictory', false, 'signals-conflict')
+  if (isDormant(e)) return makeAssessment('dormant', false, 'listener-absent')
+  if (persistent >= 7) {
+    return makeAssessment('strong-longitudinal', true, 'archive-deeply-persistent')
+  }
+  return makeAssessment('recurring-tendency', true, 'archive-has-persistent-traces')
+}
+
+const roomDriftRule: ThresholdRule = (e) => {
+  // Drift requires the user to have invested in a room (span ≥30
+  // days of moments there) AND then stepped away (most recent activity
+  // ≥21 days ago). Either alone is not drift — a brand-new room or
+  // a still-active room.
+  const drifted = e.fadingDriftedRoomCount ?? 0
+  if (drifted < 1) return makeAssessment('insufficient', false, 'no-drifted-room')
+  if (e.contradicts) return makeAssessment('contradictory', false, 'signals-conflict')
+  if (isDormant(e)) return makeAssessment('dormant', false, 'listener-absent')
+  return makeAssessment('recurring-tendency', true, 'room-has-drifted')
+}
+
 const roomCultureEvolutionRule: ThresholdRule = (e) => {
   // Claims about how a room itself has changed need many cycles of
   // observation. Conservative gate to prevent the "this room has
@@ -289,4 +340,8 @@ export const RULES: Record<ObservationKind, ThresholdRule> = {
   'room-pace-shift': roomPaceShiftRule,
   'room-marking-character': roomMarkingCharacterRule,
   'room-return-character': roomReturnCharacterRule,
+  // Phase 5B
+  'archive-softening': archiveSofteningRule,
+  'persistent-traces': persistentTracesRule,
+  'room-drift': roomDriftRule,
 }

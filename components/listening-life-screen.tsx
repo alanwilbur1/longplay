@@ -23,6 +23,11 @@ import {
   resonanceFootnote,
   type Resonance,
 } from '@/lib/resonance'
+import {
+  fadingSectionHeader,
+  fadingFootnote,
+  type FadingObservation,
+} from '@/lib/fading'
 
 interface ListeningLifeScreenProps {
   totalMoments?: number
@@ -38,6 +43,10 @@ interface ListeningLifeScreenProps {
   /** Continuity (Phase 5A): at most one temporal line above the
    *  hero. Mostly returning-after-absence on this surface. */
   continuityLine?: string | null
+  /** Fading observations (Phase 5B). Renders the "how the archive
+   *  has aged" section when at least one has a line. Multiple can
+   *  coexist — they describe orthogonal axes of fading. */
+  fadingObservations?: FadingObservation[]
 }
 
 export function ListeningLifeScreen({
@@ -46,6 +55,7 @@ export function ListeningLifeScreen({
   archiveSpan,
   resonances = [],
   continuityLine = null,
+  fadingObservations = [],
 }: ListeningLifeScreenProps) {
   const ritualPhase = useRitualPhase()
   const [isLateNight, setIsLateNight] = useState(false)
@@ -197,6 +207,41 @@ export function ListeningLifeScreen({
             <div className="mt-16 pt-8 border-t border-border/10">
               <p className="font-serif text-sm text-muted-foreground/50 italic leading-relaxed">
                 {resonanceFootnote()}
+              </p>
+            </div>
+          </div>
+        </section>
+      )}
+
+      {/* ──────────────────────────────────────────────────────────────
+          FADING & PERSISTENCE — Phase 5B
+          Renders only when at least one observation has earned a line.
+          Multiple can coexist (orthogonal axes). Distinct from
+          Resonance: fading is about age + survival, not recurrence.
+          ────────────────────────────────────────────────────────────── */}
+      {fadingObservations.length > 0 && (
+        <section className="px-6 py-20 md:px-12 lg:px-24 border-t border-border/10">
+          <div className="max-w-2xl mx-auto">
+            <p className="text-[10px] uppercase tracking-[0.4em] text-muted-foreground/70 mb-12">
+              {fadingSectionHeader()}
+            </p>
+
+            <div className="space-y-8">
+              {fadingObservations.map(o => (
+                o.line && (
+                  <p
+                    key={o.state}
+                    className="font-serif text-xl md:text-2xl text-cream/80 leading-relaxed italic"
+                  >
+                    {o.line}
+                  </p>
+                )
+              ))}
+            </div>
+
+            <div className="mt-16 pt-8 border-t border-border/10">
+              <p className="font-serif text-sm text-muted-foreground/50 italic leading-relaxed">
+                {fadingFootnote()}
               </p>
             </div>
           </div>
