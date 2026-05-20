@@ -13,9 +13,11 @@ import { join, relative } from 'node:path'
 
 const ROOT = process.cwd()
 const ALLOWLIST = new Set([
+  'lib/env.ts',                       // env-var validation refers to the name
   'lib/supabase/admin.ts',
   'scripts/check-service-role-leak.mjs',
   'scripts/seed-phase2.ts',
+  'app/api/auth/diagnose/route.ts',   // internal admin diagnostic route
 ])
 
 const IGNORE_DIRS = new Set([

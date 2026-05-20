@@ -3,6 +3,7 @@
 import { cookies } from 'next/headers'
 import { redirect } from 'next/navigation'
 import { createSupabaseServerClient } from '@/lib/supabase/server'
+import { getOnboardingStatus } from '@/lib/actions/onboarding'
 
 /**
  * Two server actions for the email-OTP sign-in flow.
@@ -126,24 +127,16 @@ export async function verifyCode(formData: FormData) {
 
   // Route based on profile state. New users (just created by verifyOtp +
   // handle_new_user trigger) have onboarding_completed=false → onboarding.
-  // Returning users skip straight to ?next= or /.
-  const {
-    data: { user },
-  } = await supabase.auth.getUser()
-  if (user) {
-    const { data: profile } = await supabase
-      .from('user_profiles')
-      .select('onboarding_completed')
-      .eq('id', user.id)
-      .maybeSingle()
-
-    if (profile?.onboarding_completed) {
-      redirect(pending.next || '/')
-    }
-    redirect('/onboarding')
+  // Returning users skip straight to ?next= or /. Uses the canonical
+  // helper so the routing logic is shared with the rest of the app.
+  const status = await getOnboardingStatus()
+  if (!status.authenticated) {
+    redirect('/sign-in?error=session_lost')
   }
-
-  redirect('/sign-in?error=session_lost')
+  if (status.onboardingCompleted) {
+    redirect(pending.next || '/')
+  }
+  redirect('/onboarding')
 }
 
 /**
