@@ -159,11 +159,39 @@ export function OnboardingScreen() {
         STEPS.includes(saved) &&
         saved !== 'complete' &&
         !PRE_AUTH_STEPS.has(saved)
-      if (isResumableStep) {
-        setCurrentStep(saved!)
-      } else {
-        setCurrentStep(FIRST_AUTHENTICATED_STEP)
+      const resolved: Step = isResumableStep ? saved! : FIRST_AUTHENTICATED_STEP
+      const ignored = !!saved && !isResumableStep
+
+      setCurrentStep(resolved)
+
+      if (DEV_MODE) {
+        console.log('[onboarding] step resolution', {
+          savedCurrentStep: saved ?? null,
+          resolvedCurrentStep: resolved,
+          ignored,
+          reason: ignored
+            ? saved === 'complete'
+              ? 'terminal step'
+              : PRE_AUTH_STEPS.has(saved as Step)
+                ? 'pre-auth step'
+                : 'unknown step'
+            : saved
+              ? 'resumed from saved'
+              : 'no saved step',
+        })
       }
+
+      // If we ignored a stale pre-auth saved step, immediately rewrite
+      // localStorage with the resolved step so the next load starts
+      // clean — don't wait for the save-effect to flush.
+      if (ignored) {
+        saveOnboardingState({
+          currentStep: resolved,
+          connectedServices: savedState.connectedServices,
+          calibrationAnswers: savedState.calibrationAnswers,
+        })
+      }
+
       if (savedState.connectedServices) {
         setConnectedServices(savedState.connectedServices)
       }
@@ -176,6 +204,12 @@ export function OnboardingScreen() {
 
     supabase.auth.getUser()
       .then(({ data: { user } }) => {
+        if (DEV_MODE) {
+          console.log('[onboarding] auth check', {
+            authenticatedUserId: user?.id ?? null,
+            hasSession: !!user,
+          })
+        }
         if (!user) {
           // No active session. localStorage is not an identity source;
           // we never read it for completion. Just show the wizard chrome
@@ -352,7 +386,9 @@ export function OnboardingScreen() {
           onBack={() => setIsLoginMode(false)}
           onContinueOnboarding={() => {
             setIsLoginMode(false)
-            setCurrentStep('connect')
+            // Always land in the authenticated wizard. Never re-enter
+            // the pre-auth steps from a post-login bounce.
+            setCurrentStep(FIRST_AUTHENTICATED_STEP)
           }}
         />
       )}
