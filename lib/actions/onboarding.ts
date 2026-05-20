@@ -58,11 +58,18 @@ export async function getOnboardingStatus(): Promise<{
     return { authenticated: false, onboardingCompleted: false }
   }
 
-  const { data: profile } = await supabase
+  const { data: profile, error } = await supabase
     .from('user_profiles')
     .select('onboarding_completed')
     .eq('id', user.id)
-    .single()
+    .maybeSingle()
+
+  if (error && process.env.NODE_ENV !== 'production') {
+    console.warn('[getOnboardingStatus] profile read failed', {
+      code: error.code,
+      message: error.message,
+    })
+  }
 
   return {
     authenticated: true,

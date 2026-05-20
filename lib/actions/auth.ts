@@ -97,16 +97,23 @@ export async function getUserProfile(): Promise<{
           .from('user_profiles')
           .select('id, display_name, onboarding_completed, preferences, created_at')
           .eq('id', user.id)
-          .single(),
+          .maybeSingle(),
         supabase
           .from('user_memberships')
           .select('tier')
           .eq('user_id', user.id)
-          .single(),
+          .maybeSingle(),
       ])
 
     if (profileError) {
       console.error('[getUserProfile] error:', profileError.message)
+      return null
+    }
+
+    if (!profile) {
+      // Row not yet created by the handle_new_user trigger (or trigger
+      // swallowed an error per schema-patch.sql). Caller treats null as
+      // "no profile yet"; the next round-trip will see it.
       return null
     }
 

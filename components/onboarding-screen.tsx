@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { useRouter } from 'next/navigation'
 import { cn } from '@/lib/utils'
 import { AlbumCover } from '@/components/album-cover'
@@ -183,11 +183,13 @@ export function OnboardingScreen() {
 
         // Authenticated — DB is source of truth. Covers returning users who
         // cleared localStorage or signed in on a new device.
+        // .maybeSingle() so a transient missing row (handle_new_user trigger
+        // race) returns null instead of a 406, letting the wizard render.
         return supabase
           .from('user_profiles')
           .select('onboarding_completed')
           .eq('id', user.id)
-          .single()
+          .maybeSingle()
           .then(({ data }) => {
             const profile = data as { onboarding_completed: boolean } | null
             const completed = profile?.onboarding_completed ?? false
@@ -1083,7 +1085,7 @@ function friendlyAuthError(message: string): string {
 
 type AuthPhase = 'email' | 'otp' | 'success'
 
-function CompleteStep({ onFinish, onAuthSuccess, sessionCheckError = '' }: { 
+function CompleteStep({ onFinish, onAuthSuccess, sessionCheckError = '' }: {
   onFinish: () => void
   onAuthSuccess: () => void
   sessionCheckError?: string
@@ -1096,6 +1098,22 @@ function CompleteStep({ onFinish, onAuthSuccess, sessionCheckError = '' }: {
   const [sendError, setSendError] = useState('')
   const [otpError, setOtpError] = useState('')
   const [resendCooldown, setResendCooldown] = useState(0)
+  const skippedRef = useRef(false)
+
+  // If the listener arrived here already signed in (canonical flow:
+  // /sign-in → OTP → /onboarding → calibration → here), skip the
+  // redundant second OTP entirely. Just persist completion and go home.
+  useEffect(() => {
+    if (skippedRef.current) return
+    const supabase = getSupabaseBrowserClient()
+    supabase.auth.getUser().then(({ data: { user } }) => {
+      if (user && !skippedRef.current) {
+        skippedRef.current = true
+        setPhase('success')
+        onAuthSuccess()
+      }
+    })
+  }, [onAuthSuccess])
 
   // Countdown ticker for resend cooldown
   useEffect(() => {
@@ -1383,6 +1401,32 @@ function LoginStep({
   const [otpError, setOtpError] = useState('')
   const [resendCooldown, setResendCooldown] = useState(0)
   const [devDiag, setDevDiag] = useState('')
+  const skippedRef = useRef(false)
+
+  // Already signed in (e.g. user reached this surface through some other
+  // route while a session exists). Bypass the OTP entry; route them based
+  // on DB onboarding state, same as the post-verify path below.
+  useEffect(() => {
+    if (skippedRef.current) return
+    const supabase = getSupabaseBrowserClient()
+    supabase.auth.getUser().then(async ({ data: { user } }) => {
+      if (!user || skippedRef.current) return
+      skippedRef.current = true
+      setPhase('success')
+      const { data: profileRow } = await supabase
+        .from('user_profiles')
+        .select('onboarding_completed')
+        .eq('id', user.id)
+        .maybeSingle()
+      const completed =
+        (profileRow as { onboarding_completed: boolean } | null)
+          ?.onboarding_completed ?? false
+      setTimeout(() => {
+        if (completed) router.replace('/')
+        else onContinueOnboarding()
+      }, 600)
+    })
+  }, [router, onContinueOnboarding])
 
   useEffect(() => {
     if (resendCooldown <= 0) return
@@ -1476,7 +1520,7 @@ function LoginStep({
         .from('user_profiles')
         .select('onboarding_completed')
         .eq('id', user.id)
-        .single()
+        .maybeSingle()
       onboardingCompleted =
         (profileRow as { onboarding_completed: boolean } | null)
           ?.onboarding_completed ?? false
