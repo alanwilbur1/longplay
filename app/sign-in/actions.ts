@@ -86,6 +86,14 @@ export async function requestCode(formData: FormData) {
   })
 
   if (error) {
+    if (process.env.NODE_ENV !== 'production') {
+      console.error('[sign-in/requestCode] signInWithOtp failed', {
+        email,
+        status: error.status,
+        code: error.code,
+        message: error.message,
+      })
+    }
     redirect(`/sign-in?error=send_failed&next=${encodeURIComponent(next)}`)
   }
 
@@ -120,6 +128,16 @@ export async function verifyCode(formData: FormData) {
   })
 
   if (error) {
+    if (process.env.NODE_ENV !== 'production') {
+      console.error('[sign-in/verifyCode] verifyOtp failed', {
+        email: pending.email,
+        tokenLength: token.length,
+        tokenPreview: `${token.slice(0, 2)}…${token.slice(-2)}`,
+        status: error.status,
+        code: error.code,
+        message: error.message,
+      })
+    }
     redirect('/sign-in?error=verify_failed')
   }
 
@@ -162,7 +180,17 @@ export async function resendCode() {
     options: { shouldCreateUser: true },
   })
 
-  if (error) redirect('/sign-in?error=send_failed')
+  if (error) {
+    if (process.env.NODE_ENV !== 'production') {
+      console.error('[sign-in/resendCode] signInWithOtp failed', {
+        email: pending.email,
+        status: error.status,
+        code: error.code,
+        message: error.message,
+      })
+    }
+    redirect('/sign-in?error=send_failed')
+  }
 
   // Refresh the cookie's TTL so the listener has another full hour.
   await setPendingEmail(pending.email, pending.next)

@@ -38,6 +38,7 @@ export function CodeEntry({
 }: CodeEntryProps) {
   const [digits, setDigits] = useState<string[]>(() => Array(length).fill(''))
   const refs = useRef<Array<HTMLInputElement | null>>([])
+  const hasSubmittedRef = useRef(false)
   const combined = digits.join('')
 
   useEffect(() => {
@@ -45,6 +46,18 @@ export function CodeEntry({
       refs.current[0]?.focus()
     }
   }, [autoFocus])
+
+  // Auto-submit AFTER React commits the completed digit state to the DOM.
+  // Submitting from inside the setDigits updater would race the commit and
+  // post the previous (stale) value via the hidden input.
+  useEffect(() => {
+    if (hasSubmittedRef.current) return
+    if (combined.length !== length) return
+    if (!digits.every((d) => d !== '')) return
+    hasSubmittedRef.current = true
+    const form = document.getElementById(formId) as HTMLFormElement | null
+    form?.requestSubmit()
+  }, [combined, digits, formId, length])
 
   function setDigit(index: number, value: string) {
     setDigits((prev) => {
@@ -66,7 +79,6 @@ export function CodeEntry({
       setDigit(index, onlyDigits)
       const nextEl = refs.current[index + 1]
       if (nextEl) nextEl.focus()
-      else maybeSubmit([...digits.slice(0, index), onlyDigits, ...digits.slice(index + 1)])
       return
     }
 
@@ -83,19 +95,14 @@ export function CodeEntry({
         next[cursor] = ch
         cursor += 1
       }
-      // Focus the next empty cell or the last cell.
+      // Focus the next empty cell or the last cell. Schedule after
+      // commit so React state is in sync with the DOM before we move
+      // focus. Submission is handled by the effect above — do NOT call
+      // requestSubmit() inside the updater.
       const focusIndex = Math.min(cursor, length - 1)
       requestAnimationFrame(() => refs.current[focusIndex]?.focus())
-      maybeSubmit(next)
       return next
     })
-  }
-
-  function maybeSubmit(d: string[]) {
-    if (d.every((x) => x !== '')) {
-      const form = document.getElementById(formId) as HTMLFormElement | null
-      form?.requestSubmit()
-    }
   }
 
   function handleKeyDown(index: number, event: React.KeyboardEvent<HTMLInputElement>) {
