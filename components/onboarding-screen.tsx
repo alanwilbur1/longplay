@@ -1104,7 +1104,7 @@ function CompleteStep({ onFinish, onAuthSuccess, sessionCheckError = '' }: {
     return () => clearTimeout(t)
   }, [resendCooldown])
 
-  // Send a 6-digit OTP code to `targetEmail` — no magic link, no redirect
+  // Send an 8-digit OTP code to `targetEmail` — no magic link, no redirect
   const sendCode = async (targetEmail: string): Promise<boolean> => {
     setIsSending(true)
     setSendError('')
@@ -1265,7 +1265,7 @@ function CompleteStep({ onFinish, onAuthSuccess, sessionCheckError = '' }: {
               )}
 
               <p className="text-[10px] text-muted-foreground/40">
-                We'll email you a 6-digit verification code. No password needed.
+                We'll email you an 8-digit verification code. No password needed.
               </p>
             </form>
           )}
@@ -1579,7 +1579,7 @@ function LoginStep({
               </p>
             )}
             <p className="text-[10px] text-muted-foreground/40">
-              We'll email you a 6-digit verification code. No password needed.
+              We'll email you an 8-digit verification code. No password needed.
             </p>
           </form>
         )}
