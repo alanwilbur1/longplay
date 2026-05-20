@@ -39,6 +39,16 @@ const STEPS = [
 
 type Step = typeof STEPS[number]
 
+// `/onboarding` is an authenticated-only surface (gated by proxy.ts).
+// The first three steps of the wizard — `opening` (marketing splash with
+// "Begin" + "Already a member? Log in"), `connect` (streaming-service
+// connection prompt), and `importing` (atmospheric loading screen) —
+// were designed for pre-auth visitors. Signed-in listeners arriving
+// from /sign-in must skip them and land directly on the first real
+// calibration step.
+const PRE_AUTH_STEPS: ReadonlySet<Step> = new Set(['opening', 'connect', 'importing'])
+const FIRST_AUTHENTICATED_STEP: Step = 'calibration-1'
+
 // Calibration question data
 const CALIBRATION_QUESTIONS = {
   'calibration-1': {
@@ -112,7 +122,10 @@ const DEV_MODE = process.env.NODE_ENV === 'development'
 
 export function OnboardingScreen() {
   const router = useRouter()
-  const [currentStep, setCurrentStep] = useState<Step>('opening')
+  // Default to the first authenticated step. The proxy guarantees that
+  // anyone reaching /onboarding has a Supabase session, so the pre-auth
+  // marketing splash should never render here.
+  const [currentStep, setCurrentStep] = useState<Step>(FIRST_AUTHENTICATED_STEP)
   const [connectedServices, setConnectedServices] = useState<string[]>([])
   const [calibrationAnswers, setCalibrationAnswers] = useState<Record<string, string[]>>({})
   const [buildProgress, setBuildProgress] = useState(0)
@@ -136,13 +149,20 @@ export function OnboardingScreen() {
 
     function showOnboardingFlow() {
       const savedState = getOnboardingState()
-      // Only restore in-progress step state — never honour a stale completed flag.
-      if (
-        savedState.currentStep &&
-        savedState.currentStep !== 'complete' &&
-        STEPS.includes(savedState.currentStep as Step)
-      ) {
-        setCurrentStep(savedState.currentStep as Step)
+      // Only restore an in-progress step that is a real authenticated
+      // wizard step. Pre-auth steps (opening/connect/importing) and the
+      // terminal 'complete' step are ignored — a stale saved value
+      // must not bring the marketing splash back for a signed-in user.
+      const saved = savedState.currentStep as Step | undefined
+      const isResumableStep =
+        !!saved &&
+        STEPS.includes(saved) &&
+        saved !== 'complete' &&
+        !PRE_AUTH_STEPS.has(saved)
+      if (isResumableStep) {
+        setCurrentStep(saved!)
+      } else {
+        setCurrentStep(FIRST_AUTHENTICATED_STEP)
       }
       if (savedState.connectedServices) {
         setConnectedServices(savedState.connectedServices)
