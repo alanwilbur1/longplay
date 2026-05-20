@@ -5,12 +5,9 @@ import { useRouter } from 'next/navigation'
 import { cn } from '@/lib/utils'
 import { AlbumCover } from '@/components/album-cover'
 import { ALBUMS } from '@/lib/albums'
-import { 
-  getOnboardingState, 
-  saveOnboardingState, 
-  completeOnboarding,
-  isOnboardingCompleted,
-  resetOnboarding,
+import {
+  getOnboardingState,
+  saveOnboardingState,
 } from '@/lib/onboarding-state'
 import { getResonatingRooms, ROOM_AFFINITIES } from '@/lib/room-affinity'
 import { getSupabaseBrowserClient } from '@/lib/supabase/client'
@@ -160,29 +157,17 @@ export function OnboardingScreen() {
     supabase.auth.getUser()
       .then(({ data: { user } }) => {
         if (!user) {
-          // No active session — any localStorage completion flag is stale.
-          // Clear it so it cannot cause loops, then show the auth/OTP entry step.
-          if (isOnboardingCompleted()) {
-            resetOnboarding()
-            setDebugStatus('unauthenticated — cleared stale localStorage flag')
-          } else {
-            setDebugStatus('unauthenticated — showing auth flow')
-          }
-          if (DEV_MODE) setDevDiagInfo({ authenticated: false, userId: '', onboardingCompleted: false, decision: 'show auth / onboarding flow' })
+          // No active session. localStorage is not an identity source;
+          // we never read it for completion. Just show the wizard chrome
+          // (the proxy will have redirected to /sign-in for protected
+          // surfaces; this branch is mainly defensive).
+          setDebugStatus('unauthenticated — showing onboarding flow')
+          if (DEV_MODE) setDevDiagInfo({ authenticated: false, userId: '', onboardingCompleted: false, decision: 'show onboarding flow' })
           showOnboardingFlow()
           return
         }
 
-        // Authenticated — fast-path: localStorage says complete, trust it.
-        if (isOnboardingCompleted()) {
-          setDebugStatus('completed (localStorage) — redirecting to home')
-          if (DEV_MODE) setDevDiagInfo({ authenticated: true, userId: user.id, onboardingCompleted: true, decision: 'redirect → / (localStorage)' })
-          router.replace('/')
-          return
-        }
-
-        // Authenticated — DB is source of truth. Covers returning users who
-        // cleared localStorage or signed in on a new device.
+        // Authenticated — DB is the sole source of truth for completion.
         // .maybeSingle() so a transient missing row (handle_new_user trigger
         // race) returns null instead of a 406, letting the wizard render.
         return supabase
@@ -299,11 +284,9 @@ export function OnboardingScreen() {
       }
     }
 
-    completeOnboarding({
-      archetype: 'The Midnight Archivist',
-      connectedServices,
-      calibrationAnswers,
-    })
+    // localStorage is no longer permitted to claim completion. The
+    // server action above (or the browser-client fallback) wrote
+    // onboarding_completed=true on user_profiles — that's the truth.
     // Short delay so the "Signed in. Taking you home…" state is visible briefly.
     setTimeout(() => router.replace('/'), 1400)
   }
@@ -318,11 +301,9 @@ export function OnboardingScreen() {
       setSessionCheckError('Session not found. Please verify your email above to continue.')
       return
     }
-    completeOnboarding({
-      archetype: 'The Midnight Archivist',
-      connectedServices,
-      calibrationAnswers,
-    })
+    // No localStorage completion write. Persistence is the
+    // saveOnboardingCompletion server-action's job (called from
+    // handleAuthSuccess above when CompleteStep finishes the OTP).
     router.replace('/')
   }
 
@@ -1182,7 +1163,7 @@ function CompleteStep({ onFinish, onAuthSuccess, sessionCheckError = '' }: {
     }
 
     setPhase('success')
-    // Call onAuthSuccess directly — it owns the completeOnboarding() call and
+    // Call onAuthSuccess directly — it owns the DB completion write and
     // the router.replace('/') with a 1.4s delay so the success state is visible.
     onAuthSuccess()
   }
@@ -1538,10 +1519,7 @@ function LoginStep({
     setPhase('success')
 
     if (finalDecision === 'home') {
-      // Sync localStorage with DB truth so the fast path works on the next visit.
-      if (!isOnboardingCompleted()) {
-        completeOnboarding({})
-      }
+      // DB is the source of truth — no localStorage write.
       setTimeout(() => router.replace('/'), 1000)
     } else {
       setTimeout(() => onContinueOnboarding(), 1000)
