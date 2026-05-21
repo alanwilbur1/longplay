@@ -409,11 +409,38 @@ export function OnboardingScreen() {
       return
     }
 
+    // CRITICAL: sync the BROWSER client's auth state with the server-set
+    // session before navigating. Server actions and server-side redirects
+    // (verifyCode, etc.) write auth cookies but do NOT trigger
+    // onAuthStateChange on the browser client. AuthProvider's useEffect
+    // only runs on initial mount, so without this refresh its cached
+    // {user:null, isAuthenticated:false} state survives the whole flow —
+    // every client component reading useAuth() then sees signed-out, even
+    // though the cookie is valid. refreshSession() fetches a new session
+    // from Supabase and FIRES onAuthStateChange, so AuthProvider's
+    // subscription updates state and useAuth() returns the real user.
+    const { data: refreshData, error: refreshError } =
+      await supabase.auth.refreshSession()
+
+    if (DEV_MODE) {
+      console.log('[onboarding] handleComplete: pre-redirect session sync', {
+        hasSessionAfterRefresh: !!refreshData?.session,
+        refreshedUserId: refreshData?.user?.id ?? null,
+        refreshError: refreshError
+          ? { message: refreshError.message, status: refreshError.status }
+          : null,
+      })
+    }
+
     if (DEV_MODE) {
       console.log('[onboarding] handleComplete: redirect target', '/')
     }
 
     router.replace('/')
+    // Re-render server components against the latest cookies — covers the
+    // case where the proxy already saw the session but app/page.tsx was
+    // computed against stale request state.
+    router.refresh()
   }
 
   // OTP-verify path inside CompleteStep delegates to handleComplete now
