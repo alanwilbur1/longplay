@@ -10,6 +10,7 @@ import { createMoment, type Moment } from '@/lib/actions/moments'
 import { cn } from '@/lib/utils'
 import { type Room } from '@/lib/rooms'
 import type { PresenceSnapshot } from '@/lib/data/presence'
+import { setLastRoom } from '@/lib/last-room'
 
 interface ActiveListeningRoomScreenProps {
   room: Room
@@ -81,6 +82,12 @@ export function ActiveListeningRoomScreen({ room, initialMoments, initialPresenc
     setIsLateNight(hour >= 23 || hour < 5)
   }, [])
 
+  // Remember this room as the user's last-visited active room. Reads in
+  // the nav "Listening Room" item to provide a one-tap return path.
+  useEffect(() => {
+    if (room.slug && room.name) setLastRoom(room.slug, room.name)
+  }, [room.slug, room.name])
+
   const isPrivatePhase = room.weeklyPhase === 'arrival' || room.weeklyPhase === 'private'
 
   const handleMarkTrack = (trackNumber: number, trackTitle: string) => {
@@ -117,15 +124,20 @@ export function ActiveListeningRoomScreen({ room, initialMoments, initialPresenc
       {/* ============================================ */}
       {/* ROOM HEADER */}
       {/* ============================================ */}
+      {/* Back navigation: always to /rooms (the discovery surface), never
+          to the editorial /rooms/[slug] profile. After the room-flow
+          simplification, the active room is the canonical room — the
+          profile page is only a discovery / join surface for non-members
+          and is no longer the conceptual parent of the active room. */}
       <div className="px-6 pt-6 md:pt-20 md:px-12 lg:px-24">
-        <Link 
-          href={`/rooms/${room.slug}`}
+        <Link
+          href="/rooms"
           className="inline-flex items-center gap-2 text-sm text-muted-foreground hover:text-cream transition-colors"
         >
           <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="1.5">
             <path strokeLinecap="round" strokeLinejoin="round" d="M10.5 19.5L3 12m0 0l7.5-7.5M3 12h18" />
           </svg>
-          <span>Back to {room.name}</span>
+          <span>Back to Rooms</span>
         </Link>
       </div>
 

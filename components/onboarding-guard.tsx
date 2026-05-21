@@ -1,66 +1,27 @@
 'use client'
 
-import { useEffect, useState } from 'react'
-import { useRouter, usePathname } from 'next/navigation'
-import { isOnboardingCompleted } from '@/lib/onboarding-state'
+import { useState, useEffect } from 'react'
 
 /**
- * OnboardingGuard - Redirects users to onboarding if not completed
- * 
- * Wrap this around pages that require onboarding to be completed.
- * The onboarding page itself should NOT use this guard.
+ * @deprecated The proxy (`proxy.ts`) is the only authoritative gate.
+ * Onboarding-completion routing happens inside server actions
+ * (`verifyCode` after sign-in) and on the relevant pages — not from a
+ * localStorage flag read on the client.
+ *
+ * Reduced to a pass-through so existing imports compile. Do not
+ * reintroduce client-side onboarding gating from localStorage; it
+ * conflicts with the Supabase session and produces false-positive
+ * "signed in" states.
  */
 export function OnboardingGuard({ children }: { children: React.ReactNode }) {
-  const router = useRouter()
-  const pathname = usePathname()
-  const [isChecking, setIsChecking] = useState(true)
-  const [isAllowed, setIsAllowed] = useState(false)
-
-  useEffect(() => {
-    // Skip check on onboarding page
-    if (pathname === '/onboarding') {
-      setIsAllowed(true)
-      setIsChecking(false)
-      return
-    }
-
-    const completed = isOnboardingCompleted()
-    
-    if (!completed) {
-      router.replace('/onboarding')
-    } else {
-      setIsAllowed(true)
-    }
-    
-    setIsChecking(false)
-  }, [pathname, router])
-
-  // Show nothing while checking (prevents flash)
-  if (isChecking) {
-    return (
-      <div className="min-h-screen bg-background flex items-center justify-center">
-        <div className="w-8 h-8 border border-tobacco/30 rounded-full animate-pulse" />
-      </div>
-    )
-  }
-
-  // Show nothing if redirecting
-  if (!isAllowed) {
-    return null
-  }
-
   return <>{children}</>
 }
 
-/**
- * Hook to check onboarding status
- */
+/** @deprecated Returns `{ completed: false, isLoading: false }` always. */
 export function useOnboardingStatus() {
-  const [completed, setCompleted] = useState<boolean | null>(null)
-
+  const [ready, setReady] = useState(false)
   useEffect(() => {
-    setCompleted(isOnboardingCompleted())
+    setReady(true)
   }, [])
-
-  return { completed, isLoading: completed === null }
+  return { completed: false as const, isLoading: !ready }
 }

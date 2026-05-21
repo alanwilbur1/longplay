@@ -1,16 +1,13 @@
 'use client'
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { useRouter } from 'next/navigation'
 import { cn } from '@/lib/utils'
 import { AlbumCover } from '@/components/album-cover'
 import { ALBUMS } from '@/lib/albums'
-import { 
-  getOnboardingState, 
-  saveOnboardingState, 
-  completeOnboarding,
-  isOnboardingCompleted,
-  resetOnboarding,
+import {
+  getOnboardingState,
+  saveOnboardingState,
 } from '@/lib/onboarding-state'
 import { getResonatingRooms, ROOM_AFFINITIES } from '@/lib/room-affinity'
 import { getSupabaseBrowserClient } from '@/lib/supabase/client'
@@ -41,6 +38,16 @@ const STEPS = [
 ] as const
 
 type Step = typeof STEPS[number]
+
+// `/onboarding` is an authenticated-only surface (gated by proxy.ts).
+// The first three steps of the wizard — `opening` (marketing splash with
+// "Begin" + "Already a member? Log in"), `connect` (streaming-service
+// connection prompt), and `importing` (atmospheric loading screen) —
+// were designed for pre-auth visitors. Signed-in listeners arriving
+// from /sign-in must skip them and land directly on the first real
+// calibration step.
+const PRE_AUTH_STEPS: ReadonlySet<Step> = new Set(['opening', 'connect', 'importing'])
+const FIRST_AUTHENTICATED_STEP: Step = 'calibration-1'
 
 // Calibration question data
 const CALIBRATION_QUESTIONS = {
@@ -115,7 +122,10 @@ const DEV_MODE = process.env.NODE_ENV === 'development'
 
 export function OnboardingScreen() {
   const router = useRouter()
-  const [currentStep, setCurrentStep] = useState<Step>('opening')
+  // Default to the first authenticated step. The proxy guarantees that
+  // anyone reaching /onboarding has a Supabase session, so the pre-auth
+  // marketing splash should never render here.
+  const [currentStep, setCurrentStep] = useState<Step>(FIRST_AUTHENTICATED_STEP)
   const [connectedServices, setConnectedServices] = useState<string[]>([])
   const [calibrationAnswers, setCalibrationAnswers] = useState<Record<string, string[]>>({})
   const [buildProgress, setBuildProgress] = useState(0)
@@ -139,14 +149,49 @@ export function OnboardingScreen() {
 
     function showOnboardingFlow() {
       const savedState = getOnboardingState()
-      // Only restore in-progress step state — never honour a stale completed flag.
-      if (
-        savedState.currentStep &&
-        savedState.currentStep !== 'complete' &&
-        STEPS.includes(savedState.currentStep as Step)
-      ) {
-        setCurrentStep(savedState.currentStep as Step)
+      // Only restore an in-progress step that is a real authenticated
+      // wizard step. Pre-auth steps (opening/connect/importing) and the
+      // terminal 'complete' step are ignored — a stale saved value
+      // must not bring the marketing splash back for a signed-in user.
+      const saved = savedState.currentStep as Step | undefined
+      const isResumableStep =
+        !!saved &&
+        STEPS.includes(saved) &&
+        saved !== 'complete' &&
+        !PRE_AUTH_STEPS.has(saved)
+      const resolved: Step = isResumableStep ? saved! : FIRST_AUTHENTICATED_STEP
+      const ignored = !!saved && !isResumableStep
+
+      setCurrentStep(resolved)
+
+      if (DEV_MODE) {
+        console.log('[onboarding] step resolution', {
+          savedCurrentStep: saved ?? null,
+          resolvedCurrentStep: resolved,
+          ignored,
+          reason: ignored
+            ? saved === 'complete'
+              ? 'terminal step'
+              : PRE_AUTH_STEPS.has(saved as Step)
+                ? 'pre-auth step'
+                : 'unknown step'
+            : saved
+              ? 'resumed from saved'
+              : 'no saved step',
+        })
       }
+
+      // If we ignored a stale pre-auth saved step, immediately rewrite
+      // localStorage with the resolved step so the next load starts
+      // clean — don't wait for the save-effect to flush.
+      if (ignored) {
+        saveOnboardingState({
+          currentStep: resolved,
+          connectedServices: savedState.connectedServices,
+          calibrationAnswers: savedState.calibrationAnswers,
+        })
+      }
+
       if (savedState.connectedServices) {
         setConnectedServices(savedState.connectedServices)
       }
@@ -159,35 +204,31 @@ export function OnboardingScreen() {
 
     supabase.auth.getUser()
       .then(({ data: { user } }) => {
+        if (DEV_MODE) {
+          console.log('[onboarding] auth check', {
+            authenticatedUserId: user?.id ?? null,
+            hasSession: !!user,
+          })
+        }
         if (!user) {
-          // No active session — any localStorage completion flag is stale.
-          // Clear it so it cannot cause loops, then show the auth/OTP entry step.
-          if (isOnboardingCompleted()) {
-            resetOnboarding()
-            setDebugStatus('unauthenticated — cleared stale localStorage flag')
-          } else {
-            setDebugStatus('unauthenticated — showing auth flow')
-          }
-          if (DEV_MODE) setDevDiagInfo({ authenticated: false, userId: '', onboardingCompleted: false, decision: 'show auth / onboarding flow' })
+          // No active session. localStorage is not an identity source;
+          // we never read it for completion. Just show the wizard chrome
+          // (the proxy will have redirected to /sign-in for protected
+          // surfaces; this branch is mainly defensive).
+          setDebugStatus('unauthenticated — showing onboarding flow')
+          if (DEV_MODE) setDevDiagInfo({ authenticated: false, userId: '', onboardingCompleted: false, decision: 'show onboarding flow' })
           showOnboardingFlow()
           return
         }
 
-        // Authenticated — fast-path: localStorage says complete, trust it.
-        if (isOnboardingCompleted()) {
-          setDebugStatus('completed (localStorage) — redirecting to home')
-          if (DEV_MODE) setDevDiagInfo({ authenticated: true, userId: user.id, onboardingCompleted: true, decision: 'redirect → / (localStorage)' })
-          router.replace('/')
-          return
-        }
-
-        // Authenticated — DB is source of truth. Covers returning users who
-        // cleared localStorage or signed in on a new device.
+        // Authenticated — DB is the sole source of truth for completion.
+        // .maybeSingle() so a transient missing row (handle_new_user trigger
+        // race) returns null instead of a 406, letting the wizard render.
         return supabase
           .from('user_profiles')
           .select('onboarding_completed')
           .eq('id', user.id)
-          .single()
+          .maybeSingle()
           .then(({ data }) => {
             const profile = data as { onboarding_completed: boolean } | null
             const completed = profile?.onboarding_completed ?? false
@@ -269,60 +310,143 @@ export function OnboardingScreen() {
   const [sessionCheckError, setSessionCheckError] = useState('')
   const [isLoginMode, setIsLoginMode] = useState(false)
 
-  // Called right after OTP verification succeeds at the end of full onboarding.
-  // Persists completion to Supabase (source of truth) and localStorage (cache).
-  const handleAuthSuccess = async () => {
-    // Primary: persist via server action (reads session from cookies).
+  // Single canonical "commit + exit" path. Called by both the auto-skip
+  // useEffect inside CompleteStep AND by the visible "Enter LongPlay"
+  // button. Blocks the redirect on a verified DB write — onboarding_completed
+  // must read back as `true` from user_profiles before we leave the wizard.
+  const handleComplete = async () => {
+    if (DEV_MODE) {
+      console.log('[onboarding] handleComplete: button clicked', {
+        currentStep,
+      })
+    }
+
+    setSessionCheckError('')
+
+    const supabase = getSupabaseBrowserClient()
+    const { data: { user } } = await supabase.auth.getUser()
+
+    if (DEV_MODE) {
+      console.log('[onboarding] handleComplete: session check', {
+        authenticatedUserId: user?.id ?? null,
+      })
+    }
+
+    if (!user) {
+      setSessionCheckError('Session not found. Please sign in again.')
+      return
+    }
+
+    if (DEV_MODE) {
+      console.log('[onboarding] handleComplete: save start', { userId: user.id })
+    }
+
+    // Primary: server action (cookie-bound; uses upsert internally).
     const saveResult = await saveOnboardingCompletion({
       archetype: 'The Midnight Archivist',
       connectedServices,
       calibrationAnswers,
     })
 
-    // Fallback: if server action couldn't see the session cookie (Replit
-    // cross-site iframe timing), use the browser client to write directly.
-    // This ensures onboarding_completed = true is reliably persisted in DB
-    // so returning users are never re-routed through onboarding.
+    if (DEV_MODE) {
+      console.log('[onboarding] handleComplete: server-action result', saveResult)
+    }
+
+    // Fallback: browser-client upsert if the server action could not see
+    // the session cookie (Replit cross-site iframe). Uses upsert so a
+    // missing row is created — never silently no-ops like UPDATE.
+    // MUST include display_name; column is NOT NULL and the upsert
+    // payload bypasses the column DEFAULT on INSERT.
     if (!saveResult.success) {
-      const supabaseBrowser = getSupabaseBrowserClient()
-      const { data: { user: authUser } } = await supabaseBrowser.auth.getUser()
-      if (authUser) {
-        await supabaseBrowser
-          .from('user_profiles')
-          .update({
+      const fallbackDisplayName =
+        (user.email ?? '').split('@')[0]?.trim() || 'Listener'
+      const { data: fbRow, error: fbError } = await supabase
+        .from('user_profiles')
+        .upsert(
+          {
+            id: user.id,
+            display_name: fallbackDisplayName,
             onboarding_completed: true,
             onboarding_completed_at: new Date().toISOString(),
-          })
-          .eq('id', authUser.id)
+          },
+          { onConflict: 'id' },
+        )
+        .select('id, display_name, onboarding_completed')
+        .maybeSingle()
+
+      if (DEV_MODE) {
+        console.log('[onboarding] handleComplete: browser fallback upsert', {
+          error: fbError ? { code: fbError.code, message: fbError.message } : null,
+          row: fbRow,
+        })
       }
     }
 
-    completeOnboarding({
-      archetype: 'The Midnight Archivist',
-      connectedServices,
-      calibrationAnswers,
-    })
-    // Short delay so the "Signed in. Taking you home…" state is visible briefly.
-    setTimeout(() => router.replace('/'), 1400)
-  }
+    // VERIFY: re-read user_profiles directly. Only redirect if the row
+    // reads back as onboarding_completed === true.
+    const { data: confirmRow, error: confirmError } = await supabase
+      .from('user_profiles')
+      .select('id, display_name, onboarding_completed')
+      .eq('id', user.id)
+      .maybeSingle()
 
-  // Called by the "Enter LongPlay" button — user may or may not have signed in.
-  // Still guarded by getSession() as a safety net.
-  const handleComplete = async () => {
-    setSessionCheckError('')
-    const supabase = getSupabaseBrowserClient()
-    const { data: { session } } = await supabase.auth.getSession()
-    if (!session) {
-      setSessionCheckError('Session not found. Please verify your email above to continue.')
+    if (DEV_MODE) {
+      console.log('[onboarding] handleComplete: post-save verify', {
+        readError: confirmError ? { code: confirmError.code, message: confirmError.message } : null,
+        row: confirmRow,
+      })
+    }
+
+    const onboardingCompletedRead =
+      (confirmRow as { onboarding_completed: boolean } | null)
+        ?.onboarding_completed ?? false
+
+    if (!onboardingCompletedRead) {
+      const detail = confirmError?.message ?? saveResult.error ?? 'unknown error'
+      setSessionCheckError(
+        `Could not save your onboarding (${detail}). Please try again.`,
+      )
       return
     }
-    completeOnboarding({
-      archetype: 'The Midnight Archivist',
-      connectedServices,
-      calibrationAnswers,
-    })
+
+    // CRITICAL: sync the BROWSER client's auth state with the server-set
+    // session before navigating. Server actions and server-side redirects
+    // (verifyCode, etc.) write auth cookies but do NOT trigger
+    // onAuthStateChange on the browser client. AuthProvider's useEffect
+    // only runs on initial mount, so without this refresh its cached
+    // {user:null, isAuthenticated:false} state survives the whole flow —
+    // every client component reading useAuth() then sees signed-out, even
+    // though the cookie is valid. refreshSession() fetches a new session
+    // from Supabase and FIRES onAuthStateChange, so AuthProvider's
+    // subscription updates state and useAuth() returns the real user.
+    const { data: refreshData, error: refreshError } =
+      await supabase.auth.refreshSession()
+
+    if (DEV_MODE) {
+      console.log('[onboarding] handleComplete: pre-redirect session sync', {
+        hasSessionAfterRefresh: !!refreshData?.session,
+        refreshedUserId: refreshData?.user?.id ?? null,
+        refreshError: refreshError
+          ? { message: refreshError.message, status: refreshError.status }
+          : null,
+      })
+    }
+
+    if (DEV_MODE) {
+      console.log('[onboarding] handleComplete: redirect target', '/')
+    }
+
     router.replace('/')
+    // Re-render server components against the latest cookies — covers the
+    // case where the proxy already saw the session but app/page.tsx was
+    // computed against stale request state.
+    router.refresh()
   }
+
+  // OTP-verify path inside CompleteStep delegates to handleComplete now
+  // that it owns the await-and-verify dance. Kept as a wrapper for the
+  // existing prop shape; no separate persistence path.
+  const handleAuthSuccess = handleComplete
 
   // Show loading while checking onboarding state
   if (!isInitialized) {
@@ -349,7 +473,9 @@ export function OnboardingScreen() {
           onBack={() => setIsLoginMode(false)}
           onContinueOnboarding={() => {
             setIsLoginMode(false)
-            setCurrentStep('connect')
+            // Always land in the authenticated wizard. Never re-enter
+            // the pre-auth steps from a post-login bounce.
+            setCurrentStep(FIRST_AUTHENTICATED_STEP)
           }}
         />
       )}
@@ -1083,7 +1209,7 @@ function friendlyAuthError(message: string): string {
 
 type AuthPhase = 'email' | 'otp' | 'success'
 
-function CompleteStep({ onFinish, onAuthSuccess, sessionCheckError = '' }: { 
+function CompleteStep({ onFinish, onAuthSuccess, sessionCheckError = '' }: {
   onFinish: () => void
   onAuthSuccess: () => void
   sessionCheckError?: string
@@ -1096,6 +1222,23 @@ function CompleteStep({ onFinish, onAuthSuccess, sessionCheckError = '' }: {
   const [sendError, setSendError] = useState('')
   const [otpError, setOtpError] = useState('')
   const [resendCooldown, setResendCooldown] = useState(0)
+  const skippedRef = useRef(false)
+
+  // If the listener arrived here already signed in (canonical flow:
+  // /sign-in → OTP → /onboarding → calibration → here), skip the
+  // redundant second OTP entirely. Route through onFinish so the same
+  // await-and-verify persistence path runs as when the button is clicked.
+  useEffect(() => {
+    if (skippedRef.current) return
+    const supabase = getSupabaseBrowserClient()
+    supabase.auth.getUser().then(({ data: { user } }) => {
+      if (user && !skippedRef.current) {
+        skippedRef.current = true
+        setPhase('success')
+        onFinish()
+      }
+    })
+  }, [onFinish])
 
   // Countdown ticker for resend cooldown
   useEffect(() => {
@@ -1104,7 +1247,7 @@ function CompleteStep({ onFinish, onAuthSuccess, sessionCheckError = '' }: {
     return () => clearTimeout(t)
   }, [resendCooldown])
 
-  // Send a 6-digit OTP code to `targetEmail` — no magic link, no redirect
+  // Send an 8-digit OTP code to `targetEmail` — no magic link, no redirect
   const sendCode = async (targetEmail: string): Promise<boolean> => {
     setIsSending(true)
     setSendError('')
@@ -1164,7 +1307,7 @@ function CompleteStep({ onFinish, onAuthSuccess, sessionCheckError = '' }: {
     }
 
     setPhase('success')
-    // Call onAuthSuccess directly — it owns the completeOnboarding() call and
+    // Call onAuthSuccess directly — it owns the DB completion write and
     // the router.replace('/') with a 1.4s delay so the success state is visible.
     onAuthSuccess()
   }
@@ -1207,6 +1350,12 @@ function CompleteStep({ onFinish, onAuthSuccess, sessionCheckError = '' }: {
         >
           Enter LongPlay
         </button>
+
+        {sessionCheckError && (
+          <p className="font-serif text-sm text-burgundy/80 italic mt-6 max-w-sm mx-auto">
+            {sessionCheckError}
+          </p>
+        )}
 
         {/* ── Auth section ───────────────────────────────────────────────── */}
         <div className="mt-10 pt-8 border-t border-border/10 min-h-[160px]">
@@ -1265,7 +1414,7 @@ function CompleteStep({ onFinish, onAuthSuccess, sessionCheckError = '' }: {
               )}
 
               <p className="text-[10px] text-muted-foreground/40">
-                We'll email you a 6-digit verification code. No password needed.
+                We'll email you an 8-digit verification code. No password needed.
               </p>
             </form>
           )}
@@ -1383,6 +1532,32 @@ function LoginStep({
   const [otpError, setOtpError] = useState('')
   const [resendCooldown, setResendCooldown] = useState(0)
   const [devDiag, setDevDiag] = useState('')
+  const skippedRef = useRef(false)
+
+  // Already signed in (e.g. user reached this surface through some other
+  // route while a session exists). Bypass the OTP entry; route them based
+  // on DB onboarding state, same as the post-verify path below.
+  useEffect(() => {
+    if (skippedRef.current) return
+    const supabase = getSupabaseBrowserClient()
+    supabase.auth.getUser().then(async ({ data: { user } }) => {
+      if (!user || skippedRef.current) return
+      skippedRef.current = true
+      setPhase('success')
+      const { data: profileRow } = await supabase
+        .from('user_profiles')
+        .select('onboarding_completed')
+        .eq('id', user.id)
+        .maybeSingle()
+      const completed =
+        (profileRow as { onboarding_completed: boolean } | null)
+          ?.onboarding_completed ?? false
+      setTimeout(() => {
+        if (completed) router.replace('/')
+        else onContinueOnboarding()
+      }, 600)
+    })
+  }, [router, onContinueOnboarding])
 
   useEffect(() => {
     if (resendCooldown <= 0) return
@@ -1476,7 +1651,7 @@ function LoginStep({
         .from('user_profiles')
         .select('onboarding_completed')
         .eq('id', user.id)
-        .single()
+        .maybeSingle()
       onboardingCompleted =
         (profileRow as { onboarding_completed: boolean } | null)
           ?.onboarding_completed ?? false
@@ -1494,10 +1669,7 @@ function LoginStep({
     setPhase('success')
 
     if (finalDecision === 'home') {
-      // Sync localStorage with DB truth so the fast path works on the next visit.
-      if (!isOnboardingCompleted()) {
-        completeOnboarding({})
-      }
+      // DB is the source of truth — no localStorage write.
       setTimeout(() => router.replace('/'), 1000)
     } else {
       setTimeout(() => onContinueOnboarding(), 1000)
@@ -1579,7 +1751,7 @@ function LoginStep({
               </p>
             )}
             <p className="text-[10px] text-muted-foreground/40">
-              We'll email you a 6-digit verification code. No password needed.
+              We'll email you an 8-digit verification code. No password needed.
             </p>
           </form>
         )}

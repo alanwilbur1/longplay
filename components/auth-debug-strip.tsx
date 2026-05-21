@@ -3,35 +3,30 @@
 import { useEffect, useState } from 'react'
 import { usePathname } from 'next/navigation'
 import { useAuth } from '@/components/auth-provider'
-import { isOnboardingCompleted } from '@/lib/onboarding-state'
+import { getOnboardingStatus } from '@/lib/actions/onboarding'
 import { getMyMemberships } from '@/lib/actions/membership'
 import { listMyMoments } from '@/lib/actions/moments'
 import { getSupabaseBrowserClient } from '@/lib/supabase/client'
 
 /**
- * AuthDebugStrip — dev-only fixed overlay showing live auth/routing state.
+ * AuthDebugStrip — dev-only fixed overlay showing live auth state.
  * Mounted in app/layout.tsx, gated behind NODE_ENV === 'development'.
  * Never renders in production.
+ *
+ * Identity rule: shows the Supabase session and the DB profile state.
+ * Does NOT surface localStorage flags as if they're meaningful identity
+ * signals. localStorage is not an identity source.
  */
 export function AuthDebugStrip() {
   const pathname = usePathname()
   const { user, isAuthenticated, isLoading: authLoading } = useAuth()
-  const [onboardingLS, setOnboardingLS] = useState<boolean | null>(null)
+  const [onboardingDb, setOnboardingDb] = useState<boolean | null>(null)
   const [membershipCount, setMembershipCount] = useState<number | null>(null)
   const [momentsCount, setMomentsCount] = useState<number | null>(null)
   const [roomsSrc, setRoomsSrc] = useState<'db' | 'static' | '…'>('…')
 
-  // Poll localStorage once per second so the strip reflects manual edits in DevTools
-  useEffect(() => {
-    const check = () => setOnboardingLS(isOnboardingCompleted())
-    check()
-    const id = setInterval(check, 1000)
-    return () => clearInterval(id)
-  }, [])
-
   // Probe Supabase directly (public anon read) to determine rooms source.
-  // Rooms use a public-read RLS policy, so this works regardless of auth state.
-  // Must NOT use auth state as a proxy — unauthenticated users still get DB rooms.
+  // Rooms use a public-read RLS policy, so this works regardless of auth.
   useEffect(() => {
     const supabase = getSupabaseBrowserClient()
     supabase
@@ -43,7 +38,18 @@ export function AuthDebugStrip() {
       .catch(() => setRoomsSrc('static'))
   }, [])
 
-  // Load membership count (authenticated users only)
+  // DB-backed onboarding state (authenticated users only).
+  useEffect(() => {
+    if (authLoading) return
+    if (!isAuthenticated) {
+      setOnboardingDb(null)
+      return
+    }
+    getOnboardingStatus()
+      .then(s => setOnboardingDb(s.authenticated ? s.onboardingCompleted : null))
+      .catch(() => setOnboardingDb(null))
+  }, [authLoading, isAuthenticated])
+
   useEffect(() => {
     if (!isAuthenticated) {
       setMembershipCount(null)
@@ -54,7 +60,6 @@ export function AuthDebugStrip() {
       .catch(() => setMembershipCount(null))
   }, [isAuthenticated])
 
-  // Load moments count (authenticated users only)
   useEffect(() => {
     if (!isAuthenticated) {
       setMomentsCount(null)
@@ -65,17 +70,6 @@ export function AuthDebugStrip() {
       .catch(() => setMomentsCount(null))
   }, [isAuthenticated])
 
-  // Must stay in sync with PUBLIC_PATHS in components/protected-layout.tsx
-  const PUBLIC_PATHS = ['/onboarding', '/auth', '/share', '/rooms']
-  const isPublic = PUBLIC_PATHS.some(p => pathname.startsWith(p))
-  const guardDecision = isPublic
-    ? 'public — allow'
-    : authLoading
-    ? 'loading…'
-    : isAuthenticated
-    ? 'authenticated — allow'
-    : 'not authenticated → /onboarding'
-
   const uid = user?.id
   const uidDisplay = uid ? `${uid.slice(0, 8)}…${uid.slice(-4)}` : '—'
 
@@ -85,11 +79,15 @@ export function AuthDebugStrip() {
     ['authenticated', String(isAuthenticated)],
     ['user.id', uidDisplay],
     ['email', user?.email ?? '—'],
-    ['onboarding LS', onboardingLS === null ? '…' : String(onboardingLS)],
-    ['guard decision', guardDecision],
-    ['demo mode', String(!isAuthenticated)],
+    [
+      'onboarding DB',
+      onboardingDb === null
+        ? authLoading || isAuthenticated
+          ? '…'
+          : 'n/a (signed out)'
+        : String(onboardingDb),
+    ],
     ['rooms src', roomsSrc],
-    ['fallback', roomsSrc === '…' ? '…' : roomsSrc === 'static' ? 'active' : 'inactive'],
     ['memberships', membershipCount === null ? '—' : String(membershipCount)],
     ['my moments', momentsCount === null ? '—' : String(momentsCount)],
   ]

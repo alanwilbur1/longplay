@@ -4,35 +4,21 @@ import { useEffect, useState } from 'react'
 import { useRouter, usePathname } from 'next/navigation'
 import Link from 'next/link'
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar'
-import { resetOnboarding, getOnboardingState } from '@/lib/onboarding-state'
+import { clearLastRoom } from '@/lib/last-room'
 import { useAuth } from '@/components/auth-provider'
 import { getSupabaseBrowserClient } from '@/lib/supabase/client'
 import { getOnboardingStatus } from '@/lib/actions/onboarding'
 import { getMyMemberships } from '@/lib/actions/membership'
 import { listMyMoments } from '@/lib/actions/moments'
 
-// Demo fallback — rendered only when no authenticated session exists
-const DEMO_USER = {
-  name: 'Elena Vasquez',
-  handle: '@elenavasquez',
-  avatar: 'https://images.unsplash.com/photo-1494790108377-be9c29b29330?w=200',
-  memberSince: 'March 2023',
-  tier: 'LongPlay Member',
-  archiveSize: 4237,
-  savedMoments: 156,
-  isDemo: true as const,
-}
-
-type DisplayUser = typeof DEMO_USER | {
-  name: string
-  handle: string
-  avatar: string | null
-  memberSince: string
-  tier: string
-  archiveSize: number
-  savedMoments: number
-  isDemo: false
-}
+/**
+ * ProfileScreen
+ *
+ * Identity source of truth: Supabase session + `user_profiles` row.
+ * If there is no session, this screen renders a signed-out state —
+ * never a demo identity. localStorage no longer participates in identity
+ * decisions.
+ */
 
 interface DbProfile {
   id: string
@@ -41,6 +27,16 @@ interface DbProfile {
   preferences: Record<string, unknown> | null
   created_at: string
   membership_tier: string | null
+}
+
+type DisplayUser = {
+  name: string
+  handle: string
+  avatar: string | null
+  memberSince: string
+  tier: string
+  archiveSize: number
+  savedMoments: number
 }
 
 const CONNECTED_SERVICES = [
@@ -57,12 +53,6 @@ export function ProfileScreen() {
   const { user, isAuthenticated, isLoading: authLoading } = useAuth()
   const [joinedRooms, setJoinedRooms] = useState<JoinedRoomEntry[]>([])
 
-  const [localState, setLocalState] = useState<{
-    completed: boolean
-    archetype?: string
-    completedAt?: string
-  } | null>(null)
-
   const [supabaseStatus, setSupabaseStatus] = useState<{
     authenticated: boolean
     onboardingCompleted: boolean
@@ -75,22 +65,14 @@ export function ProfileScreen() {
   const [momentCounts, setMomentCounts] = useState({ total: 0, reflections: 0 })
 
   // ── Profile hydration ─────────────────────────────────────────────────────
-  // Fetch user_profiles row using the browser Supabase client (reads session
-  // from localStorage — avoids cookie/SSR timing issues with implicit flow).
-  // Runs once when auth resolves. Re-runs if the user id changes (e.g. sign in
-  // after sign out on the same page).
+  // Fetch user_profiles row using the browser Supabase client.
+  // Runs once when auth resolves. Re-runs if the user id changes.
   useEffect(() => {
     if (authLoading) return
 
     if (!isAuthenticated || !user) {
       setDbProfile(null)
       setProfileLoading(false)
-      console.log('[ProfileScreen]', {
-        'auth user id': null,
-        'auth email': null,
-        'hydrated profile id': null,
-        'demo mode activated': true,
-      })
       return
     }
 
@@ -104,17 +86,24 @@ export function ProfileScreen() {
         .from('user_profiles')
         .select('id, display_name, onboarding_completed, preferences, created_at')
         .eq('id', user.id)
-        .single(),
+        .maybeSingle(),
       supabase
         .from('user_memberships')
         .select('tier')
         .eq('user_id', user.id)
-        .single(),
+        .maybeSingle(),
     ])
       .then(([profileRes, membershipRes]) => {
         if (profileRes.error) {
-          console.error('[ProfileScreen] profile fetch error:', profileRes.error.message)
           setProfileError(profileRes.error.message)
+          setProfileLoading(false)
+          return
+        }
+        if (!profileRes.data) {
+          // Trigger race — the auth.users row exists but user_profiles
+          // hasn't materialized yet. Treat as "no profile yet" without
+          // failing.
+          setDbProfile(null)
           setProfileLoading(false)
           return
         }
@@ -124,29 +113,12 @@ export function ProfileScreen() {
         }
         setDbProfile(profile)
         setProfileLoading(false)
-        console.log('[ProfileScreen]', {
-          'auth user id': user.id,
-          'auth email': user.email,
-          'hydrated profile id': profile.id,
-          'demo mode activated': false,
-        })
       })
       .catch(err => {
-        console.error('[ProfileScreen] profile fetch exception:', err)
         setProfileError(String(err))
         setProfileLoading(false)
       })
   }, [authLoading, isAuthenticated, user?.id])
-
-  // ── localStorage state ────────────────────────────────────────────────────
-  useEffect(() => {
-    const state = getOnboardingState()
-    setLocalState({
-      completed: state.completed,
-      archetype: state.archetype,
-      completedAt: state.completedAt,
-    })
-  }, [])
 
   // ── Supabase onboarding status ────────────────────────────────────────────
   useEffect(() => {
@@ -188,60 +160,79 @@ export function ProfileScreen() {
           )
         })
         .catch(() => {})
+    } else {
+      setJoinedRooms([])
     }
   }, [isAuthenticated])
 
-  // ── Display user derivation ───────────────────────────────────────────────
-  // Priority: DB display_name → JWT metadata → email prefix → DEMO_USER
-  // Returns null while hydrating (triggers loading skeleton in header).
   const isHydrating = authLoading || (isAuthenticated && profileLoading)
 
-  const displayUser: DisplayUser | null = isHydrating
-    ? null
-    : isAuthenticated && user
-    ? {
-        name:
-          dbProfile?.display_name ??
-          user.user_metadata?.name ??
-          user.user_metadata?.full_name ??
-          user.email?.split('@')[0] ??
-          'Listener',
-        handle: `@${(
-          user.email?.split('@')[0] ?? 'listener'
-        ).toLowerCase().replace(/[^a-z0-9]/g, '')}`,
-        avatar: user.user_metadata?.avatar_url ?? null,
-        memberSince: new Date(
-          dbProfile?.created_at ?? user.created_at
-        ).toLocaleDateString('en-US', { month: 'long', year: 'numeric' }),
-        tier:
-          dbProfile?.membership_tier === 'member'
-            ? 'LongPlay Member'
-            : 'LongPlay Explorer',
-        archiveSize: momentCounts.total,
-        savedMoments: momentCounts.reflections,
-        isDemo: false,
-      }
-    : DEMO_USER
-
-  // Non-identity sections use safeUser so layout doesn't collapse while loading
-  const safeUser = displayUser ?? DEMO_USER
+  // displayUser is null until we have a real authenticated session +
+  // (optionally) a hydrated profile row. There is no demo fallback.
+  const displayUser: DisplayUser | null =
+    isHydrating || !isAuthenticated || !user
+      ? null
+      : {
+          name:
+            dbProfile?.display_name ??
+            (user.user_metadata?.name as string | undefined) ??
+            (user.user_metadata?.full_name as string | undefined) ??
+            user.email?.split('@')[0] ??
+            'Listener',
+          handle: `@${(
+            user.email?.split('@')[0] ?? 'listener'
+          ).toLowerCase().replace(/[^a-z0-9]/g, '')}`,
+          avatar: (user.user_metadata?.avatar_url as string | undefined) ?? null,
+          memberSince: new Date(
+            dbProfile?.created_at ?? user.created_at
+          ).toLocaleDateString('en-US', { month: 'long', year: 'numeric' }),
+          tier:
+            dbProfile?.membership_tier === 'member'
+              ? 'LongPlay Member'
+              : 'LongPlay Explorer',
+          archiveSize: momentCounts.total,
+          savedMoments: momentCounts.reflections,
+        }
 
   // ── Sign out ──────────────────────────────────────────────────────────────
-  // Must use the browser client so it clears localStorage (where implicit-flow
-  // sessions are stored). The server-action approach only cleared cookies and
-  // left the localStorage session intact, causing the session to survive reload.
   const handleSignOut = async () => {
     setIsSigningOut(true)
     const supabase = getSupabaseBrowserClient()
-    await supabase.auth.signOut()                               // a) clear localStorage session
-    resetOnboarding()                                           // b) clear longplay_onboarding
-    sessionStorage.removeItem('longplay_onboarding_synced')    // c) clear OnboardingSync flag
-    router.push('/onboarding')                                  // d) navigate to onboarding
+    await supabase.auth.signOut()
+    sessionStorage.removeItem('longplay_onboarding_synced')
+    clearLastRoom()
+    router.push('/sign-in')
   }
 
-  const handleRestartOnboarding = () => {
-    resetOnboarding()
-    router.push('/onboarding')
+  // ── Signed-out view ───────────────────────────────────────────────────────
+  // Renders if the proxy ever lets an unauthenticated request through to
+  // this surface (defense in depth). The proxy is supposed to redirect
+  // /profile to /sign-in, but if it doesn't, we never pretend to be
+  // logged in.
+  if (!authLoading && !isAuthenticated) {
+    return (
+      <div className="grain min-h-[60svh] flex items-center justify-center px-6 py-24">
+        <div className="text-center max-w-sm">
+          <p className="text-[10px] uppercase tracking-[0.5em] text-tobacco mb-10">
+            Your Profile
+          </p>
+          <h1 className="font-serif text-3xl text-cream/90 mb-6 leading-[1.2]">
+            Not signed in
+          </h1>
+          <p className="font-serif text-base text-cream/55 italic leading-relaxed mb-12">
+            Your archive lives behind the sign-in.
+            <br />
+            Enter your email and we&rsquo;ll send a code.
+          </p>
+          <Link
+            href="/sign-in?next=/profile"
+            className="inline-block px-6 py-3 border border-cream/15 text-cream/80 text-sm tracking-wide hover:bg-cream/[0.03] hover:border-cream/30 transition-colors duration-500"
+          >
+            Sign in
+          </Link>
+        </div>
+      </div>
+    )
   }
 
   return (
@@ -249,7 +240,7 @@ export function ProfileScreen() {
 
       {/* ── Header ────────────────────────────────────────────────────────── */}
       <section className="px-6 pt-16 pb-8 md:px-12 lg:px-24">
-        {isHydrating ? (
+        {isHydrating || !displayUser ? (
           <div className="flex items-start gap-6 animate-pulse">
             <div className="h-20 w-20 md:h-24 md:w-24 rounded-full bg-tobacco/10 border-2 border-tobacco/10 shrink-0" />
             <div className="flex-1 space-y-3 pt-2">
@@ -261,25 +252,20 @@ export function ProfileScreen() {
         ) : (
           <div className="flex items-start gap-6">
             <Avatar className="h-20 w-20 md:h-24 md:w-24 border-2 border-tobacco/30 shrink-0">
-              {safeUser.avatar && (
-                <AvatarImage src={safeUser.avatar} alt={safeUser.name} />
+              {displayUser.avatar && (
+                <AvatarImage src={displayUser.avatar} alt={displayUser.name} />
               )}
               <AvatarFallback className="bg-tobacco/20 text-cream text-xl">
-                {safeUser.name.split(' ').map(n => n[0]).join('').slice(0, 2)}
+                {displayUser.name.split(' ').map(n => n[0]).join('').slice(0, 2)}
               </AvatarFallback>
             </Avatar>
 
             <div className="flex-1">
               <h1 className="font-serif text-2xl md:text-3xl text-cream mb-1">
-                {safeUser.name}
+                {displayUser.name}
               </h1>
-              <p className="text-muted-foreground text-sm mb-3">{safeUser.handle}</p>
-              <p className="text-xs text-tobacco">Member since {safeUser.memberSince}</p>
-              {displayUser?.isDemo && (
-                <p className="text-[10px] text-tobacco/50 mt-1 uppercase tracking-widest">
-                  Demo mode · sign in to see your profile
-                </p>
-              )}
+              <p className="text-muted-foreground text-sm mb-3">{displayUser.handle}</p>
+              <p className="text-xs text-tobacco">Member since {displayUser.memberSince}</p>
             </div>
           </div>
         )}
@@ -296,7 +282,7 @@ export function ProfileScreen() {
           className="block bg-burgundy/10 border border-burgundy/30 p-5 hover:bg-burgundy/15 transition-all duration-500"
         >
           <div className="flex items-center justify-between mb-3">
-            <h3 className="font-serif text-lg text-cream">{safeUser.tier}</h3>
+            <h3 className="font-serif text-lg text-cream">{displayUser?.tier ?? '—'}</h3>
             <span className="text-xs text-burgundy px-2 py-1 border border-burgundy/50 rounded-full">
               Active
             </span>
@@ -305,7 +291,9 @@ export function ProfileScreen() {
             Full access to all identity features, unlimited clubs, and your complete listening archive.
           </p>
           <div className="flex items-center justify-between text-sm">
-            <span className="text-muted-foreground">Member since {safeUser.memberSince}</span>
+            <span className="text-muted-foreground">
+              {displayUser ? `Member since ${displayUser.memberSince}` : '—'}
+            </span>
             <span className="text-tobacco flex items-center gap-1">
               Manage
               <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="1.5">
@@ -323,12 +311,14 @@ export function ProfileScreen() {
         <div className="grid grid-cols-2 gap-4">
           <div className="p-4 border border-border/20">
             <p className="font-serif text-3xl text-cream mb-1">
-              {safeUser.archiveSize.toLocaleString()}
+              {(displayUser?.archiveSize ?? 0).toLocaleString()}
             </p>
             <p className="text-xs text-muted-foreground">listening moments</p>
           </div>
           <div className="p-4 border border-border/20">
-            <p className="font-serif text-3xl text-cream mb-1">{safeUser.savedMoments}</p>
+            <p className="font-serif text-3xl text-cream mb-1">
+              {displayUser?.savedMoments ?? 0}
+            </p>
             <p className="text-xs text-muted-foreground">reflections</p>
           </div>
         </div>
@@ -453,22 +443,13 @@ export function ProfileScreen() {
 
       {/* ── Sign Out ──────────────────────────────────────────────────────── */}
       <section className="px-6 py-8 md:px-12 lg:px-24">
-        {!authLoading && isAuthenticated ? (
-          <button
-            onClick={handleSignOut}
-            disabled={isSigningOut}
-            className="text-sm text-muted-foreground hover:text-cream transition-colors disabled:opacity-50"
-          >
-            {isSigningOut ? 'Signing out…' : 'Sign out'}
-          </button>
-        ) : !authLoading ? (
-          <Link
-            href="/onboarding"
-            className="text-sm text-tobacco hover:text-cream transition-colors"
-          >
-            Sign in →
-          </Link>
-        ) : null}
+        <button
+          onClick={handleSignOut}
+          disabled={isSigningOut}
+          className="text-sm text-muted-foreground hover:text-cream transition-colors disabled:opacity-50"
+        >
+          {isSigningOut ? 'Signing out…' : 'Sign out'}
+        </button>
       </section>
 
       {/* ── Auth & Debug Panel ────────────────────────────────────────────── */}
@@ -516,28 +497,6 @@ export function ProfileScreen() {
             )}
           </DebugRow>
 
-          <DebugRow label="demo mode">
-            {isHydrating ? (
-              <span className="text-tobacco/50">loading…</span>
-            ) : displayUser?.isDemo ? (
-              <span className="text-red-400/70">active — no authenticated session</span>
-            ) : (
-              <span className="text-olive">inactive — real user data</span>
-            )}
-          </DebugRow>
-
-          <DebugRow label="localStorage">
-            {localState === null ? (
-              <span className="text-tobacco/50">reading…</span>
-            ) : localState.completed ? (
-              <span className="text-olive text-right">
-                complete · {localState.archetype ?? 'no archetype'}
-              </span>
-            ) : (
-              <span className="text-red-400/70">not complete</span>
-            )}
-          </DebugRow>
-
           <DebugRow label="supabase db">
             {supabaseStatus === null ? (
               <span className="text-tobacco/50">loading…</span>
@@ -549,22 +508,6 @@ export function ProfileScreen() {
               <span className="text-red-400/70">onboarding_completed = false</span>
             )}
           </DebugRow>
-        </div>
-
-        <div className="flex flex-wrap gap-3">
-          <button
-            onClick={handleRestartOnboarding}
-            className="px-4 py-2 border border-tobacco/40 text-tobacco hover:bg-tobacco/10 text-xs transition-all duration-300"
-          >
-            Clear localStorage + Start Onboarding
-          </button>
-
-          <Link
-            href="/onboarding"
-            className="px-4 py-2 border border-border/30 text-muted-foreground hover:text-cream hover:border-border/60 text-xs transition-all duration-300"
-          >
-            Go to /onboarding directly
-          </Link>
         </div>
 
         <p className="text-[10px] text-muted-foreground/30 mt-4">
