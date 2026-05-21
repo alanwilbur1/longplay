@@ -311,7 +311,7 @@ export function OnboardingScreen() {
   const [isLoginMode, setIsLoginMode] = useState(false)
 
   // Called right after OTP verification succeeds at the end of full onboarding.
-  // Persists completion to Supabase (source of truth) and localStorage (cache).
+  // Persists completion to user_profiles (source of truth).
   const handleAuthSuccess = async () => {
     // Primary: persist via server action (reads session from cookies).
     const saveResult = await saveOnboardingCompletion({
@@ -320,27 +320,47 @@ export function OnboardingScreen() {
       calibrationAnswers,
     })
 
+    if (DEV_MODE) {
+      console.log('[onboarding] handleAuthSuccess: server-action result', saveResult)
+    }
+
     // Fallback: if server action couldn't see the session cookie (Replit
     // cross-site iframe timing), use the browser client to write directly.
-    // This ensures onboarding_completed = true is reliably persisted in DB
-    // so returning users are never re-routed through onboarding.
+    // Uses UPSERT so a missing row gets created — UPDATE would no-op
+    // silently and leave onboarding_completed=false.
     if (!saveResult.success) {
       const supabaseBrowser = getSupabaseBrowserClient()
       const { data: { user: authUser } } = await supabaseBrowser.auth.getUser()
-      if (authUser) {
-        await supabaseBrowser
+      if (!authUser) {
+        if (DEV_MODE) {
+          console.warn('[onboarding] handleAuthSuccess: no browser user for fallback upsert')
+        }
+      } else {
+        const { data: fallbackRow, error: fallbackError } = await supabaseBrowser
           .from('user_profiles')
-          .update({
-            onboarding_completed: true,
-            onboarding_completed_at: new Date().toISOString(),
+          .upsert(
+            {
+              id: authUser.id,
+              onboarding_completed: true,
+              onboarding_completed_at: new Date().toISOString(),
+            },
+            { onConflict: 'id' },
+          )
+          .select('id, onboarding_completed')
+          .maybeSingle()
+
+        if (DEV_MODE) {
+          console.log('[onboarding] handleAuthSuccess: browser-client fallback upsert', {
+            authenticatedUserId: authUser.id,
+            error: fallbackError
+              ? { code: fallbackError.code, message: fallbackError.message }
+              : null,
+            row: fallbackRow,
           })
-          .eq('id', authUser.id)
+        }
       }
     }
 
-    // localStorage is no longer permitted to claim completion. The
-    // server action above (or the browser-client fallback) wrote
-    // onboarding_completed=true on user_profiles — that's the truth.
     // Short delay so the "Signed in. Taking you home…" state is visible briefly.
     setTimeout(() => router.replace('/'), 1400)
   }
