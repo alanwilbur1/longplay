@@ -7,6 +7,16 @@ export interface OnboardingPersistPayload {
   primaryRoomSlug?: string
   connectedServices?: string[]
   calibrationAnswers?: Record<string, string[]>
+  /** Optional listener-chosen display name. Wizard doesn't collect one
+   *  today; if it ever does, pass it through. Otherwise derived from
+   *  email local-part with a "Listener" final fallback. */
+  displayName?: string
+}
+
+function deriveDisplayName(email: string | null | undefined): string {
+  const local = (email ?? '').split('@')[0]?.trim()
+  if (local && local.length > 0) return local
+  return 'Listener'
 }
 
 /**
@@ -21,10 +31,14 @@ export interface OnboardingPersistPayload {
  * updates it.
  *
  * Only writes columns that exist on user_profiles:
- *   id, onboarding_completed, onboarding_completed_at,
+ *   id, display_name, onboarding_completed, onboarding_completed_at,
  *   primary_streaming_service, preferences
- * (display_name, avatar_url, notification_settings, created_at,
- *  updated_at — left to defaults / untouched).
+ *
+ * display_name MUST be supplied — the column is NOT NULL. The DEFAULT
+ * 'Listener' only applies when the column is omitted from INSERT, and
+ * Supabase's upsert sends the full payload, so an omission would be
+ * treated as explicit NULL and reject. We derive from the auth user's
+ * email local-part, falling back to 'Listener'.
  */
 export async function saveOnboardingCompletion(
   payload: OnboardingPersistPayload
@@ -43,8 +57,11 @@ export async function saveOnboardingCompletion(
     return { success: false, skipped: true, error: 'Not authenticated' }
   }
 
+  const displayName = payload.displayName?.trim() || deriveDisplayName(user.email)
+
   const updatePayload = {
     id: user.id,
+    display_name: displayName,
     onboarding_completed: true,
     onboarding_completed_at: new Date().toISOString(),
     primary_streaming_service:
@@ -61,10 +78,10 @@ export async function saveOnboardingCompletion(
     console.log('[onboarding] saveOnboardingCompletion: upserting', {
       authenticatedUserId: user.id,
       payload: {
+        display_name: updatePayload.display_name,
         onboarding_completed: updatePayload.onboarding_completed,
         onboarding_completed_at: updatePayload.onboarding_completed_at,
         primary_streaming_service: updatePayload.primary_streaming_service,
-        // omit full calibration answers from logs
         preferencesKeys: Object.keys(updatePayload.preferences),
       },
     })
@@ -73,7 +90,7 @@ export async function saveOnboardingCompletion(
   const { data, error: profileError } = await supabase
     .from('user_profiles')
     .upsert(updatePayload, { onConflict: 'id' })
-    .select('id, onboarding_completed')
+    .select('id, display_name, onboarding_completed')
     .maybeSingle()
 
   if (profileError) {
@@ -87,8 +104,6 @@ export async function saveOnboardingCompletion(
   }
 
   if (!data) {
-    // Upsert returned no row — should never happen, but surface it
-    // rather than report a false success.
     console.error('[onboarding] saveOnboardingCompletion: upsert returned no row', {
       userId: user.id,
     })
@@ -98,6 +113,7 @@ export async function saveOnboardingCompletion(
   if (isDev) {
     console.log('[onboarding] saveOnboardingCompletion: persisted', {
       rowId: data.id,
+      display_name: data.display_name,
       onboarding_completed: data.onboarding_completed,
     })
   }

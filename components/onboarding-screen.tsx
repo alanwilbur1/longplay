@@ -355,18 +355,23 @@ export function OnboardingScreen() {
     // Fallback: browser-client upsert if the server action could not see
     // the session cookie (Replit cross-site iframe). Uses upsert so a
     // missing row is created — never silently no-ops like UPDATE.
+    // MUST include display_name; column is NOT NULL and the upsert
+    // payload bypasses the column DEFAULT on INSERT.
     if (!saveResult.success) {
+      const fallbackDisplayName =
+        (user.email ?? '').split('@')[0]?.trim() || 'Listener'
       const { data: fbRow, error: fbError } = await supabase
         .from('user_profiles')
         .upsert(
           {
             id: user.id,
+            display_name: fallbackDisplayName,
             onboarding_completed: true,
             onboarding_completed_at: new Date().toISOString(),
           },
           { onConflict: 'id' },
         )
-        .select('id, onboarding_completed')
+        .select('id, display_name, onboarding_completed')
         .maybeSingle()
 
       if (DEV_MODE) {
@@ -381,7 +386,7 @@ export function OnboardingScreen() {
     // reads back as onboarding_completed === true.
     const { data: confirmRow, error: confirmError } = await supabase
       .from('user_profiles')
-      .select('id, onboarding_completed')
+      .select('id, display_name, onboarding_completed')
       .eq('id', user.id)
       .maybeSingle()
 
