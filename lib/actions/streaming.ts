@@ -36,7 +36,8 @@ function callbackUrl(sourceId: SourceId): string {
 /**
  * Step 1 — listener clicks "Connect Spotify". We mint a CSRF state,
  * stash it in an httpOnly cookie that also encodes the source id +
- * authed user id, and redirect to the provider authorize URL.
+ * authed user id + a returnTo path (so the callback can route them
+ * back to wherever they started — typically /onboarding or /profile).
  */
 export async function initiateConnection(formData: FormData) {
   const rawSource = String(formData.get('source') ?? '').toLowerCase()
@@ -45,20 +46,24 @@ export async function initiateConnection(formData: FormData) {
   }
   const sourceId = rawSource as SourceId
 
+  // Whitelist returnTo to first-party paths to avoid open-redirect.
+  const rawReturnTo = String(formData.get('returnTo') ?? '/profile')
+  const returnTo =
+    rawReturnTo.startsWith('/') && !rawReturnTo.startsWith('//')
+      ? rawReturnTo
+      : '/profile'
+
   const supabase = await createSupabaseServerClient()
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) {
-    redirect(`/sign-in?next=${encodeURIComponent('/profile')}`)
+    redirect(`/sign-in?next=${encodeURIComponent(returnTo)}`)
   }
 
   const state = randomBytes(16).toString('hex')
   const jar = await cookies()
   jar.set({
     name: STATE_COOKIE,
-    // Cookie value encodes the source + the authed user id so the
-    // callback can verify both the CSRF state AND that the listener
-    // who initiated is the one completing.
-    value: JSON.stringify({ state, sourceId, userId: user!.id }),
+    value: JSON.stringify({ state, sourceId, userId: user!.id, returnTo }),
     httpOnly: true,
     secure: isProd(),
     sameSite: 'lax',
@@ -147,7 +152,7 @@ export async function listMyConnections(): Promise<
 
 /** Reads + clears the OAuth state cookie. Used by the callback route. */
 export async function consumeOauthStateCookie(): Promise<
-  { state: string; sourceId: SourceId; userId: string } | null
+  { state: string; sourceId: SourceId; userId: string; returnTo: string } | null
 > {
   const jar = await cookies()
   const raw = jar.get(STATE_COOKIE)?.value
@@ -166,13 +171,19 @@ export async function consumeOauthStateCookie(): Promise<
       state?: string
       sourceId?: string
       userId?: string
+      returnTo?: string
     }
     if (!parsed.state || !parsed.userId) return null
     if (!parsed.sourceId || !isSourceId(parsed.sourceId)) return null
+    const returnTo =
+      parsed.returnTo && parsed.returnTo.startsWith('/') && !parsed.returnTo.startsWith('//')
+        ? parsed.returnTo
+        : '/profile'
     return {
       state: parsed.state,
       sourceId: parsed.sourceId as SourceId,
       userId: parsed.userId,
+      returnTo,
     }
   } catch {
     return null

@@ -13,6 +13,7 @@ import { getResonatingRooms, ROOM_AFFINITIES } from '@/lib/room-affinity'
 import { getSupabaseBrowserClient } from '@/lib/supabase/client'
 import { ensureUserProfile } from '@/lib/actions/auth'
 import { saveOnboardingCompletion, getOnboardingStatus } from '@/lib/actions/onboarding'
+import { initiateConnection, listMyConnections } from '@/lib/actions/streaming'
 
 /**
  * LongPlay Onboarding - Initiation Into a Listening Culture
@@ -46,8 +47,14 @@ type Step = typeof STEPS[number]
 // were designed for pre-auth visitors. Signed-in listeners arriving
 // from /sign-in must skip them and land directly on the first real
 // calibration step.
-const PRE_AUTH_STEPS: ReadonlySet<Step> = new Set(['opening', 'connect', 'importing'])
-const FIRST_AUTHENTICATED_STEP: Step = 'calibration-1'
+// Steps that belonged to the pre-auth marketing/loading flow. Now that
+// the proxy redirects unauth to /sign-in, none of these are reachable
+// with a session — they are excluded from the wizard's restore and
+// next-step logic. 'connect' is intentionally NOT here anymore: it is
+// now the FIRST authenticated step (streaming connection prompt that
+// actually wires to listening_connections via lib/actions/streaming).
+const PRE_AUTH_STEPS: ReadonlySet<Step> = new Set(['opening', 'importing'])
+const FIRST_AUTHENTICATED_STEP: Step = 'connect'
 
 // Calibration question data
 const CALIBRATION_QUESTIONS = {
@@ -276,16 +283,23 @@ export function OnboardingScreen() {
 
   const handleContinue = () => {
     const currentIndex = STEPS.indexOf(currentStep)
-    if (currentIndex < STEPS.length - 1) {
-      const nextStep = STEPS[currentIndex + 1]
-      setCurrentStep(nextStep)
-      
-      if (nextStep === 'importing') {
-        simulateImport()
-      }
-      if (nextStep === 'building') {
-        simulateBuild()
-      }
+    // Skip any pre-auth step in the natural sequence. After 'connect'
+    // (the first auth step), STEPS[i+1] is 'importing' — a pre-auth
+    // atmospheric pause from the old flow that no longer fits. We
+    // advance to the next non-pre-auth step instead.
+    let nextIndex = currentIndex + 1
+    while (
+      nextIndex < STEPS.length &&
+      PRE_AUTH_STEPS.has(STEPS[nextIndex])
+    ) {
+      nextIndex += 1
+    }
+    if (nextIndex >= STEPS.length) return
+    const nextStep = STEPS[nextIndex]
+    setCurrentStep(nextStep)
+
+    if (nextStep === 'building') {
+      simulateBuild()
     }
   }
 
@@ -504,12 +518,7 @@ export function OnboardingScreen() {
         )}
         
         {currentStep === 'connect' && (
-          <ConnectStep 
-            services={STREAMING_SERVICES}
-            connectedServices={connectedServices}
-            onConnect={handleConnect}
-            onContinue={handleContinue}
-          />
+          <ConnectStep onContinue={handleContinue} />
         )}
         
         {currentStep === 'importing' && <ImportingStep />}
@@ -650,20 +659,53 @@ function OpeningStep({ onContinue, onLogin }: { onContinue: () => void; onLogin:
 }
 
 // ============================================
-// CONNECT - Open Your Listening History
+// CONNECT - Open Your Listening History (real)
 // ============================================
-function ConnectStep({ 
-  services, 
-  connectedServices,
-  onConnect, 
-  onContinue 
-}: { 
-  services: typeof STREAMING_SERVICES
-  connectedServices: string[]
-  onConnect: (id: string) => void
+// Reads listening_connections via listMyConnections(); shows Connect
+// Spotify wired to initiateConnection (OAuth round-trip back to
+// /onboarding via the state cookie's returnTo). Apple Music is
+// scaffolded honestly as "Coming soon". A "Skip for now" link lets
+// the listener proceed without any connection.
+function ConnectStep({
+  connectedServices: _legacyUnused,
+  onContinue,
+}: {
+  services?: typeof STREAMING_SERVICES
+  connectedServices?: string[]
+  onConnect?: (id: string) => void
   onContinue: () => void
 }) {
-  const hasConnection = connectedServices.length > 0
+  // _legacyUnused is the old in-memory connectedServices list; we no
+  // longer use it. Real connection state comes from the DB.
+  void _legacyUnused
+  const [loading, setLoading] = useState(true)
+  const [connections, setConnections] = useState<
+    Array<{ source_id: string; display_name: string | null; status: string }>
+  >([])
+
+  useEffect(() => {
+    let mounted = true
+    listMyConnections()
+      .then((rows) => {
+        if (!mounted) return
+        setConnections(
+          rows.map((r) => ({
+            source_id: r.source_id,
+            display_name: r.display_name,
+            status: r.status,
+          })),
+        )
+      })
+      .catch(() => {})
+      .finally(() => {
+        if (mounted) setLoading(false)
+      })
+    return () => {
+      mounted = false
+    }
+  }, [])
+
+  const spotify = connections.find((c) => c.source_id === 'spotify' && c.status === 'active')
 
   return (
     <div className="flex-1 flex flex-col justify-center px-8 py-16">
@@ -671,53 +713,61 @@ function ConnectStep({
         <p className="text-[10px] uppercase tracking-[0.4em] text-tobacco mb-4 text-center">
           Your listening life begins here
         </p>
-        
+
         <h2 className="font-serif text-3xl md:text-4xl text-cream mb-4 text-center">
           Bring your history
         </h2>
-        
+
         <p className="text-muted-foreground leading-relaxed mb-12 text-center">
-          Connect your streaming to open years of listening memory.
+          Connecting helps LongPlay understand your listening.
+          <br />
+          You can always do this later.
         </p>
-        
-        <div className="space-y-3 mb-12">
-          {services.map((service) => {
-            const isConnected = connectedServices.includes(service.id)
-            
-            return (
+
+        <div className="space-y-3 mb-10">
+          {/* Spotify — real connect via OAuth */}
+          {spotify ? (
+            <div className="w-full flex items-center justify-between p-4 border border-olive/50 bg-olive/5">
+              <div className="flex flex-col items-start text-left">
+                <span className="text-cream">Spotify</span>
+                {spotify.display_name && (
+                  <span className="text-[11px] text-muted-foreground/70 mt-0.5">
+                    {spotify.display_name}
+                  </span>
+                )}
+              </div>
+              <span className="text-xs text-olive uppercase tracking-wider">Connected</span>
+            </div>
+          ) : (
+            <form action={initiateConnection}>
+              <input type="hidden" name="source" value="spotify" />
+              <input type="hidden" name="returnTo" value="/onboarding" />
               <button
-                key={service.id}
-                onClick={() => !isConnected && onConnect(service.id)}
-                disabled={isConnected}
-                className={cn(
-                  "w-full flex items-center justify-between p-4 border transition-all duration-500",
-                  isConnected 
-                    ? "border-olive/50 bg-olive/5" 
-                    : "border-border/20 hover:border-cream/30 hover:bg-card/20"
-                )}
+                type="submit"
+                disabled={loading}
+                className="w-full flex items-center justify-between p-4 border border-border/20 hover:border-cream/30 hover:bg-card/20 transition-all duration-500 disabled:opacity-50"
               >
-                <span className="text-cream">{service.name}</span>
-                {isConnected ? (
-                  <span className="text-xs text-olive uppercase tracking-wider">Connected</span>
-                ) : (
-                  <span className="text-xs text-muted-foreground">Connect</span>
-                )}
+                <span className="text-cream">Spotify</span>
+                <span className="text-xs text-muted-foreground">Connect</span>
               </button>
-            )
-          })}
+            </form>
+          )}
+
+          {/* Apple Music — honest scaffold state */}
+          <div
+            className="w-full flex items-center justify-between p-4 border border-border/20 opacity-50"
+            aria-disabled="true"
+          >
+            <span className="text-cream">Apple Music</span>
+            <span className="text-xs text-muted-foreground">Coming soon</span>
+          </div>
         </div>
-        
+
         <button
           onClick={onContinue}
-          disabled={!hasConnection}
-          className={cn(
-            "w-full py-4 border transition-all duration-500",
-            hasConnection
-              ? "border-cream/30 text-cream hover:bg-cream/5"
-              : "border-border/10 text-muted-foreground/40 cursor-not-allowed"
-          )}
+          className="w-full py-4 border border-cream/30 text-cream hover:bg-cream/5 transition-all duration-500"
         >
-          Continue
+          {spotify ? 'Continue' : 'Skip for now'}
         </button>
       </div>
     </div>

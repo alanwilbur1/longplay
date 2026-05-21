@@ -1,7 +1,7 @@
 'use client'
 
 import { useEffect, useState } from 'react'
-import { useRouter, usePathname } from 'next/navigation'
+import { useRouter, usePathname, useSearchParams } from 'next/navigation'
 import Link from 'next/link'
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar'
 import { clearLastRoom } from '@/lib/last-room'
@@ -10,6 +10,11 @@ import { getSupabaseBrowserClient } from '@/lib/supabase/client'
 import { getOnboardingStatus } from '@/lib/actions/onboarding'
 import { getMyMemberships } from '@/lib/actions/membership'
 import { listMyMoments } from '@/lib/actions/moments'
+import {
+  disconnectConnection,
+  initiateConnection,
+  listMyConnections,
+} from '@/lib/actions/streaming'
 
 /**
  * ProfileScreen
@@ -39,11 +44,27 @@ type DisplayUser = {
   savedMoments: number
 }
 
-const CONNECTED_SERVICES = [
-  { name: 'Spotify', connected: true, lastSync: '2 hours ago' },
-  { name: 'Apple Music', connected: false, lastSync: null },
-  { name: 'Last.fm', connected: true, lastSync: '1 day ago' },
-]
+// Streaming services rendered in the Connected Services section. State
+// (connected vs available) comes from listening_connections; this list
+// is just the catalog of what we currently offer + the honest scaffold
+// label for in-progress providers.
+const STREAMING_PROVIDER_CATALOG = [
+  { sourceId: 'spotify' as const, name: 'Spotify', available: true },
+  { sourceId: 'apple_music' as const, name: 'Apple Music', available: false },
+] as const
+
+function formatRelativeTimestamp(iso: string | null): string {
+  if (!iso) return 'never synced'
+  const diffMs = Date.now() - new Date(iso).getTime()
+  if (diffMs < 60_000) return 'just now'
+  const minutes = Math.floor(diffMs / 60_000)
+  if (minutes < 60) return `${minutes}m ago`
+  const hours = Math.floor(minutes / 60)
+  if (hours < 24) return `${hours}h ago`
+  const days = Math.floor(hours / 24)
+  if (days < 30) return `${days}d ago`
+  return new Date(iso).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
+}
 
 type JoinedRoomEntry = { name: string; slug: string; role: string; joined: string }
 
@@ -63,6 +84,21 @@ export function ProfileScreen() {
   const [profileLoading, setProfileLoading] = useState(true)
   const [profileError, setProfileError] = useState<string | null>(null)
   const [momentCounts, setMomentCounts] = useState({ total: 0, reflections: 0 })
+
+  // Real streaming connections from listening_connections (DB-backed).
+  // No hardcoded "Synced 2 hours ago" — last_sync_at carries the truth.
+  const [connections, setConnections] = useState<
+    Array<{
+      source_id: 'spotify' | 'apple_music'
+      external_account_id: string | null
+      display_name: string | null
+      status: string
+      connected_at: string
+      last_sync_at: string | null
+    }>
+  >([])
+  const [connectionsLoading, setConnectionsLoading] = useState(true)
+  const searchParams = useSearchParams()
 
   // ── Profile hydration ─────────────────────────────────────────────────────
   // Fetch user_profiles row using the browser Supabase client.
@@ -126,6 +162,24 @@ export function ProfileScreen() {
       getOnboardingStatus().then(setSupabaseStatus).catch(() => {})
     }
   }, [authLoading, isAuthenticated])
+
+  // ── Listening connections (real DB-backed; no fake demo state) ────────────
+  // Re-loads when the URL search params change so a successful OAuth
+  // round-trip (which lands back here with ?connection=connected) shows
+  // the freshly-persisted row immediately.
+  const connectionRefreshKey = searchParams?.toString() ?? ''
+  useEffect(() => {
+    if (!isAuthenticated) {
+      setConnections([])
+      setConnectionsLoading(false)
+      return
+    }
+    setConnectionsLoading(true)
+    listMyConnections()
+      .then((rows) => setConnections(rows))
+      .catch(() => setConnections([]))
+      .finally(() => setConnectionsLoading(false))
+  }, [isAuthenticated, connectionRefreshKey])
 
   // ── Moment counts from DB ─────────────────────────────────────────────────
   useEffect(() => {
@@ -332,33 +386,106 @@ export function ProfileScreen() {
       </section>
 
       {/* ── Connected Services ────────────────────────────────────────────── */}
+      {/* Real DB-backed connection state. No hardcoded "Synced 2 hours ago".
+         Spotify connects via OAuth (initiateConnection). Apple Music is
+         scaffold-honest until MusicKit lands. */}
       <section className="px-6 py-6 md:px-12 lg:px-24 border-t border-border/20">
         <div className="flex items-center justify-between mb-6">
-          <h2 className="text-xs uppercase tracking-[0.2em] text-muted-foreground">Connected Services</h2>
-          <button className="text-xs text-tobacco hover:text-cream transition-colors">
-            Add service
-          </button>
+          <h2 className="text-xs uppercase tracking-[0.2em] text-muted-foreground">
+            Connected Services
+          </h2>
         </div>
 
+        {searchParams?.get('connection') === 'connected' && (
+          <p className="text-xs text-olive mb-3">
+            Connected {searchParams.get('source') ?? ''}.
+          </p>
+        )}
+        {searchParams?.get('connection') === 'disconnected' && (
+          <p className="text-xs text-muted-foreground mb-3">Disconnected.</p>
+        )}
+        {searchParams?.get('connection_error') && (
+          <p className="text-xs text-burgundy/80 mb-3">
+            Could not connect ({searchParams.get('connection_error')}).
+          </p>
+        )}
+
         <div className="space-y-3">
-          {CONNECTED_SERVICES.map(service => (
-            <div
-              key={service.name}
-              className="flex items-center justify-between p-4 border border-border/20"
-            >
-              <div className="flex items-center gap-3">
-                <div className={`w-2 h-2 rounded-full ${service.connected ? 'bg-olive' : 'bg-muted'}`} />
-                <span className="text-cream">{service.name}</span>
+          {STREAMING_PROVIDER_CATALOG.map((provider) => {
+            const conn = connections.find(
+              (c) => c.source_id === provider.sourceId && c.status === 'active',
+            )
+            const isConnected = !!conn
+
+            // Apple Music: honest scaffold state until MusicKit JWT mint is wired
+            if (!provider.available) {
+              return (
+                <div
+                  key={provider.sourceId}
+                  className="flex items-center justify-between p-4 border border-border/20 opacity-50"
+                >
+                  <div className="flex items-center gap-3">
+                    <div className="w-2 h-2 rounded-full bg-muted" />
+                    <span className="text-cream">{provider.name}</span>
+                  </div>
+                  <span className="text-xs text-muted-foreground">Coming soon</span>
+                </div>
+              )
+            }
+
+            return (
+              <div
+                key={provider.sourceId}
+                className="flex items-center justify-between p-4 border border-border/20"
+              >
+                <div className="flex items-center gap-3">
+                  <div
+                    className={`w-2 h-2 rounded-full ${isConnected ? 'bg-olive' : 'bg-muted'}`}
+                  />
+                  <div className="flex flex-col items-start text-left">
+                    <span className="text-cream">{provider.name}</span>
+                    {isConnected && conn.display_name && (
+                      <span className="text-[11px] text-muted-foreground/70 mt-0.5">
+                        {conn.display_name}
+                      </span>
+                    )}
+                  </div>
+                </div>
+
+                {connectionsLoading ? (
+                  <span className="text-xs text-muted-foreground/50">…</span>
+                ) : isConnected ? (
+                  <div className="flex items-center gap-3">
+                    <span className="text-xs text-muted-foreground">
+                      {conn.last_sync_at
+                        ? `Synced ${formatRelativeTimestamp(conn.last_sync_at)}`
+                        : 'Not yet synced'}
+                    </span>
+                    <form action={disconnectConnection}>
+                      <input type="hidden" name="source" value={provider.sourceId} />
+                      <button
+                        type="submit"
+                        className="text-xs text-muted-foreground hover:text-burgundy/80 transition-colors"
+                      >
+                        Disconnect
+                      </button>
+                    </form>
+                  </div>
+                ) : (
+                  <form action={initiateConnection}>
+                    <input type="hidden" name="source" value={provider.sourceId} />
+                    <input type="hidden" name="returnTo" value="/profile" />
+                    <button
+                      type="submit"
+                      className="text-xs text-tobacco hover:text-cream transition-colors"
+                    >
+                      Connect
+                    </button>
+                  </form>
+                )}
               </div>
-              {service.connected ? (
-                <span className="text-xs text-muted-foreground">Synced {service.lastSync}</span>
-              ) : (
-                <button className="text-xs text-tobacco hover:text-cream transition-colors">
-                  Connect
-                </button>
-              )}
-            </div>
-          ))}
+            )
+          })}
         </div>
       </section>
 

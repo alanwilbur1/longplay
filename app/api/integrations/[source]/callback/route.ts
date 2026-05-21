@@ -9,23 +9,15 @@ import { consumeOauthStateCookie } from '@/lib/actions/streaming'
  * Route: /api/integrations/<source>/callback?code=…&state=…
  *
  * Flow:
- *   1. Verify the state cookie (CSRF + user binding).
+ *   1. Verify the state cookie (CSRF + user binding + returnTo).
  *   2. Verify the URL `state` matches.
  *   3. Verify the URL source segment matches the cookie's sourceId.
  *   4. Exchange the OAuth code for tokens via the provider.
  *   5. Upsert into listening_connections using the ADMIN client
  *      (service role) — listening_connections has no client INSERT
  *      grant because the row holds tokens.
- *   6. Redirect to /profile with status feedback.
- *
- * Token storage:
- *   For Phase 4.1 we persist tokens as-is into the *_encrypted columns.
- *   The columns are NAMED encrypted to signal intent, but actual
- *   encryption at rest is a Phase 4.1.x follow-up — RLS already
- *   prevents any client read of these columns (no SELECT grant on
- *   token columns from authenticated; service role only). Adding
- *   pgcrypto-symmetric encryption is a non-breaking column-value
- *   swap when we want defense-in-depth.
+ *   6. Redirect back to wherever the listener started the connect
+ *      (cookie's returnTo, defaulting to /profile).
  */
 
 function paramsFromRequest(request: NextRequest) {
@@ -37,8 +29,14 @@ function paramsFromRequest(request: NextRequest) {
   }
 }
 
-function redirectToProfile(request: NextRequest, params: Record<string, string>) {
-  const url = new URL('/profile', request.url)
+function redirectBack(
+  request: NextRequest,
+  returnTo: string,
+  params: Record<string, string>,
+) {
+  const safe =
+    returnTo.startsWith('/') && !returnTo.startsWith('//') ? returnTo : '/profile'
+  const url = new URL(safe, request.url)
   for (const [k, v] of Object.entries(params)) url.searchParams.set(k, v)
   return NextResponse.redirect(url)
 }
@@ -49,28 +47,36 @@ export async function GET(
 ) {
   const { source } = await context.params
 
+  // Pre-cookie failures: we don't know where the listener started.
+  // Default to /profile.
   if (!isSourceId(source)) {
-    return redirectToProfile(request, { connection_error: 'unknown_source' })
+    return redirectBack(request, '/profile', { connection_error: 'unknown_source' })
   }
 
   const { code, state, error: providerError } = paramsFromRequest(request)
 
   if (providerError) {
-    return redirectToProfile(request, { connection_error: providerError })
+    return redirectBack(request, '/profile', { connection_error: providerError })
   }
   if (!code || !state) {
-    return redirectToProfile(request, { connection_error: 'missing_code_or_state' })
+    return redirectBack(request, '/profile', {
+      connection_error: 'missing_code_or_state',
+    })
   }
 
   const cookieState = await consumeOauthStateCookie()
   if (!cookieState) {
-    return redirectToProfile(request, { connection_error: 'state_expired' })
+    return redirectBack(request, '/profile', { connection_error: 'state_expired' })
   }
   if (cookieState.state !== state) {
-    return redirectToProfile(request, { connection_error: 'state_mismatch' })
+    return redirectBack(request, cookieState.returnTo, {
+      connection_error: 'state_mismatch',
+    })
   }
   if (cookieState.sourceId !== (source as SourceId)) {
-    return redirectToProfile(request, { connection_error: 'source_mismatch' })
+    return redirectBack(request, cookieState.returnTo, {
+      connection_error: 'source_mismatch',
+    })
   }
 
   const provider = getProvider(source as SourceId)
@@ -87,10 +93,13 @@ export async function GET(
         message: err instanceof Error ? err.message : String(err),
       })
     }
-    return redirectToProfile(request, { connection_error: 'exchange_failed' })
+    return redirectBack(request, cookieState.returnTo, {
+      connection_error: 'exchange_failed',
+    })
   }
 
-  // Persist via admin (service role) — see file header for rationale.
+  // Persist via admin (service role) — listening_connections has no
+  // client INSERT/UPDATE grant by design (rows hold OAuth tokens).
   const admin = getSupabaseAdminClient()
   const { error: upsertError } = await admin
     .from('listening_connections')
@@ -119,8 +128,13 @@ export async function GET(
         message: upsertError.message,
       })
     }
-    return redirectToProfile(request, { connection_error: 'persist_failed' })
+    return redirectBack(request, cookieState.returnTo, {
+      connection_error: 'persist_failed',
+    })
   }
 
-  return redirectToProfile(request, { connection: 'connected', source })
+  return redirectBack(request, cookieState.returnTo, {
+    connection: 'connected',
+    source,
+  })
 }
