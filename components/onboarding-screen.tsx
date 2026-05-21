@@ -310,10 +310,38 @@ export function OnboardingScreen() {
   const [sessionCheckError, setSessionCheckError] = useState('')
   const [isLoginMode, setIsLoginMode] = useState(false)
 
-  // Called right after OTP verification succeeds at the end of full onboarding.
-  // Persists completion to user_profiles (source of truth).
-  const handleAuthSuccess = async () => {
-    // Primary: persist via server action (reads session from cookies).
+  // Single canonical "commit + exit" path. Called by both the auto-skip
+  // useEffect inside CompleteStep AND by the visible "Enter LongPlay"
+  // button. Blocks the redirect on a verified DB write — onboarding_completed
+  // must read back as `true` from user_profiles before we leave the wizard.
+  const handleComplete = async () => {
+    if (DEV_MODE) {
+      console.log('[onboarding] handleComplete: button clicked', {
+        currentStep,
+      })
+    }
+
+    setSessionCheckError('')
+
+    const supabase = getSupabaseBrowserClient()
+    const { data: { user } } = await supabase.auth.getUser()
+
+    if (DEV_MODE) {
+      console.log('[onboarding] handleComplete: session check', {
+        authenticatedUserId: user?.id ?? null,
+      })
+    }
+
+    if (!user) {
+      setSessionCheckError('Session not found. Please sign in again.')
+      return
+    }
+
+    if (DEV_MODE) {
+      console.log('[onboarding] handleComplete: save start', { userId: user.id })
+    }
+
+    // Primary: server action (cookie-bound; uses upsert internally).
     const saveResult = await saveOnboardingCompletion({
       archetype: 'The Midnight Archivist',
       connectedServices,
@@ -321,65 +349,72 @@ export function OnboardingScreen() {
     })
 
     if (DEV_MODE) {
-      console.log('[onboarding] handleAuthSuccess: server-action result', saveResult)
+      console.log('[onboarding] handleComplete: server-action result', saveResult)
     }
 
-    // Fallback: if server action couldn't see the session cookie (Replit
-    // cross-site iframe timing), use the browser client to write directly.
-    // Uses UPSERT so a missing row gets created — UPDATE would no-op
-    // silently and leave onboarding_completed=false.
+    // Fallback: browser-client upsert if the server action could not see
+    // the session cookie (Replit cross-site iframe). Uses upsert so a
+    // missing row is created — never silently no-ops like UPDATE.
     if (!saveResult.success) {
-      const supabaseBrowser = getSupabaseBrowserClient()
-      const { data: { user: authUser } } = await supabaseBrowser.auth.getUser()
-      if (!authUser) {
-        if (DEV_MODE) {
-          console.warn('[onboarding] handleAuthSuccess: no browser user for fallback upsert')
-        }
-      } else {
-        const { data: fallbackRow, error: fallbackError } = await supabaseBrowser
-          .from('user_profiles')
-          .upsert(
-            {
-              id: authUser.id,
-              onboarding_completed: true,
-              onboarding_completed_at: new Date().toISOString(),
-            },
-            { onConflict: 'id' },
-          )
-          .select('id, onboarding_completed')
-          .maybeSingle()
+      const { data: fbRow, error: fbError } = await supabase
+        .from('user_profiles')
+        .upsert(
+          {
+            id: user.id,
+            onboarding_completed: true,
+            onboarding_completed_at: new Date().toISOString(),
+          },
+          { onConflict: 'id' },
+        )
+        .select('id, onboarding_completed')
+        .maybeSingle()
 
-        if (DEV_MODE) {
-          console.log('[onboarding] handleAuthSuccess: browser-client fallback upsert', {
-            authenticatedUserId: authUser.id,
-            error: fallbackError
-              ? { code: fallbackError.code, message: fallbackError.message }
-              : null,
-            row: fallbackRow,
-          })
-        }
+      if (DEV_MODE) {
+        console.log('[onboarding] handleComplete: browser fallback upsert', {
+          error: fbError ? { code: fbError.code, message: fbError.message } : null,
+          row: fbRow,
+        })
       }
     }
 
-    // Short delay so the "Signed in. Taking you home…" state is visible briefly.
-    setTimeout(() => router.replace('/'), 1400)
-  }
+    // VERIFY: re-read user_profiles directly. Only redirect if the row
+    // reads back as onboarding_completed === true.
+    const { data: confirmRow, error: confirmError } = await supabase
+      .from('user_profiles')
+      .select('id, onboarding_completed')
+      .eq('id', user.id)
+      .maybeSingle()
 
-  // Called by the "Enter LongPlay" button — user may or may not have signed in.
-  // Still guarded by getSession() as a safety net.
-  const handleComplete = async () => {
-    setSessionCheckError('')
-    const supabase = getSupabaseBrowserClient()
-    const { data: { session } } = await supabase.auth.getSession()
-    if (!session) {
-      setSessionCheckError('Session not found. Please verify your email above to continue.')
+    if (DEV_MODE) {
+      console.log('[onboarding] handleComplete: post-save verify', {
+        readError: confirmError ? { code: confirmError.code, message: confirmError.message } : null,
+        row: confirmRow,
+      })
+    }
+
+    const onboardingCompletedRead =
+      (confirmRow as { onboarding_completed: boolean } | null)
+        ?.onboarding_completed ?? false
+
+    if (!onboardingCompletedRead) {
+      const detail = confirmError?.message ?? saveResult.error ?? 'unknown error'
+      setSessionCheckError(
+        `Could not save your onboarding (${detail}). Please try again.`,
+      )
       return
     }
-    // No localStorage completion write. Persistence is the
-    // saveOnboardingCompletion server-action's job (called from
-    // handleAuthSuccess above when CompleteStep finishes the OTP).
+
+    if (DEV_MODE) {
+      console.log('[onboarding] handleComplete: redirect target', '/')
+    }
+
     router.replace('/')
   }
+
+  // OTP-verify path inside CompleteStep delegates to handleComplete now
+  // that it owns the await-and-verify dance. Kept as a wrapper for the
+  // existing prop shape; no separate persistence path.
+  const handleAuthSuccess = handleComplete
 
   // Show loading while checking onboarding state
   if (!isInitialized) {
@@ -1159,7 +1194,8 @@ function CompleteStep({ onFinish, onAuthSuccess, sessionCheckError = '' }: {
 
   // If the listener arrived here already signed in (canonical flow:
   // /sign-in → OTP → /onboarding → calibration → here), skip the
-  // redundant second OTP entirely. Just persist completion and go home.
+  // redundant second OTP entirely. Route through onFinish so the same
+  // await-and-verify persistence path runs as when the button is clicked.
   useEffect(() => {
     if (skippedRef.current) return
     const supabase = getSupabaseBrowserClient()
@@ -1167,10 +1203,10 @@ function CompleteStep({ onFinish, onAuthSuccess, sessionCheckError = '' }: {
       if (user && !skippedRef.current) {
         skippedRef.current = true
         setPhase('success')
-        onAuthSuccess()
+        onFinish()
       }
     })
-  }, [onAuthSuccess])
+  }, [onFinish])
 
   // Countdown ticker for resend cooldown
   useEffect(() => {
@@ -1282,6 +1318,12 @@ function CompleteStep({ onFinish, onAuthSuccess, sessionCheckError = '' }: {
         >
           Enter LongPlay
         </button>
+
+        {sessionCheckError && (
+          <p className="font-serif text-sm text-burgundy/80 italic mt-6 max-w-sm mx-auto">
+            {sessionCheckError}
+          </p>
+        )}
 
         {/* ── Auth section ───────────────────────────────────────────────── */}
         <div className="mt-10 pt-8 border-t border-border/10 min-h-[160px]">
