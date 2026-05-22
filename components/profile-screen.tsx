@@ -53,19 +53,6 @@ const STREAMING_PROVIDER_CATALOG = [
   { sourceId: 'apple_music' as const, name: 'Apple Music', available: false },
 ] as const
 
-function formatRelativeTimestamp(iso: string | null): string {
-  if (!iso) return 'never synced'
-  const diffMs = Date.now() - new Date(iso).getTime()
-  if (diffMs < 60_000) return 'just now'
-  const minutes = Math.floor(diffMs / 60_000)
-  if (minutes < 60) return `${minutes}m ago`
-  const hours = Math.floor(minutes / 60)
-  if (hours < 24) return `${hours}h ago`
-  const days = Math.floor(hours / 24)
-  if (days < 30) return `${days}d ago`
-  return new Date(iso).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
-}
-
 type JoinedRoomEntry = { name: string; slug: string; role: string; joined: string }
 
 export function ProfileScreen() {
@@ -89,6 +76,7 @@ export function ProfileScreen() {
   // No hardcoded "Synced 2 hours ago" — last_sync_at carries the truth.
   const [connections, setConnections] = useState<
     Array<{
+      id: string
       source_id: 'spotify' | 'apple_music'
       external_account_id: string | null
       display_name: string | null
@@ -434,55 +422,71 @@ export function ProfileScreen() {
             }
 
             return (
-              <div
-                key={provider.sourceId}
-                className="flex items-center justify-between p-4 border border-border/20"
-              >
-                <div className="flex items-center gap-3">
-                  <div
-                    className={`w-2 h-2 rounded-full ${isConnected ? 'bg-olive' : 'bg-muted'}`}
-                  />
-                  <div className="flex flex-col items-start text-left">
-                    <span className="text-cream">{provider.name}</span>
-                    {isConnected && conn.display_name && (
-                      <span className="text-[11px] text-muted-foreground/70 mt-0.5">
-                        {conn.display_name}
-                      </span>
-                    )}
-                  </div>
-                </div>
-
-                {connectionsLoading ? (
-                  <span className="text-xs text-muted-foreground/50">…</span>
-                ) : isConnected ? (
+              <div key={provider.sourceId} className="flex flex-col">
+                <div className="flex items-center justify-between p-4 border border-border/20">
                   <div className="flex items-center gap-3">
-                    <span className="text-xs text-muted-foreground">
-                      {conn.last_sync_at
-                        ? `Synced ${formatRelativeTimestamp(conn.last_sync_at)}`
-                        : 'Not yet synced'}
-                    </span>
-                    <form action={disconnectConnection}>
+                    <div
+                      className={`w-2 h-2 rounded-full ${isConnected ? 'bg-olive' : 'bg-muted'}`}
+                    />
+                    <div className="flex flex-col items-start text-left">
+                      <span className="text-cream">{provider.name}</span>
+                      {isConnected && conn.display_name && (
+                        <span className="text-[11px] text-muted-foreground/70 mt-0.5">
+                          {conn.display_name}
+                        </span>
+                      )}
+                    </div>
+                  </div>
+
+                  {connectionsLoading ? (
+                    <span className="text-xs text-muted-foreground/50">…</span>
+                  ) : isConnected ? (
+                    <div className="flex items-center gap-3">
+                      {/* No "Synced X ago" copy — until the Phase 4.x sync
+                          worker exists, last_sync_at is never meaningfully
+                          populated. Render an honest fixed state. */}
+                      <span className="text-xs text-olive uppercase tracking-wider">
+                        Connected
+                      </span>
+                      <form action={disconnectConnection}>
+                        <input type="hidden" name="source" value={provider.sourceId} />
+                        <button
+                          type="submit"
+                          className="text-xs text-muted-foreground hover:text-burgundy/80 transition-colors"
+                        >
+                          Disconnect
+                        </button>
+                      </form>
+                    </div>
+                  ) : (
+                    <form action={initiateConnection}>
                       <input type="hidden" name="source" value={provider.sourceId} />
+                      <input type="hidden" name="returnTo" value="/profile" />
                       <button
                         type="submit"
-                        className="text-xs text-muted-foreground hover:text-burgundy/80 transition-colors"
+                        className="text-xs text-tobacco hover:text-cream transition-colors"
                       >
-                        Disconnect
+                        Connect
                       </button>
                     </form>
-                  </div>
-                ) : (
-                  <form action={initiateConnection}>
-                    <input type="hidden" name="source" value={provider.sourceId} />
-                    <input type="hidden" name="returnTo" value="/profile" />
-                    <button
-                      type="submit"
-                      className="text-xs text-tobacco hover:text-cream transition-colors"
-                    >
-                      Connect
-                    </button>
-                  </form>
-                )}
+                  )}
+                </div>
+
+                {/* Visible debug strip (always rendered — not gated by
+                    DEV_MODE — so the user can confirm the source of truth
+                    on the deployed preview).
+                    Single line per provider:
+                      [provider]  source:<db-row|none>  id:<uuid prefix or ->
+                      status:<…>  last_sync_at:<iso or null> */}
+                <div className="px-4 py-1 text-[10px] font-mono text-muted-foreground/40 leading-tight">
+                  source:{connectionsLoading ? 'loading' : conn ? 'db-row' : 'none'}
+                  {'  '}
+                  row_id:{conn ? `${conn.id.slice(0, 8)}…` : '—'}
+                  {'  '}
+                  status:{conn ? conn.status : '—'}
+                  {'  '}
+                  last_sync_at:{conn ? String(conn.last_sync_at ?? 'null') : '—'}
+                </div>
               </div>
             )
           })}

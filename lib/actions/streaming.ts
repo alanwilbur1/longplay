@@ -117,6 +117,11 @@ export async function disconnectConnection(formData: FormData) {
 /**
  * Helper read for /profile and other surfaces. Returns the listener's
  * connections without exposing the encrypted token columns.
+ *
+ * Defense-in-depth: filter to status='active' server-side. The Profile
+ * UI also filters client-side, but the server-side filter means a
+ * 'revoked' or 'error' row can never reach a render path that would
+ * misread it as connected.
  */
 export async function listMyConnections(): Promise<
   Array<{
@@ -126,6 +131,7 @@ export async function listMyConnections(): Promise<
     status: string
     connected_at: string
     last_sync_at: string | null
+    id: string
   }>
 > {
   const supabase = await createSupabaseServerClient()
@@ -135,18 +141,28 @@ export async function listMyConnections(): Promise<
   const { data, error } = await supabase
     .from('listening_connections')
     .select(
-      'source_id, external_account_id, display_name, status, connected_at, last_sync_at',
+      'id, source_id, external_account_id, display_name, status, connected_at, last_sync_at',
     )
     .eq('user_id', user.id)
+    .eq('status', 'active')
 
-  if (error || !data) return []
-  return data as unknown as Array<{
+  if (error) {
+    if (process.env.NODE_ENV !== 'production') {
+      console.warn('[streaming/listMyConnections] read failed', {
+        code: error.code,
+        message: error.message,
+      })
+    }
+    return []
+  }
+  return (data ?? []) as unknown as Array<{
     source_id: SourceId
     external_account_id: string | null
     display_name: string | null
     status: string
     connected_at: string
     last_sync_at: string | null
+    id: string
   }>
 }
 
