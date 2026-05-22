@@ -345,7 +345,8 @@ interface HydrationOutcome {
   /** Last batch HTTP status when a batch failed. */
   lastStatus: number | null
   /** Safe one-line error (status + Spotify's `error.message`), or null
-   *  when every batch succeeded. Never contains tokens. */
+   *  when every batch succeeded — including when the batch path 403s
+   *  but the per-id fallback fully recovered the hydration map. */
   lastError: string | null
   /** Temporary Phase 4.4 diagnostics. Surfaced through SyncMeta into
    *  the UI so we can see whether the 403 came from a bad ID, a bad
@@ -367,6 +368,13 @@ interface HydrationOutcome {
      *  first batch fails. Tells us whether the catalog endpoint is
      *  blocked globally or just the comma-list form. */
     probe_single_status: number | null
+    /** Set to 'batch_to_single' when at least one batch fell back to
+     *  per-id hydration. Null when the fast batch path worked end to
+     *  end. */
+    fallback_mode: 'batch_to_single' | null
+    fallback_singles_attempted: number
+    fallback_singles_succeeded: number
+    fallback_singles_failed: number
   }
 }
 
@@ -421,6 +429,10 @@ async function hydrateSpotifyArtists(
       last_body_message: null,
       ids_filtered_out,
       probe_single_status: null,
+      fallback_mode: null,
+      fallback_singles_attempted: 0,
+      fallback_singles_succeeded: 0,
+      fallback_singles_failed: 0,
     },
   }
   if (filtered.length === 0) return out
@@ -487,8 +499,7 @@ async function hydrateSpotifyArtists(
       // path-form endpoint. If that returns 200 we know it's the
       // ids-list form that's blocked; if it also 403s, the entire
       // /v1/artists catalog is gated for this token. Result lands
-      // in diagnostics.probe_single_status; we don't change control
-      // flow based on it.
+      // in diagnostics.probe_single_status.
       if (out.diagnostics.probe_single_status === null) {
         try {
           const probeRes = await fetch(`${API_BASE}/artists/${batch[0]}`, {
@@ -502,6 +513,31 @@ async function hydrateSpotifyArtists(
           })
         } catch {
           out.diagnostics.probe_single_status = 0
+        }
+      }
+
+      // Phase-4.4 graceful fallback: if the batch endpoint is 403'd
+      // but the single-id probe came back ok (or we haven't probed
+      // yet — first batch's probe is on this same iteration), drop
+      // to per-id hydration for THIS batch. Concurrency-limited so
+      // we don't hammer Spotify with 50 simultaneous requests.
+      const singleEndpointWorks =
+        out.diagnostics.probe_single_status === 200 ||
+        (out.diagnostics.probe_single_status === null && res.status === 403)
+      if (res.status === 403 && singleEndpointWorks) {
+        out.diagnostics.fallback_mode = 'batch_to_single'
+        const fb = await hydrateBatchAsSingles(batch, REQUEST_HEADERS)
+        out.diagnostics.fallback_singles_attempted += fb.attempted
+        out.diagnostics.fallback_singles_succeeded += fb.succeeded
+        out.diagnostics.fallback_singles_failed += fb.failed
+        for (const [k, v] of fb.map) out.map.set(k, v)
+        if (process.env.NODE_ENV !== 'production') {
+          console.log('[spotify/hydrate] fallback ran', {
+            batch_index: i / 50,
+            attempted: fb.attempted,
+            succeeded: fb.succeeded,
+            failed: fb.failed,
+          })
         }
       }
       continue
@@ -539,15 +575,43 @@ async function hydrateSpotifyArtists(
     }
   }
 
-  // Phase 4.4 temporary: enrich the user-visible lastError with the
-  // safe diagnostics gathered above. Lets us see exactly which input
-  // shape Spotify is rejecting without adding any new UI plumbing.
-  // Strip is auto-included in SyncMeta.hydration_error → rendered by
-  // the existing burgundy "hydration: …" line in SyncConnectionButton.
+  // Phase 4.4: if the batch endpoint failed but the per-id fallback
+  // fully recovered the hydration map, clear lastError so the UI's
+  // burgundy "hydration: …" line stays quiet. The diagnostic strip
+  // still shows "0/N batches" — which is honest documentation that
+  // the catalog endpoint is blocked — but the headline error goes
+  // away because we ARE actually hydrated.
+  const d = out.diagnostics
+  const fullyRecovered =
+    out.lastError !== null &&
+    d.fallback_mode === 'batch_to_single' &&
+    out.map.size >= filtered.length
+
+  if (fullyRecovered) {
+    if (process.env.NODE_ENV !== 'production') {
+      console.log('[spotify/hydrate] fully recovered via single-id fallback', {
+        hydrated: out.map.size,
+        collected: filtered.length,
+        fallback_attempted: d.fallback_singles_attempted,
+        fallback_succeeded: d.fallback_singles_succeeded,
+      })
+    }
+    out.lastError = null
+    out.lastStatus = null
+    return out
+  }
+
+  // Otherwise enrich the user-visible lastError with the safe
+  // diagnostics gathered above. Lets us see exactly which input shape
+  // Spotify is rejecting and how the fallback fared, without adding
+  // any new UI plumbing.
   if (out.lastError) {
-    const d = out.diagnostics
     const firstId = d.first_id ? d.first_id.slice(0, 8) + '…' : '∅'
     const probe = d.probe_single_status === null ? '?' : String(d.probe_single_status)
+    const fb =
+      d.fallback_mode === 'batch_to_single'
+        ? ` fb=${d.fallback_singles_succeeded}/${d.fallback_singles_attempted}`
+        : ''
     out.lastError =
       `${out.lastError}` +
       ` | bs=${d.batch_size}` +
@@ -555,10 +619,74 @@ async function hydrateSpotifyArtists(
       ` tpl=${d.token_prefix_len}` +
       ` filt=${d.ids_filtered_out}` +
       ` url=${d.sample_url_path ?? '∅'}` +
-      ` probe=${probe}`
+      ` probe=${probe}` +
+      fb
   }
 
   return out
+}
+
+/**
+ * Per-id hydration fallback for a single batch when the
+ * /v1/artists?ids=… form is blocked by Spotify's WAF but the
+ * /v1/artists/{id} form works (single-id probe confirmed it).
+ *
+ * Concurrency capped at 4 — enough to make 50 calls finish in
+ * ~1-2s of wall-time even with Spotify's typical latency, but well
+ * under any per-IP rate limit. Errors on individual ids are
+ * silently counted (failed +=1) and skipped; we don't retry, and
+ * one bad id doesn't poison the others (unlike the batch endpoint).
+ *
+ * Returns the same shape as a single batch contributes — fold into
+ * out.map at the call site.
+ */
+async function hydrateBatchAsSingles(
+  ids: string[],
+  headers: HeadersInit,
+): Promise<{
+  map: Map<string, HydratedArtist>
+  attempted: number
+  succeeded: number
+  failed: number
+}> {
+  const map = new Map<string, HydratedArtist>()
+  let attempted = 0
+  let succeeded = 0
+  let failed = 0
+  const CONCURRENCY = 4
+  let cursor = 0
+
+  async function worker() {
+    while (true) {
+      const i = cursor
+      cursor += 1
+      if (i >= ids.length) return
+      const id = ids[i]
+      attempted += 1
+      try {
+        const res = await fetch(`${API_BASE}/artists/${id}`, {
+          headers,
+          cache: 'no-store',
+        })
+        if (!res.ok) {
+          failed += 1
+          continue
+        }
+        const body = (await res.json()) as HydratedArtist
+        if (body?.id) {
+          map.set(body.id, body)
+          succeeded += 1
+        } else {
+          failed += 1
+        }
+      } catch {
+        failed += 1
+      }
+    }
+  }
+
+  await Promise.all(Array.from({ length: CONCURRENCY }, () => worker()))
+  return { map, attempted, succeeded, failed }
 }
 
 function normalizeContext(t: string | undefined): ListeningEvent['context_type'] {
