@@ -114,29 +114,43 @@ export async function disconnectConnection(formData: FormData) {
   redirect('/profile?connection=disconnected')
 }
 
-/**
- * Helper read for /profile and other surfaces. Returns the listener's
- * connections without exposing the encrypted token columns.
- *
- * Defense-in-depth: filter to status='active' server-side. The Profile
- * UI also filters client-side, but the server-side filter means a
- * 'revoked' or 'error' row can never reach a render path that would
- * misread it as connected.
- */
-export async function listMyConnections(): Promise<
-  Array<{
+export interface ListMyConnectionsResult {
+  rows: Array<{
+    id: string
     source_id: SourceId
     external_account_id: string | null
     display_name: string | null
     status: string
     connected_at: string
     last_sync_at: string | null
-    id: string
   }>
-> {
+  error: { code: string | null; message: string } | null
+  /** Diagnostic only: which authenticated user id the query ran as.
+   *  null when no session existed at read time. */
+  queriedAs: string | null
+}
+
+/**
+ * Helper read for /profile and other surfaces. Returns the listener's
+ * connections without exposing the encrypted token columns.
+ *
+ * Returns BOTH rows and error info so callers can render the real
+ * reason an empty list came back (no rows vs missing table vs RLS
+ * block). Phase 4.x audit demand: the UI must be able to surface
+ * "the connections table does not exist on this DB" rather than
+ * silently render "Connect" with no explanation.
+ *
+ * Defense-in-depth: filter to status='active' server-side. The Profile
+ * UI also filters client-side, but the server-side filter means a
+ * 'revoked' or 'error' row can never reach a render path that might
+ * misread it as connected.
+ */
+export async function listMyConnections(): Promise<ListMyConnectionsResult> {
   const supabase = await createSupabaseServerClient()
   const { data: { user } } = await supabase.auth.getUser()
-  if (!user) return []
+  if (!user) {
+    return { rows: [], error: null, queriedAs: null }
+  }
 
   const { data, error } = await supabase
     .from('listening_connections')
@@ -151,19 +165,18 @@ export async function listMyConnections(): Promise<
       console.warn('[streaming/listMyConnections] read failed', {
         code: error.code,
         message: error.message,
+        userId: user.id,
       })
     }
-    return []
+    return {
+      rows: [],
+      error: { code: error.code ?? null, message: error.message },
+      queriedAs: user.id,
+    }
   }
-  return (data ?? []) as unknown as Array<{
-    source_id: SourceId
-    external_account_id: string | null
-    display_name: string | null
-    status: string
-    connected_at: string
-    last_sync_at: string | null
-    id: string
-  }>
+
+  const rows = (data ?? []) as unknown as ListMyConnectionsResult['rows']
+  return { rows, error: null, queriedAs: user.id }
 }
 
 /** Reads + clears the OAuth state cookie. Used by the callback route. */

@@ -74,6 +74,9 @@ export function ProfileScreen() {
 
   // Real streaming connections from listening_connections (DB-backed).
   // No hardcoded "Synced 2 hours ago" — last_sync_at carries the truth.
+  // We also keep the read-error info so the debug strip can render
+  // missing-table state ("source:error code:PGRST205 ...") instead of
+  // silently showing the Connect button.
   const [connections, setConnections] = useState<
     Array<{
       id: string
@@ -85,6 +88,11 @@ export function ProfileScreen() {
       last_sync_at: string | null
     }>
   >([])
+  const [connectionsError, setConnectionsError] = useState<{
+    code: string | null
+    message: string
+  } | null>(null)
+  const [connectionsQueriedAs, setConnectionsQueriedAs] = useState<string | null>(null)
   const [connectionsLoading, setConnectionsLoading] = useState(true)
   const searchParams = useSearchParams()
 
@@ -159,13 +167,26 @@ export function ProfileScreen() {
   useEffect(() => {
     if (!isAuthenticated) {
       setConnections([])
+      setConnectionsError(null)
+      setConnectionsQueriedAs(null)
       setConnectionsLoading(false)
       return
     }
     setConnectionsLoading(true)
+    setConnectionsError(null)
     listMyConnections()
-      .then((rows) => setConnections(rows))
-      .catch(() => setConnections([]))
+      .then((result) => {
+        setConnections(result.rows)
+        setConnectionsError(result.error)
+        setConnectionsQueriedAs(result.queriedAs)
+      })
+      .catch((err) => {
+        setConnections([])
+        setConnectionsError({
+          code: 'EXCEPTION',
+          message: err instanceof Error ? err.message : String(err),
+        })
+      })
       .finally(() => setConnectionsLoading(false))
   }, [isAuthenticated, connectionRefreshKey])
 
@@ -475,17 +496,39 @@ export function ProfileScreen() {
                 {/* Visible debug strip (always rendered — not gated by
                     DEV_MODE — so the user can confirm the source of truth
                     on the deployed preview).
-                    Single line per provider:
-                      [provider]  source:<db-row|none>  id:<uuid prefix or ->
-                      status:<…>  last_sync_at:<iso or null> */}
+                    Two lines per provider:
+                      source:<db-row|none|loading|error>  row_id:<…>
+                      status:<…>  last_sync_at:<…>  queried_as:<uid>
+                      [error line shown only on read error] */}
                 <div className="px-4 py-1 text-[10px] font-mono text-muted-foreground/40 leading-tight">
-                  source:{connectionsLoading ? 'loading' : conn ? 'db-row' : 'none'}
-                  {'  '}
-                  row_id:{conn ? `${conn.id.slice(0, 8)}…` : '—'}
-                  {'  '}
-                  status:{conn ? conn.status : '—'}
-                  {'  '}
-                  last_sync_at:{conn ? String(conn.last_sync_at ?? 'null') : '—'}
+                  <div>
+                    source:
+                    {connectionsLoading
+                      ? 'loading'
+                      : connectionsError
+                        ? 'error'
+                        : conn
+                          ? 'db-row'
+                          : 'none'}
+                    {'  '}
+                    row_id:{conn ? `${conn.id.slice(0, 8)}…` : '—'}
+                    {'  '}
+                    status:{conn ? conn.status : '—'}
+                    {'  '}
+                    last_sync_at:{conn ? String(conn.last_sync_at ?? 'null') : '—'}
+                  </div>
+                  <div>
+                    queried_as:
+                    {connectionsQueriedAs
+                      ? `${connectionsQueriedAs.slice(0, 8)}…`
+                      : '—'}
+                  </div>
+                  {connectionsError && (
+                    <div className="text-burgundy/60">
+                      read_error: code={String(connectionsError.code ?? 'null')}{' '}
+                      msg={connectionsError.message.slice(0, 80)}
+                    </div>
+                  )}
                 </div>
               </div>
             )

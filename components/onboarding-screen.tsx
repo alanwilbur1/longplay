@@ -684,21 +684,31 @@ function ConnectStep({
   const [connections, setConnections] = useState<
     Array<{ source_id: string; display_name: string | null; status: string }>
   >([])
+  const [readError, setReadError] = useState<{ code: string | null; message: string } | null>(
+    null,
+  )
 
   useEffect(() => {
     let mounted = true
     listMyConnections()
-      .then((rows) => {
+      .then((result) => {
         if (!mounted) return
         setConnections(
-          rows.map((r) => ({
+          result.rows.map((r) => ({
             source_id: r.source_id,
             display_name: r.display_name,
             status: r.status,
           })),
         )
+        setReadError(result.error)
       })
-      .catch(() => {})
+      .catch((err) => {
+        if (!mounted) return
+        setReadError({
+          code: 'EXCEPTION',
+          message: err instanceof Error ? err.message : String(err),
+        })
+      })
       .finally(() => {
         if (mounted) setLoading(false)
       })
@@ -771,6 +781,31 @@ function ConnectStep({
         >
           {spotify ? 'Continue' : 'Skip for now'}
         </button>
+
+        {/* Visible debug strip — same posture as /profile. Surfaces
+            missing-table or RLS-block state directly in the UI so the
+            "I see Spotify connected even though I never connected"
+            symptom can be traced without console access. */}
+        <div className="mt-6 text-[10px] font-mono text-muted-foreground/35 leading-tight">
+          <div>
+            spotify_state:
+            {loading
+              ? 'loading'
+              : readError
+                ? 'error'
+                : spotify
+                  ? 'db-row'
+                  : 'none'}
+            {'  '}
+            rows_returned:{connections.length}
+          </div>
+          {readError && (
+            <div className="text-burgundy/60">
+              read_error: code={String(readError.code ?? 'null')}{' '}
+              msg={readError.message.slice(0, 80)}
+            </div>
+          )}
+        </div>
       </div>
     </div>
   )
