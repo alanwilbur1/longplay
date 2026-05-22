@@ -347,19 +347,47 @@ interface HydrationOutcome {
   /** Safe one-line error (status + Spotify's `error.message`), or null
    *  when every batch succeeded. Never contains tokens. */
   lastError: string | null
+  /** Temporary Phase 4.4 diagnostics. Surfaced through SyncMeta into
+   *  the UI so we can see whether the 403 came from a bad ID, a bad
+   *  URL shape, or token-side issues. Never contains the token. */
+  diagnostics: {
+    first_id: string | null
+    batch_size: number
+    /** Length only — never the token itself. */
+    token_prefix_len: number
+    /** Pathname + truncated query (first 80 chars). */
+    sample_url_path: string | null
+    last_status: number | null
+    /** Spotify body's `error.message` (already safe — no token). */
+    last_body_message: string | null
+    /** IDs filtered out because they didn't match Spotify's
+     *  22-char base62 shape. */
+    ids_filtered_out: number
+    /** Status of a single-id probe (GET /v1/artists/{firstId}) when the
+     *  first batch fails. Tells us whether the catalog endpoint is
+     *  blocked globally or just the comma-list form. */
+    probe_single_status: number | null
+  }
 }
 
 /**
  * Batch-hydrate Spotify artist IDs via `/v1/artists?ids=…`.
  *
  * Self-instrumenting: returns telemetry (attempted/succeeded counts,
- * last failing status + Spotify's safe error message) so the caller
- * can surface "hydration not running" / "hydration 401" diagnostics
- * instead of silently writing `genres: []`.
+ * last failing status + Spotify's safe error message, plus
+ * Phase-4.4 diagnostics) so the caller can surface "hydration 403
+ * on this exact URL" diagnostics instead of silently writing
+ * genres: [].
  *
- * Spotify allows up to 50 IDs per call. IDs are URL-safe base62 so
- * we don't encode the comma separator (Spotify accepts both, but
- * unencoded is the form their docs use most often).
+ * Spotify allows up to 50 IDs per call. IDs are URL-safe base62
+ * (22-char [A-Za-z0-9]); we hard-filter to that shape before joining
+ * so a single local-file pseudo-id can't poison a whole batch.
+ *
+ * Headers: we now explicitly send User-Agent + Accept. Spotify's
+ * Cloudflare layer has been observed to 403 catalog endpoints
+ * (/v1/artists, /v1/albums, /v1/tracks) when the request comes in
+ * with the default undici / node fetch User-Agent, while still
+ * letting /me/* through. Doesn't cost anything to be explicit.
  *
  * Does NOT throw — every batch failure is captured into the outcome.
  */
@@ -367,24 +395,58 @@ async function hydrateSpotifyArtists(
   ids: string[],
   accessToken: string,
 ): Promise<HydrationOutcome> {
+  // Spotify IDs are exactly 22 chars of base62. Anything else (local
+  // files, malformed entries from old syncs, empty strings) gets
+  // dropped — they'd make Spotify reject the whole batch.
+  const VALID_ID = /^[A-Za-z0-9]{22}$/
+  const filtered: string[] = []
+  let ids_filtered_out = 0
+  for (const id of ids) {
+    if (typeof id === 'string' && VALID_ID.test(id)) filtered.push(id)
+    else ids_filtered_out += 1
+  }
+
   const out: HydrationOutcome = {
     map: new Map(),
     attempted: 0,
     succeeded: 0,
     lastStatus: null,
     lastError: null,
+    diagnostics: {
+      first_id: filtered[0] ?? null,
+      batch_size: 0,
+      token_prefix_len: accessToken?.length ?? 0,
+      sample_url_path: null,
+      last_status: null,
+      last_body_message: null,
+      ids_filtered_out,
+      probe_single_status: null,
+    },
   }
-  if (ids.length === 0) return out
+  if (filtered.length === 0) return out
 
-  for (let i = 0; i < ids.length; i += 50) {
-    const batch = ids.slice(i, i + 50)
+  const REQUEST_HEADERS: HeadersInit = {
+    Authorization: `Bearer ${accessToken}`,
+    Accept: 'application/json',
+    'User-Agent': 'LongPlay/1.0 (+https://longplay.app)',
+  }
+
+  for (let i = 0; i < filtered.length; i += 50) {
+    const batch = filtered.slice(i, i + 50)
     const url = `${API_BASE}/artists?ids=${batch.join(',')}`
     out.attempted += 1
+    if (i === 0) {
+      out.diagnostics.batch_size = batch.length
+      // Safe: just path + truncated query (no token, no user data).
+      const pathPart = url.slice(API_BASE.length)
+      out.diagnostics.sample_url_path =
+        pathPart.length > 80 ? pathPart.slice(0, 80) + '…' : pathPart
+    }
 
     let res: Response
     try {
       res = await fetch(url, {
-        headers: { Authorization: `Bearer ${accessToken}` },
+        headers: REQUEST_HEADERS,
         cache: 'no-store',
       })
     } catch (err) {
@@ -392,7 +454,8 @@ async function hydrateSpotifyArtists(
       out.lastError = `fetch failed: ${
         err instanceof Error ? err.message : String(err)
       }`
-      // Always log — this is genuinely diagnostic and contains no token.
+      out.diagnostics.last_status = 0
+      out.diagnostics.last_body_message = out.lastError
       console.warn('[spotify/hydrate] fetch threw', {
         batch_index: i / 50,
         message: out.lastError,
@@ -402,9 +465,6 @@ async function hydrateSpotifyArtists(
 
     if (!res.ok) {
       out.lastStatus = res.status
-      // Spotify error bodies look like { error: { status, message } }.
-      // Pull just `message` so we surface "The access token expired"
-      // instead of a generic HTTP code. Never includes tokens.
       let detail = ''
       try {
         const body = (await res.json()) as { error?: { message?: string } }
@@ -413,12 +473,37 @@ async function hydrateSpotifyArtists(
         // ignore body parse failure
       }
       out.lastError = detail ? `${res.status}: ${detail}` : `HTTP ${res.status}`
+      out.diagnostics.last_status = res.status
+      out.diagnostics.last_body_message = detail || null
       console.warn('[spotify/hydrate] batch failed', {
         batch_index: i / 50,
         batch_size: batch.length,
         status: res.status,
         detail,
+        first_id: batch[0],
       })
+
+      // On the FIRST batch failure, probe a single artist via the
+      // path-form endpoint. If that returns 200 we know it's the
+      // ids-list form that's blocked; if it also 403s, the entire
+      // /v1/artists catalog is gated for this token. Result lands
+      // in diagnostics.probe_single_status; we don't change control
+      // flow based on it.
+      if (out.diagnostics.probe_single_status === null) {
+        try {
+          const probeRes = await fetch(`${API_BASE}/artists/${batch[0]}`, {
+            headers: REQUEST_HEADERS,
+            cache: 'no-store',
+          })
+          out.diagnostics.probe_single_status = probeRes.status
+          console.warn('[spotify/hydrate] single-id probe', {
+            id: batch[0],
+            status: probeRes.status,
+          })
+        } catch {
+          out.diagnostics.probe_single_status = 0
+        }
+      }
       continue
     }
 
@@ -452,6 +537,25 @@ async function hydrateSpotifyArtists(
         added,
       })
     }
+  }
+
+  // Phase 4.4 temporary: enrich the user-visible lastError with the
+  // safe diagnostics gathered above. Lets us see exactly which input
+  // shape Spotify is rejecting without adding any new UI plumbing.
+  // Strip is auto-included in SyncMeta.hydration_error → rendered by
+  // the existing burgundy "hydration: …" line in SyncConnectionButton.
+  if (out.lastError) {
+    const d = out.diagnostics
+    const firstId = d.first_id ? d.first_id.slice(0, 8) + '…' : '∅'
+    const probe = d.probe_single_status === null ? '?' : String(d.probe_single_status)
+    out.lastError =
+      `${out.lastError}` +
+      ` | bs=${d.batch_size}` +
+      ` first=${firstId}` +
+      ` tpl=${d.token_prefix_len}` +
+      ` filt=${d.ids_filtered_out}` +
+      ` url=${d.sample_url_path ?? '∅'}` +
+      ` probe=${probe}`
   }
 
   return out
