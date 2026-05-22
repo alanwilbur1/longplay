@@ -13,6 +13,9 @@ import { getResonatingRooms, ROOM_AFFINITIES } from '@/lib/room-affinity'
 import { getSupabaseBrowserClient } from '@/lib/supabase/client'
 import { ensureUserProfile } from '@/lib/actions/auth'
 import { saveOnboardingCompletion, getOnboardingStatus } from '@/lib/actions/onboarding'
+import { initiateConnection, listMyConnections } from '@/lib/actions/streaming'
+import { getRecommendedRooms, type RecommendedRoom } from '@/lib/recommendations'
+import { joinRoom } from '@/lib/actions/membership'
 
 /**
  * LongPlay Onboarding - Initiation Into a Listening Culture
@@ -46,8 +49,14 @@ type Step = typeof STEPS[number]
 // were designed for pre-auth visitors. Signed-in listeners arriving
 // from /sign-in must skip them and land directly on the first real
 // calibration step.
-const PRE_AUTH_STEPS: ReadonlySet<Step> = new Set(['opening', 'connect', 'importing'])
-const FIRST_AUTHENTICATED_STEP: Step = 'calibration-1'
+// Steps that belonged to the pre-auth marketing/loading flow. Now that
+// the proxy redirects unauth to /sign-in, none of these are reachable
+// with a session — they are excluded from the wizard's restore and
+// next-step logic. 'connect' is intentionally NOT here anymore: it is
+// now the FIRST authenticated step (streaming connection prompt that
+// actually wires to listening_connections via lib/actions/streaming).
+const PRE_AUTH_STEPS: ReadonlySet<Step> = new Set(['opening', 'importing'])
+const FIRST_AUTHENTICATED_STEP: Step = 'connect'
 
 // Calibration question data
 const CALIBRATION_QUESTIONS = {
@@ -276,16 +285,23 @@ export function OnboardingScreen() {
 
   const handleContinue = () => {
     const currentIndex = STEPS.indexOf(currentStep)
-    if (currentIndex < STEPS.length - 1) {
-      const nextStep = STEPS[currentIndex + 1]
-      setCurrentStep(nextStep)
-      
-      if (nextStep === 'importing') {
-        simulateImport()
-      }
-      if (nextStep === 'building') {
-        simulateBuild()
-      }
+    // Skip any pre-auth step in the natural sequence. After 'connect'
+    // (the first auth step), STEPS[i+1] is 'importing' — a pre-auth
+    // atmospheric pause from the old flow that no longer fits. We
+    // advance to the next non-pre-auth step instead.
+    let nextIndex = currentIndex + 1
+    while (
+      nextIndex < STEPS.length &&
+      PRE_AUTH_STEPS.has(STEPS[nextIndex])
+    ) {
+      nextIndex += 1
+    }
+    if (nextIndex >= STEPS.length) return
+    const nextStep = STEPS[nextIndex]
+    setCurrentStep(nextStep)
+
+    if (nextStep === 'building') {
+      simulateBuild()
     }
   }
 
@@ -504,12 +520,7 @@ export function OnboardingScreen() {
         )}
         
         {currentStep === 'connect' && (
-          <ConnectStep 
-            services={STREAMING_SERVICES}
-            connectedServices={connectedServices}
-            onConnect={handleConnect}
-            onContinue={handleContinue}
-          />
+          <ConnectStep onContinue={handleContinue} />
         )}
         
         {currentStep === 'importing' && <ImportingStep />}
@@ -650,20 +661,63 @@ function OpeningStep({ onContinue, onLogin }: { onContinue: () => void; onLogin:
 }
 
 // ============================================
-// CONNECT - Open Your Listening History
+// CONNECT - Open Your Listening History (real)
 // ============================================
-function ConnectStep({ 
-  services, 
-  connectedServices,
-  onConnect, 
-  onContinue 
-}: { 
-  services: typeof STREAMING_SERVICES
-  connectedServices: string[]
-  onConnect: (id: string) => void
+// Reads listening_connections via listMyConnections(); shows Connect
+// Spotify wired to initiateConnection (OAuth round-trip back to
+// /onboarding via the state cookie's returnTo). Apple Music is
+// scaffolded honestly as "Coming soon". A "Skip for now" link lets
+// the listener proceed without any connection.
+function ConnectStep({
+  connectedServices: _legacyUnused,
+  onContinue,
+}: {
+  services?: typeof STREAMING_SERVICES
+  connectedServices?: string[]
+  onConnect?: (id: string) => void
   onContinue: () => void
 }) {
-  const hasConnection = connectedServices.length > 0
+  // _legacyUnused is the old in-memory connectedServices list; we no
+  // longer use it. Real connection state comes from the DB.
+  void _legacyUnused
+  const [loading, setLoading] = useState(true)
+  const [connections, setConnections] = useState<
+    Array<{ source_id: string; display_name: string | null; status: string }>
+  >([])
+  const [readError, setReadError] = useState<{ code: string | null; message: string } | null>(
+    null,
+  )
+
+  useEffect(() => {
+    let mounted = true
+    listMyConnections()
+      .then((result) => {
+        if (!mounted) return
+        setConnections(
+          result.rows.map((r) => ({
+            source_id: r.source_id,
+            display_name: r.display_name,
+            status: r.status,
+          })),
+        )
+        setReadError(result.error)
+      })
+      .catch((err) => {
+        if (!mounted) return
+        setReadError({
+          code: 'EXCEPTION',
+          message: err instanceof Error ? err.message : String(err),
+        })
+      })
+      .finally(() => {
+        if (mounted) setLoading(false)
+      })
+    return () => {
+      mounted = false
+    }
+  }, [])
+
+  const spotify = connections.find((c) => c.source_id === 'spotify' && c.status === 'active')
 
   return (
     <div className="flex-1 flex flex-col justify-center px-8 py-16">
@@ -671,54 +725,87 @@ function ConnectStep({
         <p className="text-[10px] uppercase tracking-[0.4em] text-tobacco mb-4 text-center">
           Your listening life begins here
         </p>
-        
+
         <h2 className="font-serif text-3xl md:text-4xl text-cream mb-4 text-center">
           Bring your history
         </h2>
-        
+
         <p className="text-muted-foreground leading-relaxed mb-12 text-center">
-          Connect your streaming to open years of listening memory.
+          Connecting helps LongPlay understand your listening.
+          <br />
+          You can always do this later.
         </p>
-        
-        <div className="space-y-3 mb-12">
-          {services.map((service) => {
-            const isConnected = connectedServices.includes(service.id)
-            
-            return (
+
+        <div className="space-y-3 mb-10">
+          {/* Spotify — real connect via OAuth */}
+          {spotify ? (
+            <div className="w-full flex items-center justify-between p-4 border border-olive/50 bg-olive/5">
+              <div className="flex flex-col items-start text-left">
+                <span className="text-cream">Spotify</span>
+                {spotify.display_name && (
+                  <span className="text-[11px] text-muted-foreground/70 mt-0.5">
+                    {spotify.display_name}
+                  </span>
+                )}
+              </div>
+              <span className="text-xs text-olive uppercase tracking-wider">Connected</span>
+            </div>
+          ) : (
+            <form action={initiateConnection}>
+              <input type="hidden" name="source" value="spotify" />
+              <input type="hidden" name="returnTo" value="/onboarding" />
               <button
-                key={service.id}
-                onClick={() => !isConnected && onConnect(service.id)}
-                disabled={isConnected}
-                className={cn(
-                  "w-full flex items-center justify-between p-4 border transition-all duration-500",
-                  isConnected 
-                    ? "border-olive/50 bg-olive/5" 
-                    : "border-border/20 hover:border-cream/30 hover:bg-card/20"
-                )}
+                type="submit"
+                disabled={loading}
+                className="w-full flex items-center justify-between p-4 border border-border/20 hover:border-cream/30 hover:bg-card/20 transition-all duration-500 disabled:opacity-50"
               >
-                <span className="text-cream">{service.name}</span>
-                {isConnected ? (
-                  <span className="text-xs text-olive uppercase tracking-wider">Connected</span>
-                ) : (
-                  <span className="text-xs text-muted-foreground">Connect</span>
-                )}
+                <span className="text-cream">Spotify</span>
+                <span className="text-xs text-muted-foreground">Connect</span>
               </button>
-            )
-          })}
+            </form>
+          )}
+
+          {/* Apple Music — honest scaffold state */}
+          <div
+            className="w-full flex items-center justify-between p-4 border border-border/20 opacity-50"
+            aria-disabled="true"
+          >
+            <span className="text-cream">Apple Music</span>
+            <span className="text-xs text-muted-foreground">Coming soon</span>
+          </div>
         </div>
-        
+
         <button
           onClick={onContinue}
-          disabled={!hasConnection}
-          className={cn(
-            "w-full py-4 border transition-all duration-500",
-            hasConnection
-              ? "border-cream/30 text-cream hover:bg-cream/5"
-              : "border-border/10 text-muted-foreground/40 cursor-not-allowed"
-          )}
+          className="w-full py-4 border border-cream/30 text-cream hover:bg-cream/5 transition-all duration-500"
         >
-          Continue
+          {spotify ? 'Continue' : 'Skip for now'}
         </button>
+
+        {/* Visible debug strip — same posture as /profile. Surfaces
+            missing-table or RLS-block state directly in the UI so the
+            "I see Spotify connected even though I never connected"
+            symptom can be traced without console access. */}
+        <div className="mt-6 text-[10px] font-mono text-muted-foreground/35 leading-tight">
+          <div>
+            spotify_state:
+            {loading
+              ? 'loading'
+              : readError
+                ? 'error'
+                : spotify
+                  ? 'db-row'
+                  : 'none'}
+            {'  '}
+            rows_returned:{connections.length}
+          </div>
+          {readError && (
+            <div className="text-burgundy/60">
+              read_error: code={String(readError.code ?? 'null')}{' '}
+              msg={readError.message.slice(0, 80)}
+            </div>
+          )}
+        </div>
       </div>
     </div>
   )
@@ -1106,82 +1193,142 @@ function PortraitRevealStep({ onContinue }: { onContinue: () => void }) {
 // ROOMS REVEAL - Cultural Placement (NOT recommendations)
 // ============================================
 function RoomsRevealStep({ onContinue }: { onContinue: () => void }) {
-  // Get rooms that resonate based on affinity system
-  const resonatingRooms = getResonatingRooms().slice(0, 3)
+  // Phase 4.2 — real recommendations from the heuristic recommender.
+  // Reads calibration answers + favorite_artist genres + rooms taxonomy
+  // server-side, returns scored rooms with grounded explanations.
+  const [loading, setLoading] = useState(true)
+  const [recs, setRecs] = useState<RecommendedRoom[]>([])
+  const [joinedSlugs, setJoinedSlugs] = useState<Set<string>>(new Set())
+  const [joiningSlug, setJoiningSlug] = useState<string | null>(null)
+
+  useEffect(() => {
+    let mounted = true
+    getRecommendedRooms(3)
+      .then((rows) => {
+        if (mounted) setRecs(rows)
+      })
+      .catch(() => {})
+      .finally(() => {
+        if (mounted) setLoading(false)
+      })
+    return () => {
+      mounted = false
+    }
+  }, [])
+
+  async function handleJoin(slug: string) {
+    if (joinedSlugs.has(slug) || joiningSlug) return
+    setJoiningSlug(slug)
+    try {
+      const result = await joinRoom(slug)
+      if (result?.success) {
+        setJoinedSlugs((prev) => new Set(prev).add(slug))
+      }
+    } catch {
+      // Swallow — UI stays on this step; listener can retry or skip.
+    } finally {
+      setJoiningSlug(null)
+    }
+  }
 
   return (
     <div className="flex-1 flex flex-col px-8 py-16">
       <div className="animate-fade-in max-w-md mx-auto w-full">
         <p className="text-[10px] uppercase tracking-[0.4em] text-tobacco mb-4 text-center">
-          You may feel most at home in
+          Rooms you might fit in
         </p>
-        
+
         <h2 className="font-serif text-2xl md:text-3xl text-cream mb-6 text-center">
-          Rooms That Resonate With Your Listening
+          Three rooms to start
         </h2>
-        
-        {/* Editorial framing - NOT recommendation language */}
+
         <p className="text-center text-muted-foreground text-sm mb-8 leading-relaxed">
-          These are not suggestions. These are listening cultures that 
-          align with your emotional tendencies.
+          Based on what you told us and what you already listen to.
+          You can join now or explore on your own.
         </p>
-        
+
         <div className="w-16 h-px bg-gradient-to-r from-transparent via-tobacco/30 to-transparent mx-auto mb-10" />
-        
-        <div className="space-y-4 mb-12">
-          {resonatingRooms.map((affinity, i) => (
-            <div 
-              key={affinity.roomSlug}
-              className={cn(
-                "p-5 border bg-card/10 animate-fade-in-up",
-                affinity.resonance === 'deep' 
-                  ? "border-burgundy/40 bg-burgundy/5" 
-                  : "border-border/20"
-              )}
-              style={{ animationDelay: `${i * 150}ms` }}
-            >
-              <div className="flex items-start justify-between mb-2">
-                <h3 className="font-serif text-lg text-cream">{affinity.roomName}</h3>
-                {affinity.resonance === 'deep' && (
-                  <span className="text-[9px] uppercase tracking-[0.2em] text-burgundy border border-burgundy/50 px-2 py-0.5">
-                    Primary
-                  </span>
-                )}
-              </div>
-              
-              {/* Why this room resonates - editorial language */}
-              <p className="text-sm text-cream/70 italic leading-relaxed mb-3">
-                "{affinity.resonanceExplanation}"
-              </p>
-              
-              {/* Emotional threads */}
-              <div className="flex flex-wrap gap-2">
-                {affinity.emotionalThreads.slice(0, 2).map((thread) => (
-                  <span 
-                    key={thread}
-                    className="text-[10px] text-muted-foreground border border-border/20 px-2 py-0.5"
-                  >
-                    {thread}
-                  </span>
-                ))}
-              </div>
-            </div>
-          ))}
-        </div>
-        
-        {/* Join language - cultural, not transactional */}
+
+        {loading ? (
+          <div className="space-y-3 mb-12">
+            {[0, 1, 2].map((i) => (
+              <div
+                key={i}
+                className="p-5 border border-border/15 bg-card/5 animate-pulse h-28"
+              />
+            ))}
+          </div>
+        ) : recs.length === 0 ? (
+          <p className="text-center text-sm text-muted-foreground mb-12 italic">
+            No room recommendations yet — explore on your own from the Rooms tab.
+          </p>
+        ) : (
+          <div className="space-y-4 mb-10">
+            {recs.map((rec, i) => {
+              const joined = joinedSlugs.has(rec.room.slug)
+              const busy = joiningSlug === rec.room.slug
+              return (
+                <div
+                  key={rec.room.slug}
+                  className={cn(
+                    'p-5 border bg-card/10 animate-fade-in-up',
+                    rec.room.featured
+                      ? 'border-burgundy/40 bg-burgundy/5'
+                      : 'border-border/20',
+                  )}
+                  style={{ animationDelay: `${i * 100}ms` }}
+                >
+                  <div className="flex items-start justify-between mb-2 gap-3">
+                    <h3 className="font-serif text-lg text-cream">{rec.room.name}</h3>
+                    {rec.room.featured && (
+                      <span className="text-[9px] uppercase tracking-[0.2em] text-burgundy border border-burgundy/50 px-2 py-0.5 shrink-0">
+                        Featured
+                      </span>
+                    )}
+                  </div>
+                  <p className="text-sm text-cream/70 leading-relaxed mb-3">
+                    {rec.room.description}
+                  </p>
+                  <p className="text-xs text-tobacco/80 italic mb-4">
+                    {rec.explanation}
+                  </p>
+                  <div className="flex items-center justify-between">
+                    <div className="flex flex-wrap gap-1.5">
+                      {rec.room.genres.slice(0, 3).map((g) => (
+                        <span
+                          key={g}
+                          className="text-[10px] text-muted-foreground border border-border/20 px-2 py-0.5"
+                        >
+                          {g}
+                        </span>
+                      ))}
+                    </div>
+                    {joined ? (
+                      <span className="text-xs text-olive uppercase tracking-wider">
+                        Joined
+                      </span>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() => handleJoin(rec.room.slug)}
+                        disabled={busy}
+                        className="text-xs text-tobacco hover:text-cream transition-colors disabled:opacity-50"
+                      >
+                        {busy ? 'Joining…' : 'Join'}
+                      </button>
+                    )}
+                  </div>
+                </div>
+              )
+            })}
+          </div>
+        )}
+
         <button
           onClick={onContinue}
-          className="w-full py-4 bg-burgundy/80 border border-burgundy text-cream hover:bg-burgundy transition-all duration-500 mb-3"
+          className="w-full py-4 border border-cream/30 text-cream hover:bg-cream/5 transition-all duration-500"
         >
-          Enter these listening cultures
-        </button>
-        
-        <button
-          onClick={onContinue}
-          className="w-full py-3 text-muted-foreground hover:text-cream transition-colors text-sm"
-        >
-          I&apos;ll explore the rooms myself
+          {joinedSlugs.size > 0 ? 'Continue' : 'Skip for now'}
         </button>
       </div>
     </div>
