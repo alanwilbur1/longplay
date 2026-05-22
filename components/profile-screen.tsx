@@ -14,6 +14,7 @@ import {
   disconnectConnection,
   initiateConnection,
   listMyConnections,
+  syncMyConnection,
 } from '@/lib/actions/streaming'
 
 /**
@@ -463,12 +464,25 @@ export function ProfileScreen() {
                     <span className="text-xs text-muted-foreground/50">…</span>
                   ) : isConnected ? (
                     <div className="flex items-center gap-3">
-                      {/* No "Synced X ago" copy — until the Phase 4.x sync
-                          worker exists, last_sync_at is never meaningfully
-                          populated. Render an honest fixed state. */}
                       <span className="text-xs text-olive uppercase tracking-wider">
-                        Connected
+                        {conn.last_sync_at
+                          ? `Synced ${new Date(conn.last_sync_at).toLocaleString('en-US', {
+                              month: 'short',
+                              day: 'numeric',
+                              hour: 'numeric',
+                              minute: '2-digit',
+                            })}`
+                          : 'Connected — not yet synced'}
                       </span>
+                      <form action={syncMyConnection}>
+                        <input type="hidden" name="source" value={provider.sourceId} />
+                        <button
+                          type="submit"
+                          className="text-xs text-tobacco hover:text-cream transition-colors"
+                        >
+                          Sync now
+                        </button>
+                      </form>
                       <form action={disconnectConnection}>
                         <input type="hidden" name="source" value={provider.sourceId} />
                         <button

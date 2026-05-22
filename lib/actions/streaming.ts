@@ -3,8 +3,10 @@
 import { randomBytes } from 'crypto'
 import { cookies } from 'next/headers'
 import { redirect } from 'next/navigation'
+import { revalidatePath } from 'next/cache'
 import { createSupabaseServerClient } from '@/lib/supabase/server'
 import { getProvider, isSourceId, type SourceId } from '@/lib/streaming'
+import { syncProviderForUser, type SyncOutcome } from '@/lib/streaming/sync'
 
 /**
  * Streaming connection server actions.
@@ -177,6 +179,45 @@ export async function listMyConnections(): Promise<ListMyConnectionsResult> {
 
   const rows = (data ?? []) as unknown as ListMyConnectionsResult['rows']
   return { rows, error: null, queriedAs: user.id }
+}
+
+/**
+ * Manually trigger a sync for the listener's active provider connection.
+ * Wired to the Profile "Sync now" form button. Server action signature
+ * must be void-returning to satisfy <form action={…}>; the outcome is
+ * communicated via the DB (last_sync_at, last_error on the connection
+ * row, and the upserted counts visible by re-reading the data).
+ *
+ * Never exposes tokens — only orchestrates the ingest + revalidates.
+ *
+ * For programmatic use (e.g. tests, cron, future "sync-with-progress"
+ * UI), call syncProviderForUser directly from server code.
+ */
+export async function syncMyConnection(formData: FormData): Promise<void> {
+  const rawSource = String(formData.get('source') ?? '').toLowerCase()
+  if (!isSourceId(rawSource)) return
+
+  const supabase = await createSupabaseServerClient()
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) return
+
+  const outcome: SyncOutcome = await syncProviderForUser(
+    user.id,
+    rawSource as SourceId,
+  )
+  if (process.env.NODE_ENV !== 'production') {
+    console.log('[syncMyConnection] outcome', {
+      sourceId: rawSource,
+      ok: outcome.ok,
+      refreshed: outcome.refreshed,
+      counts: outcome.counts,
+      error: outcome.error,
+    })
+  }
+
+  // Profile re-renders against fresh DB state (new last_sync_at,
+  // last_error, and refreshed connection details).
+  revalidatePath('/profile')
 }
 
 /** Reads + clears the OAuth state cookie. Used by the callback route. */
