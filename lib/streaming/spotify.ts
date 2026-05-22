@@ -167,21 +167,52 @@ export const spotifyProvider: StreamingProvider = {
   async sync({ accessToken }): Promise<SyncResult> {
     const syncedAt = new Date().toISOString()
 
-    // Recent plays (last 50; Spotify's hard cap).
-    const recent = await spotifyJson<{
-      items: Array<{
-        track: {
+    // ── Pull all four data streams in parallel. ─────────────────────────
+    // Recent plays, top artists, top tracks, saved albums — each capped
+    // at Spotify's 50-item per-page limit.
+    //
+    // IMPORTANT shape note: only /me/top/artists returns a FULL artist
+    // object (with `genres`). Tracks/albums/recently-played return
+    // SimplifiedArtist (id + name only). To get genres + popularity +
+    // image for those artists, we collect their IDs and batch-hydrate
+    // via /v1/artists?ids=... below.
+    const [recent, topArtists, topTracks, savedAlbums] = await Promise.all([
+      spotifyJson<{
+        items: Array<{
+          track: {
+            id: string
+            name: string
+            duration_ms: number
+            external_ids?: { isrc?: string }
+            album?: { id: string; name: string; artists?: Array<{ id: string; name: string }> }
+            artists?: Array<{ id: string; name: string }>
+          }
+          played_at: string
+          context?: { type?: string }
+        }>
+      }>(`${API_BASE}/me/player/recently-played?limit=50`, accessToken),
+      spotifyJson<{
+        items: Array<{ id: string; name: string; genres: string[] }>
+      }>(`${API_BASE}/me/top/artists?time_range=medium_term&limit=50`, accessToken),
+      spotifyJson<{
+        items: Array<{
           id: string
           name: string
-          duration_ms: number
           external_ids?: { isrc?: string }
-          album?: { id: string; name: string }
-          artists?: Array<{ name: string }>
-        }
-        played_at: string
-        context?: { type?: string }
-      }>
-    }>(`${API_BASE}/me/player/recently-played?limit=50`, accessToken)
+          album?: { id: string; name: string; artists?: Array<{ id: string; name: string }> }
+          artists?: Array<{ id: string; name: string }>
+        }>
+      }>(`${API_BASE}/me/top/tracks?time_range=medium_term&limit=50`, accessToken),
+      spotifyJson<{
+        items: Array<{
+          album: {
+            id: string
+            name: string
+            artists?: Array<{ id: string; name: string }>
+          }
+        }>
+      }>(`${API_BASE}/me/albums?limit=50`, accessToken),
+    ])
 
     const events: ListeningEvent[] = (recent?.items ?? []).map((r) => ({
       source_id: 'spotify',
@@ -197,32 +228,6 @@ export const spotifyProvider: StreamingProvider = {
       raw: r as unknown as Record<string, unknown>,
     }))
 
-    // Top artists (medium_term ≈ 6 months — the band most reflective of
-    // identity without overweighting very recent obsessions).
-    const topArtists = await spotifyJson<{
-      items: Array<{ id: string; name: string; genres: string[] }>
-    }>(`${API_BASE}/me/top/artists?time_range=medium_term&limit=50`, accessToken)
-
-    const artists: FavoriteArtist[] = (topArtists?.items ?? []).map((a, i) => ({
-      source_id: 'spotify',
-      external_artist_id: a.id,
-      name: a.name,
-      rank: i + 1,
-      genres: a.genres ?? [],
-      raw: a as unknown as Record<string, unknown>,
-    }))
-
-    // Top tracks (same window).
-    const topTracks = await spotifyJson<{
-      items: Array<{
-        id: string
-        name: string
-        external_ids?: { isrc?: string }
-        album?: { name: string }
-        artists?: Array<{ name: string }>
-      }>
-    }>(`${API_BASE}/me/top/tracks?time_range=medium_term&limit=50`, accessToken)
-
     const tracks: FavoriteTrack[] = (topTracks?.items ?? []).map((t, i) => ({
       source_id: 'spotify',
       external_track_id: t.id,
@@ -234,13 +239,6 @@ export const spotifyProvider: StreamingProvider = {
       raw: t as unknown as Record<string, unknown>,
     }))
 
-    // Saved albums (library; first page).
-    const savedAlbums = await spotifyJson<{
-      items: Array<{
-        album: { id: string; name: string; artists?: Array<{ name: string }> }
-      }>
-    }>(`${API_BASE}/me/albums?limit=50`, accessToken)
-
     const albums: FavoriteAlbum[] = (savedAlbums?.items ?? []).map((row, i) => ({
       source_id: 'spotify',
       external_album_id: row.album?.id,
@@ -250,8 +248,79 @@ export const spotifyProvider: StreamingProvider = {
       raw: row as unknown as Record<string, unknown>,
     }))
 
+    // ── Collect all artist IDs to hydrate ───────────────────────────────
+    // Source priority: top-artists (rank from list order), then the
+    // primary artist of each top-track / saved-album / recent-play.
+    // Dedupe by id; first encounter wins for rank (so a track-only
+    // artist stays unranked).
+    type ArtistSeed = { id: string; name: string; rank: number | null }
+    const seeds = new Map<string, ArtistSeed>()
+
+    ;(topArtists?.items ?? []).forEach((a, i) => {
+      if (!a?.id) return
+      seeds.set(a.id, { id: a.id, name: a.name, rank: i + 1 })
+    })
+    const addUnranked = (id: string | undefined, name: string | undefined) => {
+      if (!id || !name) return
+      if (seeds.has(id)) return
+      seeds.set(id, { id, name, rank: null })
+    }
+    for (const t of topTracks?.items ?? []) {
+      for (const a of t.artists ?? []) addUnranked(a.id, a.name)
+    }
+    for (const row of savedAlbums?.items ?? []) {
+      for (const a of row.album?.artists ?? []) addUnranked(a.id, a.name)
+    }
+    for (const r of recent?.items ?? []) {
+      for (const a of r.track?.artists ?? []) addUnranked(a.id, a.name)
+    }
+
+    // ── Batch hydrate via /v1/artists?ids=... ───────────────────────────
+    // Up to 50 IDs per call. Best-effort: any failed batch leaves the
+    // seeds for that batch un-hydrated (we still upsert their name +
+    // empty genres so the row exists).
+    const allIds = Array.from(seeds.keys())
+    const hydrated = new Map<string, HydratedArtist>()
+    for (let i = 0; i < allIds.length; i += 50) {
+      const batch = allIds.slice(i, i + 50)
+      const url = `${API_BASE}/artists?ids=${encodeURIComponent(batch.join(','))}`
+      const res = await spotifyJson<{ artists: HydratedArtist[] }>(url, accessToken)
+      for (const a of res?.artists ?? []) {
+        if (a?.id) hydrated.set(a.id, a)
+      }
+    }
+
+    const artists: FavoriteArtist[] = Array.from(seeds.values()).map((seed) => {
+      const h = hydrated.get(seed.id)
+      // Pick the largest image (Spotify returns them sorted largest first
+      // in practice but we don't rely on order).
+      const image_url = h?.images?.length
+        ? [...h.images].sort((x, y) => (y.width ?? 0) - (x.width ?? 0))[0]?.url ?? null
+        : null
+      return {
+        source_id: 'spotify',
+        external_artist_id: seed.id,
+        name: h?.name ?? seed.name,
+        rank: seed.rank,
+        genres: h?.genres ?? [],
+        popularity: typeof h?.popularity === 'number' ? h.popularity : null,
+        followers: typeof h?.followers?.total === 'number' ? h.followers.total : null,
+        image_url,
+        raw: (h ?? { id: seed.id, name: seed.name }) as unknown as Record<string, unknown>,
+      }
+    })
+
     return { events, artists, albums, tracks, syncedAt }
   },
+}
+
+interface HydratedArtist {
+  id: string
+  name: string
+  genres?: string[]
+  popularity?: number
+  followers?: { total?: number }
+  images?: Array<{ url: string; width?: number; height?: number }>
 }
 
 function normalizeContext(t: string | undefined): ListeningEvent['context_type'] {

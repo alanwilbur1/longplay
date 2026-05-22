@@ -33,9 +33,24 @@ export interface SyncOutcome {
     artists_upserted: number
     albums_upserted: number
     tracks_upserted: number
+    /** Of the upserted artists, how many came back with non-empty
+     *  Spotify-side metadata (genres OR popularity OR image). Useful
+     *  to distinguish "we wrote rows but Spotify gave us nothing" from
+     *  "we hydrated real data". */
+    artists_hydrated: number
+    /** Distinct genre strings across all upserted artists (post-
+     *  normalization). Surfaces in the UI as a sanity counter. */
+    genres_distinct: number
   }
   refreshed: boolean
   last_sync_at: string | null
+  /** Whether listening_profile_snapshots was successfully recomputed
+   *  this run. False if the recompute threw (the sync itself still
+   *  counts as ok). */
+  snapshot_updated: boolean
+  /** Size of the snapshot's top_genres after recompute (0 if no
+   *  hydrated genre data came back from Spotify). */
+  top_genres_count: number
   error: { stage: string; message: string } | null
 }
 
@@ -49,9 +64,13 @@ function emptyOutcome(): SyncOutcome {
       artists_upserted: 0,
       albums_upserted: 0,
       tracks_upserted: 0,
+      artists_hydrated: 0,
+      genres_distinct: 0,
     },
     refreshed: false,
     last_sync_at: null,
+    snapshot_updated: false,
+    top_genres_count: 0,
     error: null,
   }
 }
@@ -190,16 +209,30 @@ export async function syncProviderForUser(
 
   // 4. Upsert favorites.
   if (result.artists.length > 0) {
-    const rows = result.artists.map((a) => ({
-      user_id: userId,
-      source_id: sourceId,
-      external_artist_id: a.external_artist_id,
-      name: a.name,
-      rank: a.rank,
-      genres: a.genres,
-      raw: a.raw,
-      observed_at: result.syncedAt,
-    }))
+    const distinctGenres = new Set<string>()
+    let hydrated = 0
+    const rows = result.artists.map((a) => {
+      const normGenres = normalizeGenres(a.genres)
+      for (const g of normGenres) distinctGenres.add(g)
+      const isHydrated =
+        normGenres.length > 0 ||
+        (a.popularity ?? null) !== null ||
+        !!a.image_url
+      if (isHydrated) hydrated += 1
+      return {
+        user_id: userId,
+        source_id: sourceId,
+        external_artist_id: a.external_artist_id,
+        name: a.name,
+        rank: a.rank,
+        genres: normGenres,
+        popularity: a.popularity ?? null,
+        followers: a.followers ?? null,
+        image_url: a.image_url ?? null,
+        raw: a.raw,
+        observed_at: result.syncedAt,
+      }
+    })
     const { error, count } = await admin
       .from('favorite_artists')
       .upsert(rows, {
@@ -210,6 +243,8 @@ export async function syncProviderForUser(
       outcome.error = { stage: 'favorite_artists-upsert', message: error.message }
     } else {
       outcome.counts.artists_upserted = count ?? rows.length
+      outcome.counts.artists_hydrated = hydrated
+      outcome.counts.genres_distinct = distinctGenres.size
     }
   }
 
@@ -324,7 +359,9 @@ export async function syncProviderForUser(
   // 7. Re-compute the listening profile snapshot. Best-effort — a
   // snapshot failure does not fail the sync itself.
   try {
-    await recomputeListeningProfileSnapshot(userId)
+    const snap = await recomputeListeningProfileSnapshot(userId)
+    outcome.snapshot_updated = true
+    outcome.top_genres_count = snap.top_genres_count
   } catch (err) {
     if (process.env.NODE_ENV !== 'production') {
       console.warn('[sync] snapshot recompute failed', {
@@ -337,42 +374,62 @@ export async function syncProviderForUser(
   return outcome
 }
 
+export interface SnapshotRecomputeResult {
+  top_genres_count: number
+  affinity_tags_count: number
+  artists_observed: number
+}
+
 /**
  * Recompute the per-user listening_profile_snapshot from current
  * favorite_* and recent listening_events. Service-role write.
  *
- * Lightweight heuristic — no AI, no ML.
+ * Lightweight, deterministic heuristic — no AI, no ML.
+ *
+ *  - top_genres: aggregated from favorite_artists.genres across the
+ *    user's top-200 favorite_artists (top-50 ranked + unranked
+ *    co-artists discovered via tracks/albums/events), weighted by
+ *    rank when present. Normalized + deduped.
+ *  - affinity_tags: derived deterministically from top_genres + a
+ *    handful of non-genre signals (saved_album_count, recent_density,
+ *    genre diversity). No fake values.
  */
-export async function recomputeListeningProfileSnapshot(userId: string): Promise<void> {
+export async function recomputeListeningProfileSnapshot(
+  userId: string,
+): Promise<SnapshotRecomputeResult> {
   const admin = getSupabaseAdminClient()
 
-  // Top artists for genre distribution.
+  // Pull a generous window of artists — ranked first, then unranked
+  // co-artists. Both contribute to genre signal, but ranked artists
+  // weigh more heavily.
   const { data: artists } = await admin
     .from('favorite_artists')
     .select('external_artist_id, genres, rank')
     .eq('user_id', userId)
     .order('rank', { ascending: true, nullsFirst: false })
-    .limit(50)
+    .limit(200)
   type FA = { external_artist_id: string; genres: string[] | null; rank: number | null }
   const aRows = (artists ?? []) as unknown as FA[]
 
-  // Genre tally (weighted slightly by rank — earlier ranks count more).
+  // Weighted genre tally. Earlier ranks count more (Lanczos-ish
+  // 1/log2(rank+2) curve). Unranked artists contribute a flat 0.3.
   const genreScore = new Map<string, number>()
   for (const a of aRows) {
-    const weight = a.rank ? 1 / Math.log2(a.rank + 2) : 0.5
-    for (const g of a.genres ?? []) {
-      const key = g.toLowerCase()
-      genreScore.set(key, (genreScore.get(key) ?? 0) + weight)
+    const weight = a.rank ? 1 / Math.log2(a.rank + 2) : 0.3
+    for (const g of normalizeGenres(a.genres ?? [])) {
+      genreScore.set(g, (genreScore.get(g) ?? 0) + weight)
     }
   }
   const top_genres = Array.from(genreScore.entries())
     .sort((x, y) => y[1] - x[1])
-    .slice(0, 12)
+    .slice(0, 15)
     .map(([g]) => g)
 
-  const top_artist_ids = aRows.slice(0, 20).map((a) => a.external_artist_id)
+  const top_artist_ids = aRows
+    .filter((a) => a.rank !== null)
+    .slice(0, 20)
+    .map((a) => a.external_artist_id)
 
-  // Top tracks.
   const { data: tracks } = await admin
     .from('favorite_tracks')
     .select('external_track_id, rank')
@@ -383,13 +440,11 @@ export async function recomputeListeningProfileSnapshot(userId: string): Promise
     (tracks ?? []) as unknown as Array<{ external_track_id: string }>
   ).map((t) => t.external_track_id)
 
-  // Saved albums count (head: true → just count).
   const { count: saved_album_count } = await admin
     .from('favorite_albums')
     .select('id', { count: 'exact', head: true })
     .eq('user_id', userId)
 
-  // Recent listening density (30 days).
   const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString()
   const { count: recent_event_count } = await admin
     .from('listening_events')
@@ -397,12 +452,23 @@ export async function recomputeListeningProfileSnapshot(userId: string): Promise
     .eq('user_id', userId)
     .gte('played_at', thirtyDaysAgo)
   const eventCount = recent_event_count ?? 0
-  const recent_density =
+  const recent_density: 'low' | 'medium' | 'high' | null =
     eventCount === 0 ? null : eventCount < 25 ? 'low' : eventCount < 100 ? 'medium' : 'high'
 
-  // Initial affinity tags derived from top genres. Same vocabulary as
-  // the recommender's mood tags so they overlap cleanly.
-  const affinity_tags = affinityTagsFromGenres(top_genres)
+  const albumsCount = saved_album_count ?? 0
+  const affinity_tags = computeAffinityTags({
+    top_genres,
+    saved_album_count: albumsCount,
+    recent_density,
+    artist_diversity: aRows.length,
+    genre_diversity: genreScore.size,
+  })
+
+  const signals = {
+    artists_observed: aRows.length,
+    genre_diversity: genreScore.size,
+    top_genre_weight: top_genres[0] ? genreScore.get(top_genres[0]) ?? 0 : 0,
+  }
 
   const { error } = await admin.from('listening_profile_snapshots').upsert(
     {
@@ -410,40 +476,144 @@ export async function recomputeListeningProfileSnapshot(userId: string): Promise
       top_genres,
       top_artist_ids,
       top_track_ids,
-      saved_album_count: saved_album_count ?? 0,
+      saved_album_count: albumsCount,
       recent_event_count: eventCount,
       affinity_tags,
       recent_density,
-      signals: {
-        artists_observed: aRows.length,
-        genre_diversity: genreScore.size,
-      },
+      signals,
       computed_at: new Date().toISOString(),
     },
     { onConflict: 'user_id' },
   )
-  if (error && process.env.NODE_ENV !== 'production') {
-    console.warn('[sync] snapshot upsert failed', { code: error.code, message: error.message })
+  if (error) {
+    if (process.env.NODE_ENV !== 'production') {
+      console.warn('[sync] snapshot upsert failed', { code: error.code, message: error.message })
+    }
+    throw new Error(error.message)
+  }
+
+  return {
+    top_genres_count: top_genres.length,
+    affinity_tags_count: affinity_tags.length,
+    artists_observed: aRows.length,
   }
 }
 
 /**
- * Map top genres → recommender-compatible affinity tags.
- * Same vocabulary as lib/recommendations/scorer.ts CALIBRATION_OPTION_TAGS.
+ * Normalize a list of Spotify genre strings.
+ *  - Lowercases.
+ *  - Trims whitespace.
+ *  - Drops empty / known-junk values.
+ *  - Dedupes (preserving first-encounter order).
+ *
+ * Spotify already returns mostly-lowercased strings like "indie folk",
+ * "spiritual jazz", "uk drill" — we leave the words intact (no
+ * hyphenation) so the downstream affinity matcher can do prefix/
+ * substring matching naturally.
  */
-function affinityTagsFromGenres(genres: string[]): string[] {
+export function normalizeGenres(genres: string[] | null | undefined): string[] {
+  if (!genres) return []
+  const seen = new Set<string>()
+  const out: string[] = []
+  for (const raw of genres) {
+    if (typeof raw !== 'string') continue
+    const g = raw.toLowerCase().trim().replace(/\s+/g, ' ')
+    if (!g) continue
+    if (seen.has(g)) continue
+    seen.add(g)
+    out.push(g)
+  }
+  return out
+}
+
+/**
+ * Deterministic affinity tags — vocabulary used by the room
+ * recommendation engine. No AI, no fake values: a tag only appears
+ * when there's underlying evidence in the user's data.
+ *
+ * Genre buckets (substring match on normalized top_genres):
+ *   country, singer-songwriter, pop, classic-pop, hip-hop, indie,
+ *   electronic, jazz, ambient, spiritual, cinematic, warm,
+ *   experimental, intimate, expansive, confessional
+ *
+ * Non-genre buckets:
+ *   album-listener  — saved_album_count >= 10
+ *   catalog-heavy   — saved_album_count >= 25
+ *   recent-heavy    — recent_density === 'high'
+ *   eclectic        — genre_diversity >= 15
+ */
+function computeAffinityTags(params: {
+  top_genres: string[]
+  saved_album_count: number
+  recent_density: 'low' | 'medium' | 'high' | null
+  artist_diversity: number
+  genre_diversity: number
+}): string[] {
+  const { top_genres, saved_album_count, recent_density, genre_diversity } = params
   const out = new Set<string>()
-  const has = (...needles: string[]) =>
-    genres.some((g) => needles.some((n) => g.includes(n)))
-  if (has('ambient', 'drone')) out.add('ambient')
-  if (has('jazz', 'spiritual')) out.add('spiritual')
-  if (has('classical', 'modern classical', 'orchestral')) out.add('expansive')
-  if (has('post-rock', 'shoegaze')) out.add('cinematic')
-  if (has('electronic', 'idm', 'techno')) out.add('electronic')
-  if (has('folk', 'singer-songwriter', 'songwriter', 'indie folk')) out.add('confessional')
-  if (has('indie', 'indie rock', 'indie pop')) out.add('indie')
-  if (has('soul', 'r&b', 'jazz')) out.add('warm')
-  if (has('experimental', 'avant-garde', 'noise')) out.add('experimental')
-  if (has('lo-fi', 'bedroom')) out.add('intimate')
+
+  const has = (...needles: string[]): boolean =>
+    top_genres.some((g) => needles.some((n) => g.includes(n)))
+
+  // Genre buckets.
+  if (has('country', 'americana', 'outlaw country', 'alt-country')) out.add('country')
+  if (
+    has('singer-songwriter', 'songwriter', 'folk', 'indie folk', 'chamber folk')
+  )
+    out.add('singer-songwriter')
+  if (has('hip hop', 'hip-hop', 'rap', 'trap', 'drill', 'grime')) out.add('hip-hop')
+  if (has('indie rock', 'indie pop', 'indie folk', 'indie')) out.add('indie')
+  if (
+    has(
+      'electronic',
+      'idm',
+      'techno',
+      'house',
+      'dnb',
+      'drum and bass',
+      'electronica',
+      'synthwave',
+    )
+  )
+    out.add('electronic')
+  if (has('jazz', 'bebop', 'spiritual jazz', 'vocal jazz')) out.add('jazz')
+  if (has('ambient', 'drone', 'new age')) out.add('ambient')
+  if (has('spiritual', 'gospel', 'devotional', 'spiritual jazz')) out.add('spiritual')
+  if (has('post-rock', 'shoegaze', 'cinematic', 'film score', 'soundtrack'))
+    out.add('cinematic')
+  if (has('soul', 'r&b', 'rnb', 'neo soul', 'neo-soul')) out.add('warm')
+  if (has('experimental', 'avant-garde', 'noise', 'no wave')) out.add('experimental')
+  if (has('lo-fi', 'lofi', 'bedroom pop', 'bedroom')) out.add('intimate')
+  if (has('classical', 'modern classical', 'orchestral', 'minimalism'))
+    out.add('expansive')
+  if (
+    has('singer-songwriter', 'confessional', 'sad', 'slowcore', 'sadcore')
+  )
+    out.add('confessional')
+
+  // Pop buckets — keep "pop" and "classic-pop" distinct so the
+  // recommender can prefer one or the other.
+  if (
+    has(
+      'classic rock',
+      'classic pop',
+      'soft rock',
+      'yacht rock',
+      'mellow gold',
+      'easy listening',
+      '60s',
+      '70s',
+      '80s',
+    )
+  )
+    out.add('classic-pop')
+  if (has('pop', 'dance pop', 'art pop', 'electropop', 'pop rock')) out.add('pop')
+
+  // Non-genre buckets.
+  if (saved_album_count >= 25) out.add('catalog-heavy')
+  else if (saved_album_count >= 10) out.add('album-listener')
+  if (recent_density === 'high') out.add('recent-heavy')
+  if (genre_diversity >= 15) out.add('eclectic')
+
   return Array.from(out)
 }

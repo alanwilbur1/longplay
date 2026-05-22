@@ -77,10 +77,17 @@ export function SyncConnectionButton({
       </button>
 
       {!isPending && result && result.ok && (
-        <span className="text-[10px] text-olive mt-1 max-w-[180px] text-right">
+        <span className="text-[10px] text-olive mt-1 max-w-[260px] text-right leading-tight">
           Synced — {result.counts.events_upserted} plays,{' '}
           {result.counts.artists_upserted} artists
-          {result.refreshed ? ' (token refreshed)' : ''}
+          {result.counts.artists_hydrated > 0 && (
+            <>
+              {' '}({result.counts.artists_hydrated} hydrated,{' '}
+              {result.counts.genres_distinct} genres,{' '}
+              {result.top_genres_count} top)
+            </>
+          )}
+          {result.refreshed ? ' • token refreshed' : ''}
         </span>
       )}
 

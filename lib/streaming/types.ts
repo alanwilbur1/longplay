@@ -57,8 +57,17 @@ export interface FavoriteArtist {
   source_id: SourceId
   external_artist_id: string
   name: string
+  /** Position in the listener's top-artists list. Null when the artist
+   *  was discovered through a track/album/event rather than a top-artists
+   *  call — they're still relevant for genre signal, just not ranked. */
   rank: number | null
   genres: string[]
+  /** Spotify's 0-100 popularity score, when available. */
+  popularity?: number | null
+  /** Total followers, when available. */
+  followers?: number | null
+  /** Best (largest) artist image URL, when available. */
+  image_url?: string | null
   raw: Record<string, unknown>
 }
 
