@@ -1,39 +1,29 @@
 'use client'
 
-import { useEffect, useState, useTransition } from 'react'
+import { useState, useTransition } from 'react'
 import {
   syncMyConnection,
   type SyncActionResult,
 } from '@/lib/actions/streaming'
 
 /**
- * SyncButton — Phase 4.3 audit fix.
+ * SyncButton — Phase 4.3 / 4.4 audit fix.
  *
- * The "Sync now" control on the Profile screen. Previously this was a
- * <form action={syncMyConnection}> where the action returned void; the
- * user clicked it and saw no change because:
- *   1. There was no pending state.
- *   2. The action's `revalidatePath('/profile')` only invalidates
- *      server-rendered data — but ProfileScreen is a Client Component
- *      that loads connections via `useEffect → listMyConnections()`,
- *      so the visible `last_sync_at` line never refreshed.
- *   3. Any sync error (token expired, Spotify 429, etc.) was logged
- *      server-side and written to listening_connections.last_error,
- *      but never surfaced to the listener.
+ * The "Sync now" control on the Profile screen. Drives the server
+ * action through useTransition so the button shows "Syncing…" while
+ * pending, then renders an inline success/error line and a permanent
+ * hydration audit strip beneath it so we can see why an enrichment
+ * sync produced no genres.
  *
- * This component fixes all three by:
- *   - Driving the call through `useTransition` so we have a real
- *     pending flag → renders "Syncing…".
- *   - Awaiting the structured `SyncActionResult` and rendering an
- *     inline success or error line under the button.
- *   - Calling the parent-provided `onSynced` after completion so the
- *     parent can re-call `listMyConnections()` and the
- *     "Connected — not yet synced" / "Synced …" line updates without
- *     a hard reload.
+ * IMPORTANT: this component must NOT be unmounted/remounted across
+ * sync runs, because the `result` state lives here. The parent
+ * (ProfileScreen) gates its loading placeholder on
+ * `connections.length === 0` so a SyncButton-triggered refetch does
+ * not blow this component away mid-flight.
  *
- * Security note: SyncActionResult never carries tokens, scopes, or
- * raw provider response bodies — `toSafeError()` in streaming.ts maps
- * internal stages to short, user-safe strings.
+ * SyncActionResult never carries tokens, scopes, or raw provider
+ * response bodies — `toSafeError()` on the server maps internal
+ * stages to short, user-safe strings.
  */
 export function SyncConnectionButton({
   sourceId,
@@ -47,12 +37,9 @@ export function SyncConnectionButton({
   const [isPending, startTransition] = useTransition()
   const [result, setResult] = useState<SyncActionResult | null>(null)
 
-  // Clear the inline result after 8s so it doesn't linger forever.
-  useEffect(() => {
-    if (!result) return
-    const t = window.setTimeout(() => setResult(null), 8000)
-    return () => window.clearTimeout(t)
-  }, [result])
+  // NOTE: no auto-clear timer. Results persist on screen until the
+  // next click clears them, so the user (and us) can read the audit
+  // strip at leisure.
 
   const handleClick = () => {
     setResult(null)
@@ -76,6 +63,18 @@ export function SyncConnectionButton({
         {isPending ? 'Syncing…' : 'Sync now'}
       </button>
 
+      {/* TEMPORARY render-path probe. If this string appears beneath
+          the Sync now button in the deployed UI, the new
+          SyncConnectionButton is rendering. If it does NOT appear,
+          the deploy is serving stale bundles and no amount of
+          downstream debugging will help. Remove once confirmed. */}
+      <span
+        data-testid="sync-render-probe"
+        className="text-[10px] font-mono text-tobacco/70 mt-1"
+      >
+        TEST_META_RENDER_ACTIVE
+      </span>
+
       {!isPending && result && result.ok && (
         <span className="text-[10px] text-olive mt-1 max-w-[300px] text-right leading-tight">
           Synced — {result.counts.events_upserted} plays,{' '}
@@ -84,21 +83,29 @@ export function SyncConnectionButton({
         </span>
       )}
 
-      {/* Hydration audit strip — visible whenever we have a result,
-          successful or not. This is the line that surfaces the Phase
-          4.4 bug class: "hydrate:0/47 collected" or "401: The access
-          token expired". Always rendered so the user (and we) can
-          confirm whether /v1/artists is actually being called. */}
-      {!isPending && result && (
-        <span className="text-[10px] font-mono text-muted-foreground/60 mt-1 max-w-[320px] text-right leading-tight">
-          hydrate:{result.counts.artist_ids_hydrated}/
-          {result.counts.artist_ids_collected} collected •{' '}
-          {result.counts.hydration_batches_succeeded}/
-          {result.counts.hydration_batches_attempted} batches • genres:
-          {result.counts.artists_with_genres} • top:
-          {result.top_genres_count}
-        </span>
-      )}
+      {/* Hydration audit strip — ALWAYS rendered (with placeholder
+          before the first click) so the user can confirm the
+          component is alive without needing to click first. After a
+          click, shows the real counters from SyncActionResult. */}
+      <span
+        data-testid="sync-hydration-strip"
+        className="text-[10px] font-mono text-muted-foreground/60 mt-1 max-w-[320px] text-right leading-tight"
+      >
+        {isPending ? (
+          <>hydrate: syncing…</>
+        ) : result ? (
+          <>
+            hydrate:{result.counts.artist_ids_hydrated}/
+            {result.counts.artist_ids_collected} collected •{' '}
+            {result.counts.hydration_batches_succeeded}/
+            {result.counts.hydration_batches_attempted} batches •
+            genres:{result.counts.artists_with_genres} • top:
+            {result.top_genres_count}
+          </>
+        ) : (
+          <>hydrate: no run yet — click Sync now</>
+        )}
+      </span>
 
       {!isPending && result && result.hydration_error && (
         <span className="text-[10px] text-burgundy/80 mt-1 max-w-[300px] text-right leading-tight">

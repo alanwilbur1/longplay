@@ -466,7 +466,13 @@ export function ProfileScreen() {
                     </div>
                   </div>
 
-                  {connectionsLoading ? (
+                  {/* Loading placeholder is only shown on the INITIAL
+                      load (no rows yet). A refetch triggered by the
+                      SyncButton's onSynced callback would otherwise
+                      unmount the button mid-flight and drop its
+                      `result` state — including the hydration audit
+                      strip. */}
+                  {connectionsLoading && connections.length === 0 ? (
                     <span className="text-xs text-muted-foreground/50">…</span>
                   ) : isConnected ? (
                     <div className="flex items-center gap-3">
