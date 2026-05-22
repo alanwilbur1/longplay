@@ -182,32 +182,109 @@ export async function listMyConnections(): Promise<ListMyConnectionsResult> {
 }
 
 /**
- * Manually trigger a sync for the listener's active provider connection.
- * Wired to the Profile "Sync now" form button. Server action signature
- * must be void-returning to satisfy <form action={…}>; the outcome is
- * communicated via the DB (last_sync_at, last_error on the connection
- * row, and the upserted counts visible by re-reading the data).
+ * Result returned to the client after a manual "Sync now" click.
  *
- * Never exposes tokens — only orchestrates the ingest + revalidates.
- *
- * For programmatic use (e.g. tests, cron, future "sync-with-progress"
- * UI), call syncProviderForUser directly from server code.
+ * Safe to expose: never contains tokens, scopes, refresh_token, or
+ * raw provider response bodies. Internal error stages are mapped to
+ * a coarse `code` + a short, user-readable `message`.
  */
-export async function syncMyConnection(formData: FormData): Promise<void> {
-  const rawSource = String(formData.get('source') ?? '').toLowerCase()
-  if (!isSourceId(rawSource)) return
+export interface SyncActionResult {
+  ok: boolean
+  /** ISO timestamp written to listening_connections.last_sync_at on
+   *  success. Null on early failures (load/refresh) where we did not
+   *  reach the post-sync write. */
+  syncedAt: string | null
+  counts: {
+    events_upserted: number
+    artists_upserted: number
+    albums_upserted: number
+    tracks_upserted: number
+  }
+  refreshed: boolean
+  /** Null on full success. On failure, a safe code + message — never
+   *  the raw provider body. */
+  error: { code: string; message: string } | null
+}
+
+function emptySyncCounts(): SyncActionResult['counts'] {
+  return {
+    events_upserted: 0,
+    artists_upserted: 0,
+    albums_upserted: 0,
+    tracks_upserted: 0,
+  }
+}
+
+/**
+ * Map an internal SyncOutcome error to a user-safe shape. Strips any
+ * detail beyond the stage name; the full reason (which may include
+ * provider response text) stays in listening_connections.last_error
+ * server-side. The UI never sees tokens — by construction.
+ */
+function toSafeError(
+  outcome: SyncOutcome,
+): { code: string; message: string } | null {
+  if (!outcome.error) return null
+  const FRIENDLY: Record<string, string> = {
+    'load-connection': 'Could not load the connection. Try reconnecting.',
+    'connection-status':
+      'Connection is not active. Reconnect to refresh authorization.',
+    refresh: 'Spotify authorization expired. Reconnect to continue syncing.',
+    'refresh-persist': 'Could not save refreshed tokens.',
+    sync: 'Spotify API call failed. Please try again in a minute.',
+    'favorite_artists-upsert': 'Could not save top artists.',
+    'favorite_albums-upsert': 'Could not save saved albums.',
+    'favorite_tracks-upsert': 'Could not save top tracks.',
+    'listening_events-upsert': 'Could not save recent plays.',
+  }
+  const message = FRIENDLY[outcome.error.stage] ?? 'Sync failed. Please try again.'
+  return { code: outcome.error.stage, message }
+}
+
+/**
+ * Manually trigger a sync for the listener's active provider
+ * connection. Called from a client `useTransition` handler on the
+ * Profile "Sync now" button — not a <form action> — so the UI can
+ * render pending/success/error states from the returned outcome.
+ *
+ * Never exposes tokens, scopes, or raw provider payloads.
+ *
+ * For programmatic use (cron, callback warm-up), call
+ * `syncProviderForUser` directly from server code.
+ */
+export async function syncMyConnection(
+  sourceId: string,
+): Promise<SyncActionResult> {
+  const normalized = String(sourceId ?? '').toLowerCase()
+  if (!isSourceId(normalized)) {
+    return {
+      ok: false,
+      syncedAt: null,
+      counts: emptySyncCounts(),
+      refreshed: false,
+      error: { code: 'unknown_source', message: 'Unknown streaming source.' },
+    }
+  }
 
   const supabase = await createSupabaseServerClient()
   const { data: { user } } = await supabase.auth.getUser()
-  if (!user) return
+  if (!user) {
+    return {
+      ok: false,
+      syncedAt: null,
+      counts: emptySyncCounts(),
+      refreshed: false,
+      error: { code: 'not_authenticated', message: 'Please sign in to sync.' },
+    }
+  }
 
   const outcome: SyncOutcome = await syncProviderForUser(
     user.id,
-    rawSource as SourceId,
+    normalized as SourceId,
   )
   if (process.env.NODE_ENV !== 'production') {
     console.log('[syncMyConnection] outcome', {
-      sourceId: rawSource,
+      sourceId: normalized,
       ok: outcome.ok,
       refreshed: outcome.refreshed,
       counts: outcome.counts,
@@ -215,9 +292,19 @@ export async function syncMyConnection(formData: FormData): Promise<void> {
     })
   }
 
-  // Profile re-renders against fresh DB state (new last_sync_at,
-  // last_error, and refreshed connection details).
+  // Future-safe: invalidates any server-rendered slice of /profile.
+  // The visible "last_sync_at" line lives in a Client Component, so
+  // the SyncButton handler also re-fetches `listMyConnections()` to
+  // refresh that state immediately.
   revalidatePath('/profile')
+
+  return {
+    ok: outcome.ok,
+    syncedAt: outcome.last_sync_at,
+    counts: outcome.counts,
+    refreshed: outcome.refreshed,
+    error: toSafeError(outcome),
+  }
 }
 
 /** Reads + clears the OAuth state cookie. Used by the callback route. */
