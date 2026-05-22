@@ -34,23 +34,28 @@ export interface SyncOutcome {
     albums_upserted: number
     tracks_upserted: number
     /** Of the upserted artists, how many came back with non-empty
-     *  Spotify-side metadata (genres OR popularity OR image). Useful
-     *  to distinguish "we wrote rows but Spotify gave us nothing" from
-     *  "we hydrated real data". */
+     *  Spotify-side metadata (genres OR popularity OR image). */
     artists_hydrated: number
     /** Distinct genre strings across all upserted artists (post-
-     *  normalization). Surfaces in the UI as a sanity counter. */
+     *  normalization). */
     genres_distinct: number
+    /** Phase 4.4 hydration observability — direct from the provider's
+     *  /v1/artists?ids= calls, BEFORE the upsert. Lets the UI distinguish
+     *  "Spotify returned no genres" from "we never called the endpoint"
+     *  from "we called it and got 401". */
+    artist_ids_collected: number
+    artist_ids_hydrated: number
+    artists_with_genres: number
+    hydration_batches_attempted: number
+    hydration_batches_succeeded: number
   }
   refreshed: boolean
   last_sync_at: string | null
-  /** Whether listening_profile_snapshots was successfully recomputed
-   *  this run. False if the recompute threw (the sync itself still
-   *  counts as ok). */
   snapshot_updated: boolean
-  /** Size of the snapshot's top_genres after recompute (0 if no
-   *  hydrated genre data came back from Spotify). */
   top_genres_count: number
+  /** Null on full success. On hydration failure, a short safe string
+   *  like "401: The access token expired". Never contains tokens. */
+  hydration_error: string | null
   error: { stage: string; message: string } | null
 }
 
@@ -66,11 +71,17 @@ function emptyOutcome(): SyncOutcome {
       tracks_upserted: 0,
       artists_hydrated: 0,
       genres_distinct: 0,
+      artist_ids_collected: 0,
+      artist_ids_hydrated: 0,
+      artists_with_genres: 0,
+      hydration_batches_attempted: 0,
+      hydration_batches_succeeded: 0,
     },
     refreshed: false,
     last_sync_at: null,
     snapshot_updated: false,
     top_genres_count: 0,
+    hydration_error: null,
     error: null,
   }
 }
@@ -205,6 +216,19 @@ export async function syncProviderForUser(
       .update({ status: 'error', last_error: outcome.error.message })
       .eq('id', connectionRow.id)
     return outcome
+  }
+
+  // Pull provider telemetry out of result.meta so the UI sees
+  // hydration health BEFORE/REGARDLESS of upsert success.
+  if (result.meta) {
+    outcome.counts.artist_ids_collected = result.meta.artist_ids_collected ?? 0
+    outcome.counts.artist_ids_hydrated = result.meta.artist_ids_hydrated ?? 0
+    outcome.counts.artists_with_genres = result.meta.artists_with_genres ?? 0
+    outcome.counts.hydration_batches_attempted =
+      result.meta.hydration_batches_attempted ?? 0
+    outcome.counts.hydration_batches_succeeded =
+      result.meta.hydration_batches_succeeded ?? 0
+    outcome.hydration_error = result.meta.hydration_error ?? null
   }
 
   // 4. Upsert favorites.

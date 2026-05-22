@@ -276,24 +276,14 @@ export const spotifyProvider: StreamingProvider = {
     }
 
     // ── Batch hydrate via /v1/artists?ids=... ───────────────────────────
-    // Up to 50 IDs per call. Best-effort: any failed batch leaves the
-    // seeds for that batch un-hydrated (we still upsert their name +
-    // empty genres so the row exists).
+    // Up to 50 IDs per call. Failure is observable (see returned `meta`)
+    // — we don't silently throw the result away anymore.
     const allIds = Array.from(seeds.keys())
-    const hydrated = new Map<string, HydratedArtist>()
-    for (let i = 0; i < allIds.length; i += 50) {
-      const batch = allIds.slice(i, i + 50)
-      const url = `${API_BASE}/artists?ids=${encodeURIComponent(batch.join(','))}`
-      const res = await spotifyJson<{ artists: HydratedArtist[] }>(url, accessToken)
-      for (const a of res?.artists ?? []) {
-        if (a?.id) hydrated.set(a.id, a)
-      }
-    }
+    const hydration = await hydrateSpotifyArtists(allIds, accessToken)
+    const hydrated = hydration.map
 
     const artists: FavoriteArtist[] = Array.from(seeds.values()).map((seed) => {
       const h = hydrated.get(seed.id)
-      // Pick the largest image (Spotify returns them sorted largest first
-      // in practice but we don't rely on order).
       const image_url = h?.images?.length
         ? [...h.images].sort((x, y) => (y.width ?? 0) - (x.width ?? 0))[0]?.url ?? null
         : null
@@ -306,11 +296,36 @@ export const spotifyProvider: StreamingProvider = {
         popularity: typeof h?.popularity === 'number' ? h.popularity : null,
         followers: typeof h?.followers?.total === 'number' ? h.followers.total : null,
         image_url,
+        // CRITICAL FIX: when hydration succeeded for this artist, persist
+        // the FULL hydrated payload as `raw` (genres+popularity+images),
+        // NOT the shallow seed object. The previous version was
+        // `(h ?? seed)` which is right, but the column-level fields
+        // above already capture what we need. Keep the merge so
+        // downstream readers of `raw` get the rich payload too.
         raw: (h ?? { id: seed.id, name: seed.name }) as unknown as Record<string, unknown>,
       }
     })
 
-    return { events, artists, albums, tracks, syncedAt }
+    const artists_with_genres = artists.reduce(
+      (n, a) => n + (a.genres.length > 0 ? 1 : 0),
+      0,
+    )
+
+    return {
+      events,
+      artists,
+      albums,
+      tracks,
+      syncedAt,
+      meta: {
+        artist_ids_collected: allIds.length,
+        artist_ids_hydrated: hydrated.size,
+        artists_with_genres,
+        hydration_batches_attempted: hydration.attempted,
+        hydration_batches_succeeded: hydration.succeeded,
+        hydration_error: hydration.lastError,
+      },
+    }
   },
 }
 
@@ -321,6 +336,125 @@ interface HydratedArtist {
   popularity?: number
   followers?: { total?: number }
   images?: Array<{ url: string; width?: number; height?: number }>
+}
+
+interface HydrationOutcome {
+  map: Map<string, HydratedArtist>
+  attempted: number
+  succeeded: number
+  /** Last batch HTTP status when a batch failed. */
+  lastStatus: number | null
+  /** Safe one-line error (status + Spotify's `error.message`), or null
+   *  when every batch succeeded. Never contains tokens. */
+  lastError: string | null
+}
+
+/**
+ * Batch-hydrate Spotify artist IDs via `/v1/artists?ids=…`.
+ *
+ * Self-instrumenting: returns telemetry (attempted/succeeded counts,
+ * last failing status + Spotify's safe error message) so the caller
+ * can surface "hydration not running" / "hydration 401" diagnostics
+ * instead of silently writing `genres: []`.
+ *
+ * Spotify allows up to 50 IDs per call. IDs are URL-safe base62 so
+ * we don't encode the comma separator (Spotify accepts both, but
+ * unencoded is the form their docs use most often).
+ *
+ * Does NOT throw — every batch failure is captured into the outcome.
+ */
+async function hydrateSpotifyArtists(
+  ids: string[],
+  accessToken: string,
+): Promise<HydrationOutcome> {
+  const out: HydrationOutcome = {
+    map: new Map(),
+    attempted: 0,
+    succeeded: 0,
+    lastStatus: null,
+    lastError: null,
+  }
+  if (ids.length === 0) return out
+
+  for (let i = 0; i < ids.length; i += 50) {
+    const batch = ids.slice(i, i + 50)
+    const url = `${API_BASE}/artists?ids=${batch.join(',')}`
+    out.attempted += 1
+
+    let res: Response
+    try {
+      res = await fetch(url, {
+        headers: { Authorization: `Bearer ${accessToken}` },
+        cache: 'no-store',
+      })
+    } catch (err) {
+      out.lastStatus = 0
+      out.lastError = `fetch failed: ${
+        err instanceof Error ? err.message : String(err)
+      }`
+      // Always log — this is genuinely diagnostic and contains no token.
+      console.warn('[spotify/hydrate] fetch threw', {
+        batch_index: i / 50,
+        message: out.lastError,
+      })
+      continue
+    }
+
+    if (!res.ok) {
+      out.lastStatus = res.status
+      // Spotify error bodies look like { error: { status, message } }.
+      // Pull just `message` so we surface "The access token expired"
+      // instead of a generic HTTP code. Never includes tokens.
+      let detail = ''
+      try {
+        const body = (await res.json()) as { error?: { message?: string } }
+        detail = body?.error?.message ?? ''
+      } catch {
+        // ignore body parse failure
+      }
+      out.lastError = detail ? `${res.status}: ${detail}` : `HTTP ${res.status}`
+      console.warn('[spotify/hydrate] batch failed', {
+        batch_index: i / 50,
+        batch_size: batch.length,
+        status: res.status,
+        detail,
+      })
+      continue
+    }
+
+    let body: { artists?: Array<HydratedArtist | null> }
+    try {
+      body = (await res.json()) as { artists?: Array<HydratedArtist | null> }
+    } catch (err) {
+      out.lastStatus = res.status
+      out.lastError = `json parse: ${
+        err instanceof Error ? err.message : String(err)
+      }`
+      console.warn('[spotify/hydrate] json parse failed', {
+        batch_index: i / 50,
+        message: out.lastError,
+      })
+      continue
+    }
+
+    let added = 0
+    for (const a of body?.artists ?? []) {
+      if (a?.id) {
+        out.map.set(a.id, a)
+        added += 1
+      }
+    }
+    out.succeeded += 1
+    if (process.env.NODE_ENV !== 'production') {
+      console.log('[spotify/hydrate] batch ok', {
+        batch_index: i / 50,
+        batch_size: batch.length,
+        added,
+      })
+    }
+  }
+
+  return out
 }
 
 function normalizeContext(t: string | undefined): ListeningEvent['context_type'] {

@@ -77,22 +77,37 @@ export function SyncConnectionButton({
       </button>
 
       {!isPending && result && result.ok && (
-        <span className="text-[10px] text-olive mt-1 max-w-[260px] text-right leading-tight">
+        <span className="text-[10px] text-olive mt-1 max-w-[300px] text-right leading-tight">
           Synced — {result.counts.events_upserted} plays,{' '}
           {result.counts.artists_upserted} artists
-          {result.counts.artists_hydrated > 0 && (
-            <>
-              {' '}({result.counts.artists_hydrated} hydrated,{' '}
-              {result.counts.genres_distinct} genres,{' '}
-              {result.top_genres_count} top)
-            </>
-          )}
           {result.refreshed ? ' • token refreshed' : ''}
         </span>
       )}
 
+      {/* Hydration audit strip — visible whenever we have a result,
+          successful or not. This is the line that surfaces the Phase
+          4.4 bug class: "hydrate:0/47 collected" or "401: The access
+          token expired". Always rendered so the user (and we) can
+          confirm whether /v1/artists is actually being called. */}
+      {!isPending && result && (
+        <span className="text-[10px] font-mono text-muted-foreground/60 mt-1 max-w-[320px] text-right leading-tight">
+          hydrate:{result.counts.artist_ids_hydrated}/
+          {result.counts.artist_ids_collected} collected •{' '}
+          {result.counts.hydration_batches_succeeded}/
+          {result.counts.hydration_batches_attempted} batches • genres:
+          {result.counts.artists_with_genres} • top:
+          {result.top_genres_count}
+        </span>
+      )}
+
+      {!isPending && result && result.hydration_error && (
+        <span className="text-[10px] text-burgundy/80 mt-1 max-w-[300px] text-right leading-tight">
+          hydration: {result.hydration_error}
+        </span>
+      )}
+
       {!isPending && result && !result.ok && result.error && (
-        <span className="text-[10px] text-burgundy/80 mt-1 max-w-[200px] text-right">
+        <span className="text-[10px] text-burgundy/80 mt-1 max-w-[300px] text-right leading-tight">
           {result.error.message}
         </span>
       )}

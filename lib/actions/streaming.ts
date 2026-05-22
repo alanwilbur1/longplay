@@ -199,18 +199,25 @@ export interface SyncActionResult {
     artists_upserted: number
     albums_upserted: number
     tracks_upserted: number
-    /** Phase 4.4: artists for which Spotify returned non-empty
-     *  genres / popularity / image. Distinguishes "wrote rows" from
-     *  "wrote enriched rows". */
     artists_hydrated: number
-    /** Distinct genre strings across this run's artists. */
     genres_distinct: number
+    /** Phase 4.4 hydration audit counters — observed from the
+     *  provider's /v1/artists?ids= calls BEFORE the upsert. */
+    artist_ids_collected: number
+    artist_ids_hydrated: number
+    artists_with_genres: number
+    hydration_batches_attempted: number
+    hydration_batches_succeeded: number
   }
   refreshed: boolean
   /** Whether listening_profile_snapshots recompute landed. */
   snapshot_updated: boolean
   /** Size of snapshot.top_genres after recompute. */
   top_genres_count: number
+  /** Safe one-line hydration error, or null. Distinct from `error`
+   *  because hydration can fail without failing the sync — the row
+   *  upserts still land. */
+  hydration_error: string | null
   /** Null on full success. On failure, a safe code + message — never
    *  the raw provider body. */
   error: { code: string; message: string } | null
@@ -224,6 +231,11 @@ function emptySyncCounts(): SyncActionResult['counts'] {
     tracks_upserted: 0,
     artists_hydrated: 0,
     genres_distinct: 0,
+    artist_ids_collected: 0,
+    artist_ids_hydrated: 0,
+    artists_with_genres: 0,
+    hydration_batches_attempted: 0,
+    hydration_batches_succeeded: 0,
   }
 }
 
@@ -276,6 +288,7 @@ export async function syncMyConnection(
       refreshed: false,
       snapshot_updated: false,
       top_genres_count: 0,
+      hydration_error: null,
       error: { code: 'unknown_source', message: 'Unknown streaming source.' },
     }
   }
@@ -290,6 +303,7 @@ export async function syncMyConnection(
       refreshed: false,
       snapshot_updated: false,
       top_genres_count: 0,
+      hydration_error: null,
       error: { code: 'not_authenticated', message: 'Please sign in to sync.' },
     }
   }
@@ -321,6 +335,7 @@ export async function syncMyConnection(
     refreshed: outcome.refreshed,
     snapshot_updated: outcome.snapshot_updated,
     top_genres_count: outcome.top_genres_count,
+    hydration_error: outcome.hydration_error,
     error: toSafeError(outcome),
   }
 }

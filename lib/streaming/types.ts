@@ -101,6 +101,22 @@ export interface ConnectionTokens {
   display_name: string | null
 }
 
+/**
+ * Provider-specific telemetry safe to expose to the UI: counts and a
+ * short error string only. Never contains tokens, scopes, or raw
+ * provider response bodies.
+ */
+export interface SyncMeta {
+  artist_ids_collected?: number
+  artist_ids_hydrated?: number
+  artists_with_genres?: number
+  hydration_batches_attempted?: number
+  hydration_batches_succeeded?: number
+  /** Null when every hydration batch succeeded; otherwise a short
+   *  diagnostic like "401: The access token expired". */
+  hydration_error?: string | null
+}
+
 /** What a provider returns from a full sync. */
 export interface SyncResult {
   events: ListeningEvent[]
@@ -108,4 +124,5 @@ export interface SyncResult {
   albums: FavoriteAlbum[]
   tracks: FavoriteTrack[]
   syncedAt: string // ISO
+  meta?: SyncMeta
 }
