@@ -208,6 +208,11 @@ export interface SyncActionResult {
     artists_with_genres: number
     hydration_batches_attempted: number
     hydration_batches_succeeded: number
+    /** Phase 4.4 persistence audit. Counts upserted favorite_artists
+     *  rows that carry any enrichment field (genres / popularity /
+     *  followers / image_url). A late 429 during single-id fallback
+     *  must NEVER drop this to zero when earlier successes existed. */
+    partial_hydration_persisted: number
   }
   refreshed: boolean
   /** Whether listening_profile_snapshots recompute landed. */
@@ -236,6 +241,7 @@ function emptySyncCounts(): SyncActionResult['counts'] {
     artists_with_genres: 0,
     hydration_batches_attempted: 0,
     hydration_batches_succeeded: 0,
+    partial_hydration_persisted: 0,
   }
 }
 

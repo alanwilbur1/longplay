@@ -99,6 +99,7 @@ export function SyncConnectionButton({
             {result.counts.artist_ids_collected} collected •{' '}
             {result.counts.hydration_batches_succeeded}/
             {result.counts.hydration_batches_attempted} batches •
+            persisted:{result.counts.partial_hydration_persisted} •
             genres:{result.counts.artists_with_genres} • top:
             {result.top_genres_count}
           </>

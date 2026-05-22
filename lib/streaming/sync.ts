@@ -48,6 +48,12 @@ export interface SyncOutcome {
     artists_with_genres: number
     hydration_batches_attempted: number
     hydration_batches_succeeded: number
+    /** Phase 4.4 persistence audit: how many of the upserted
+     *  favorite_artists rows carry at least one piece of enriched
+     *  data (genres OR popularity OR followers OR image_url). A late
+     *  429 in the fallback must NEVER cause this to drop to zero
+     *  when earlier requests succeeded. */
+    partial_hydration_persisted: number
   }
   refreshed: boolean
   last_sync_at: string | null
@@ -76,6 +82,7 @@ function emptyOutcome(): SyncOutcome {
       artists_with_genres: 0,
       hydration_batches_attempted: 0,
       hydration_batches_succeeded: 0,
+      partial_hydration_persisted: 0,
     },
     refreshed: false,
     last_sync_at: null,
@@ -232,9 +239,16 @@ export async function syncProviderForUser(
   }
 
   // 4. Upsert favorites.
+  //
+  // CRITICAL Phase-4.4 invariant: we upsert EVERY artist row built
+  // from the provider seeds, regardless of whether hydration_error
+  // is set. A late 429 during single-id fallback must not cause us
+  // to discard earlier-hydrated entries — they live in `result.artists`
+  // already, and this is where they reach the database.
   if (result.artists.length > 0) {
     const distinctGenres = new Set<string>()
     let hydrated = 0
+    let partial_hydration_persisted = 0
     const rows = result.artists.map((a) => {
       const normGenres = normalizeGenres(a.genres)
       for (const g of normGenres) distinctGenres.add(g)
@@ -243,6 +257,19 @@ export async function syncProviderForUser(
         (a.popularity ?? null) !== null ||
         !!a.image_url
       if (isHydrated) hydrated += 1
+      // Persistence counter — counts ANY enrichment that's about to
+      // land in the upsert payload. Distinct from `artists_with_genres`
+      // because Spotify may return popularity + image but no genres
+      // (their current upstream regression), and we still want to
+      // confirm "yes, we DID write enriched data".
+      if (
+        normGenres.length > 0 ||
+        (a.popularity ?? null) !== null ||
+        (a.followers ?? null) !== null ||
+        !!a.image_url
+      ) {
+        partial_hydration_persisted += 1
+      }
       return {
         user_id: userId,
         source_id: sourceId,
@@ -269,6 +296,7 @@ export async function syncProviderForUser(
       outcome.counts.artists_upserted = count ?? rows.length
       outcome.counts.artists_hydrated = hydrated
       outcome.counts.genres_distinct = distinctGenres.size
+      outcome.counts.partial_hydration_persisted = partial_hydration_persisted
     }
   }
 

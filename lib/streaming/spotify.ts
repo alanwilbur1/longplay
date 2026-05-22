@@ -375,6 +375,12 @@ interface HydrationOutcome {
     fallback_singles_attempted: number
     fallback_singles_succeeded: number
     fallback_singles_failed: number
+    /** True when a per-id fallback bailed early because Spotify
+     *  returned 429. Successes captured BEFORE the 429 are preserved
+     *  in `map` regardless. */
+    rate_limited: boolean
+    /** Spotify's Retry-After header value in seconds, when sent. */
+    retry_after_seconds: number | null
   }
 }
 
@@ -433,6 +439,8 @@ async function hydrateSpotifyArtists(
       fallback_singles_attempted: 0,
       fallback_singles_succeeded: 0,
       fallback_singles_failed: 0,
+      rate_limited: false,
+      retry_after_seconds: null,
     },
   }
   if (filtered.length === 0) return out
@@ -444,6 +452,12 @@ async function hydrateSpotifyArtists(
   }
 
   for (let i = 0; i < filtered.length; i += 50) {
+    // Stop trying further batches once Spotify has rate-limited us.
+    // Already-hydrated entries from earlier batches stay in out.map
+    // and will still flow through to favorite_artists. Continuing
+    // would just spend latency racking up more 429s.
+    if (out.diagnostics.rate_limited) break
+
     const batch = filtered.slice(i, i + 50)
     const url = `${API_BASE}/artists?ids=${batch.join(',')}`
     out.attempted += 1
@@ -530,13 +544,24 @@ async function hydrateSpotifyArtists(
         out.diagnostics.fallback_singles_attempted += fb.attempted
         out.diagnostics.fallback_singles_succeeded += fb.succeeded
         out.diagnostics.fallback_singles_failed += fb.failed
+        // CRITICAL: merge whatever the fallback hydrated into our
+        // outcome map FIRST, regardless of whether it stopped early.
+        // A late 429 cannot poison the entries that already came back
+        // with full payloads — they're persisted via the upsert that
+        // reads from out.map at the end.
         for (const [k, v] of fb.map) out.map.set(k, v)
+        if (fb.stopped_for_rate_limit) {
+          out.diagnostics.rate_limited = true
+          out.diagnostics.retry_after_seconds = fb.retry_after_seconds
+        }
         if (process.env.NODE_ENV !== 'production') {
           console.log('[spotify/hydrate] fallback ran', {
             batch_index: i / 50,
             attempted: fb.attempted,
             succeeded: fb.succeeded,
             failed: fb.failed,
+            map_size_after_merge: out.map.size,
+            stopped_for_rate_limit: fb.stopped_for_rate_limit,
           })
         }
       }
@@ -612,6 +637,9 @@ async function hydrateSpotifyArtists(
       d.fallback_mode === 'batch_to_single'
         ? ` fb=${d.fallback_singles_succeeded}/${d.fallback_singles_attempted}`
         : ''
+    const rl = d.rate_limited
+      ? ` rl=429${d.retry_after_seconds !== null ? ` retry=${d.retry_after_seconds}s` : ''}`
+      : ''
     out.lastError =
       `${out.lastError}` +
       ` | bs=${d.batch_size}` +
@@ -620,7 +648,9 @@ async function hydrateSpotifyArtists(
       ` filt=${d.ids_filtered_out}` +
       ` url=${d.sample_url_path ?? '∅'}` +
       ` probe=${probe}` +
-      fb
+      fb +
+      rl +
+      ` map=${out.map.size}`
   }
 
   return out
@@ -631,14 +661,22 @@ async function hydrateSpotifyArtists(
  * /v1/artists?ids=… form is blocked by Spotify's WAF but the
  * /v1/artists/{id} form works (single-id probe confirmed it).
  *
- * Concurrency capped at 4 — enough to make 50 calls finish in
- * ~1-2s of wall-time even with Spotify's typical latency, but well
- * under any per-IP rate limit. Errors on individual ids are
- * silently counted (failed +=1) and skipped; we don't retry, and
- * one bad id doesn't poison the others (unlike the batch endpoint).
+ * Concurrency capped at 2 — low enough to stay under Spotify's
+ * per-IP rate limit while still finishing a 50-id batch in
+ * reasonable time. Workers share a cursor + a stop flag.
  *
- * Returns the same shape as a single batch contributes — fold into
- * out.map at the call site.
+ * 429 handling:
+ *   - First worker to see a 429 sets the shared stop flag and
+ *     captures Spotify's Retry-After header (seconds, when present).
+ *   - All workers (including the one in flight) bail BEFORE issuing
+ *     the next request. Already-hydrated entries in the local map
+ *     are preserved and returned to the caller — a late 429 does NOT
+ *     erase the work that already succeeded.
+ *   - The caller is responsible for not invoking another fallback
+ *     after stopped_for_rate_limit becomes true.
+ *
+ * Errors on individual ids beyond 429 are counted (`failed += 1`)
+ * and skipped — no retries, no poisoning of siblings.
  */
 async function hydrateBatchAsSingles(
   ids: string[],
@@ -648,16 +686,23 @@ async function hydrateBatchAsSingles(
   attempted: number
   succeeded: number
   failed: number
+  stopped_for_rate_limit: boolean
+  retry_after_seconds: number | null
 }> {
   const map = new Map<string, HydratedArtist>()
   let attempted = 0
   let succeeded = 0
   let failed = 0
-  const CONCURRENCY = 4
+  let stopped_for_rate_limit = false
+  let retry_after_seconds: number | null = null
+  const CONCURRENCY = 2
   let cursor = 0
 
   async function worker() {
     while (true) {
+      // Bail BEFORE issuing the next request if any worker has seen
+      // a 429. This is what guarantees partial successes survive.
+      if (stopped_for_rate_limit) return
       const i = cursor
       cursor += 1
       if (i >= ids.length) return
@@ -668,6 +713,23 @@ async function hydrateBatchAsSingles(
           headers,
           cache: 'no-store',
         })
+        if (res.status === 429) {
+          // Capture Retry-After once. Spotify returns it in seconds
+          // (per RFC 7231 §7.1.3). Parse defensively.
+          if (retry_after_seconds === null) {
+            const raw = res.headers.get('retry-after')
+            const parsed = raw ? Number(raw) : NaN
+            retry_after_seconds = Number.isFinite(parsed) ? parsed : null
+          }
+          stopped_for_rate_limit = true
+          failed += 1
+          console.warn('[spotify/hydrate] 429 — stopping fallback', {
+            id,
+            retry_after_seconds,
+            map_size_at_stop: map.size,
+          })
+          return
+        }
         if (!res.ok) {
           failed += 1
           continue
@@ -686,7 +748,7 @@ async function hydrateBatchAsSingles(
   }
 
   await Promise.all(Array.from({ length: CONCURRENCY }, () => worker()))
-  return { map, attempted, succeeded, failed }
+  return { map, attempted, succeeded, failed, stopped_for_rate_limit, retry_after_seconds }
 }
 
 function normalizeContext(t: string | undefined): ListeningEvent['context_type'] {
