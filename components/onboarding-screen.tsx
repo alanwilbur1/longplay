@@ -14,6 +14,8 @@ import { getSupabaseBrowserClient } from '@/lib/supabase/client'
 import { ensureUserProfile } from '@/lib/actions/auth'
 import { saveOnboardingCompletion, getOnboardingStatus } from '@/lib/actions/onboarding'
 import { initiateConnection, listMyConnections } from '@/lib/actions/streaming'
+import { getRecommendedRooms, type RecommendedRoom } from '@/lib/recommendations'
+import { joinRoom } from '@/lib/actions/membership'
 
 /**
  * LongPlay Onboarding - Initiation Into a Listening Culture
@@ -1156,82 +1158,142 @@ function PortraitRevealStep({ onContinue }: { onContinue: () => void }) {
 // ROOMS REVEAL - Cultural Placement (NOT recommendations)
 // ============================================
 function RoomsRevealStep({ onContinue }: { onContinue: () => void }) {
-  // Get rooms that resonate based on affinity system
-  const resonatingRooms = getResonatingRooms().slice(0, 3)
+  // Phase 4.2 — real recommendations from the heuristic recommender.
+  // Reads calibration answers + favorite_artist genres + rooms taxonomy
+  // server-side, returns scored rooms with grounded explanations.
+  const [loading, setLoading] = useState(true)
+  const [recs, setRecs] = useState<RecommendedRoom[]>([])
+  const [joinedSlugs, setJoinedSlugs] = useState<Set<string>>(new Set())
+  const [joiningSlug, setJoiningSlug] = useState<string | null>(null)
+
+  useEffect(() => {
+    let mounted = true
+    getRecommendedRooms(3)
+      .then((rows) => {
+        if (mounted) setRecs(rows)
+      })
+      .catch(() => {})
+      .finally(() => {
+        if (mounted) setLoading(false)
+      })
+    return () => {
+      mounted = false
+    }
+  }, [])
+
+  async function handleJoin(slug: string) {
+    if (joinedSlugs.has(slug) || joiningSlug) return
+    setJoiningSlug(slug)
+    try {
+      const result = await joinRoom(slug)
+      if (result?.success) {
+        setJoinedSlugs((prev) => new Set(prev).add(slug))
+      }
+    } catch {
+      // Swallow — UI stays on this step; listener can retry or skip.
+    } finally {
+      setJoiningSlug(null)
+    }
+  }
 
   return (
     <div className="flex-1 flex flex-col px-8 py-16">
       <div className="animate-fade-in max-w-md mx-auto w-full">
         <p className="text-[10px] uppercase tracking-[0.4em] text-tobacco mb-4 text-center">
-          You may feel most at home in
+          Rooms you might fit in
         </p>
-        
+
         <h2 className="font-serif text-2xl md:text-3xl text-cream mb-6 text-center">
-          Rooms That Resonate With Your Listening
+          Three rooms to start
         </h2>
-        
-        {/* Editorial framing - NOT recommendation language */}
+
         <p className="text-center text-muted-foreground text-sm mb-8 leading-relaxed">
-          These are not suggestions. These are listening cultures that 
-          align with your emotional tendencies.
+          Based on what you told us and what you already listen to.
+          You can join now or explore on your own.
         </p>
-        
+
         <div className="w-16 h-px bg-gradient-to-r from-transparent via-tobacco/30 to-transparent mx-auto mb-10" />
-        
-        <div className="space-y-4 mb-12">
-          {resonatingRooms.map((affinity, i) => (
-            <div 
-              key={affinity.roomSlug}
-              className={cn(
-                "p-5 border bg-card/10 animate-fade-in-up",
-                affinity.resonance === 'deep' 
-                  ? "border-burgundy/40 bg-burgundy/5" 
-                  : "border-border/20"
-              )}
-              style={{ animationDelay: `${i * 150}ms` }}
-            >
-              <div className="flex items-start justify-between mb-2">
-                <h3 className="font-serif text-lg text-cream">{affinity.roomName}</h3>
-                {affinity.resonance === 'deep' && (
-                  <span className="text-[9px] uppercase tracking-[0.2em] text-burgundy border border-burgundy/50 px-2 py-0.5">
-                    Primary
-                  </span>
-                )}
-              </div>
-              
-              {/* Why this room resonates - editorial language */}
-              <p className="text-sm text-cream/70 italic leading-relaxed mb-3">
-                "{affinity.resonanceExplanation}"
-              </p>
-              
-              {/* Emotional threads */}
-              <div className="flex flex-wrap gap-2">
-                {affinity.emotionalThreads.slice(0, 2).map((thread) => (
-                  <span 
-                    key={thread}
-                    className="text-[10px] text-muted-foreground border border-border/20 px-2 py-0.5"
-                  >
-                    {thread}
-                  </span>
-                ))}
-              </div>
-            </div>
-          ))}
-        </div>
-        
-        {/* Join language - cultural, not transactional */}
+
+        {loading ? (
+          <div className="space-y-3 mb-12">
+            {[0, 1, 2].map((i) => (
+              <div
+                key={i}
+                className="p-5 border border-border/15 bg-card/5 animate-pulse h-28"
+              />
+            ))}
+          </div>
+        ) : recs.length === 0 ? (
+          <p className="text-center text-sm text-muted-foreground mb-12 italic">
+            No room recommendations yet — explore on your own from the Rooms tab.
+          </p>
+        ) : (
+          <div className="space-y-4 mb-10">
+            {recs.map((rec, i) => {
+              const joined = joinedSlugs.has(rec.room.slug)
+              const busy = joiningSlug === rec.room.slug
+              return (
+                <div
+                  key={rec.room.slug}
+                  className={cn(
+                    'p-5 border bg-card/10 animate-fade-in-up',
+                    rec.room.featured
+                      ? 'border-burgundy/40 bg-burgundy/5'
+                      : 'border-border/20',
+                  )}
+                  style={{ animationDelay: `${i * 100}ms` }}
+                >
+                  <div className="flex items-start justify-between mb-2 gap-3">
+                    <h3 className="font-serif text-lg text-cream">{rec.room.name}</h3>
+                    {rec.room.featured && (
+                      <span className="text-[9px] uppercase tracking-[0.2em] text-burgundy border border-burgundy/50 px-2 py-0.5 shrink-0">
+                        Featured
+                      </span>
+                    )}
+                  </div>
+                  <p className="text-sm text-cream/70 leading-relaxed mb-3">
+                    {rec.room.description}
+                  </p>
+                  <p className="text-xs text-tobacco/80 italic mb-4">
+                    {rec.explanation}
+                  </p>
+                  <div className="flex items-center justify-between">
+                    <div className="flex flex-wrap gap-1.5">
+                      {rec.room.genres.slice(0, 3).map((g) => (
+                        <span
+                          key={g}
+                          className="text-[10px] text-muted-foreground border border-border/20 px-2 py-0.5"
+                        >
+                          {g}
+                        </span>
+                      ))}
+                    </div>
+                    {joined ? (
+                      <span className="text-xs text-olive uppercase tracking-wider">
+                        Joined
+                      </span>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() => handleJoin(rec.room.slug)}
+                        disabled={busy}
+                        className="text-xs text-tobacco hover:text-cream transition-colors disabled:opacity-50"
+                      >
+                        {busy ? 'Joining…' : 'Join'}
+                      </button>
+                    )}
+                  </div>
+                </div>
+              )
+            })}
+          </div>
+        )}
+
         <button
           onClick={onContinue}
-          className="w-full py-4 bg-burgundy/80 border border-burgundy text-cream hover:bg-burgundy transition-all duration-500 mb-3"
+          className="w-full py-4 border border-cream/30 text-cream hover:bg-cream/5 transition-all duration-500"
         >
-          Enter these listening cultures
-        </button>
-        
-        <button
-          onClick={onContinue}
-          className="w-full py-3 text-muted-foreground hover:text-cream transition-colors text-sm"
-        >
-          I&apos;ll explore the rooms myself
+          {joinedSlugs.size > 0 ? 'Continue' : 'Skip for now'}
         </button>
       </div>
     </div>

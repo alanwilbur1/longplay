@@ -25,11 +25,137 @@ import { createHash } from 'crypto'
 import { writeFileSync } from 'fs'
 import { join } from 'path'
 
-// Static data sources (these are NOT modified; we read and seed from them)
+// ── Static data sources (these are NOT modified; we read and seed from them)
 import { ALL_ROOMS } from '../lib/rooms'
 import { ALBUMS } from '../lib/albums'
 import { PAST_CYCLES } from '../lib/cycles'
 import { getSupabaseAdminClient } from '../lib/supabase/admin'
+
+// ── Phase 4.2 — Room taxonomy overlay ───────────────────────────────────
+// The static lib/rooms.ts (atmospheric design source) doesn't carry the
+// new structured fields. Rather than mutate that file, we keep a thin
+// per-slug overlay here. Each entry sets the fields the recommender
+// reads. Rooms not listed get sensible defaults (empty arrays + a
+// neutral recommendation_weight of 50, not featured).
+//
+// Tone for descriptions: clear, culturally specific, useful — not poetic.
+// (See Phase 4.2 spec, item 2.)
+interface RoomTaxonomyOverlay {
+  description?: string
+  genres: string[]
+  moods: string[]
+  energy_level: 'low' | 'medium' | 'high'
+  cadence: 'weekly' | 'biweekly' | 'monthly' | 'seasonal' | 'ongoing'
+  featured?: boolean
+  recommendation_weight?: number
+}
+
+const ROOM_TAXONOMY: Record<string, RoomTaxonomyOverlay> = {
+  'nocturnal-room': {
+    description:
+      'Late-night indie, electronic, and memory-heavy albums for people who listen after the house goes quiet.',
+    genres: ['indie', 'electronic', 'ambient', 'late-night'],
+    moods: ['late-night', 'nocturnal', 'intimate', 'reflective'],
+    energy_level: 'low',
+    cadence: 'weekly',
+    featured: true,
+    recommendation_weight: 75,
+  },
+  'analog-futures': {
+    description:
+      'Electronic, ambient, and post-rock records built from real instruments and synthesisers — patient, textured, and physically made.',
+    genres: ['electronic', 'ambient', 'post-rock', 'experimental'],
+    moods: ['textural', 'patient', 'experimental', 'cinematic'],
+    energy_level: 'medium',
+    cadence: 'weekly',
+    featured: true,
+    recommendation_weight: 70,
+  },
+  'cathedral-hour': {
+    description:
+      'Long-form, spiritually expansive listening — ambient, modern classical, and orchestral records that ask for attention.',
+    genres: ['ambient', 'modern-classical', 'orchestral', 'spiritual'],
+    moods: ['expansive', 'spiritual', 'meditative', 'patient'],
+    energy_level: 'low',
+    cadence: 'weekly',
+    featured: false,
+    recommendation_weight: 65,
+  },
+  'beautiful-damage': {
+    description:
+      'Confessional songwriters, intimate indie, and records that sit with sadness honestly without performing it.',
+    genres: ['indie', 'songwriter', 'folk', 'confessional'],
+    moods: ['intimate', 'confessional', 'reflective', 'catharsis'],
+    energy_level: 'low',
+    cadence: 'weekly',
+    featured: true,
+    recommendation_weight: 72,
+  },
+  'records-for-rain': {
+    description:
+      'Quiet, weather-soft albums for grey afternoons — folk, jazz, ambient, and slow indie.',
+    genres: ['folk', 'jazz', 'ambient', 'indie'],
+    moods: ['quiet', 'soft', 'patient', 'meditative'],
+    energy_level: 'low',
+    cadence: 'biweekly',
+    featured: false,
+    recommendation_weight: 60,
+  },
+  'warm-static': {
+    description:
+      'Warm, analog-sounding rock and pop records — songs that feel recorded in a room, not assembled in a screen.',
+    genres: ['rock', 'pop', 'analog', 'soul'],
+    moods: ['warm', 'analog', 'songwriter'],
+    energy_level: 'medium',
+    cadence: 'weekly',
+    featured: false,
+    recommendation_weight: 55,
+  },
+  'spiritual-jazz': {
+    description:
+      'Spiritual and modal jazz — Coltrane through Pharoah Sanders to contemporary heirs. Album-focused, slow listening.',
+    genres: ['jazz', 'spiritual', 'modal', 'free-jazz'],
+    moods: ['spiritual', 'expansive', 'meditative'],
+    energy_level: 'medium',
+    cadence: 'weekly',
+    featured: false,
+    recommendation_weight: 58,
+  },
+  'criterion-listening': {
+    description:
+      'Albums that pair with films — scores, soundtracks, and records that feel cinematic at album length.',
+    genres: ['soundtrack', 'score', 'cinematic', 'orchestral'],
+    moods: ['cinematic', 'atmospheric', 'reflective'],
+    energy_level: 'medium',
+    cadence: 'biweekly',
+    featured: false,
+    recommendation_weight: 60,
+  },
+  'pitchfork-deep-cuts': {
+    description:
+      'New and recent critically loved indie + electronic records — for listeners who keep up with the present.',
+    genres: ['indie', 'electronic', 'experimental'],
+    moods: ['restless', 'cinematic', 'textural'],
+    energy_level: 'medium',
+    cadence: 'weekly',
+    featured: true,
+    recommendation_weight: 68,
+  },
+}
+
+function taxonomyFor(slug: string): RoomTaxonomyOverlay {
+  return (
+    ROOM_TAXONOMY[slug] ?? {
+      genres: [],
+      moods: [],
+      energy_level: 'medium' as const,
+      cadence: 'weekly' as const,
+      featured: false,
+      recommendation_weight: 50,
+    }
+  )
+}
+
 
 // ── Deterministic UUID v4-format from a namespaced string key ───────────────
 
@@ -214,39 +340,52 @@ async function main() {
 
   // ── 3. Rooms (initial, without current_cycle_id) ──────────────────────────
   console.log('\n[3/8] Rooms…')
-  const roomRows = ALL_ROOMS.map(room => ({
-    id: roomId(room.slug),
-    slug: room.slug,
-    name: room.name,
-    type: room.type,
-    description: room.description,
-    tagline: room.tagline ?? null,
-    atmosphere: room.atmosphere,
-    emotional_temperature: room.emotionalTemperature,
-    manifesto: room.culture.manifesto,
-    listening_ritual: room.culture.listeningRitual,
-    what_we_look_for: room.culture.whatWeLookFor,
-    what_we_avoid: room.culture.whatWeAvoid,
-    associated_archetypes: room.culture.associatedArchetypes.map(a => a.name),
-    seasonal_moods: room.culture.seasonalMoods,
-    related_rooms: room.culture.relatedRooms,
-    atmosphere_notes: room.atmosphereNotes,
-    member_count_label: room.memberCountLabel,
-    emotional_tags: room.emotionalTags,
-    sonic_tags: room.sonicTags,
-    aesthetics: room.aesthetics,
-    current_season: room.currentSeason ?? null,
-    curator_id: curatorId(room.curator.id),
-    current_cycle_id: null, // set after cycles are upserted
-    culture_extras: {
-      invitationText: room.culture.invitationText,
-      entryPhrase: room.culture.entryPhrase,
-      associatedArchetypes: room.culture.associatedArchetypes,
-      albumSample: room.albumSample.map(a => a.id),
-      weeklyPhase: room.weeklyPhase,
-      phaseDay: room.phaseDay,
-    },
-  }))
+  const roomRows = ALL_ROOMS.map(room => {
+    const tax = taxonomyFor(room.slug)
+    return {
+      id: roomId(room.slug),
+      slug: room.slug,
+      name: room.name,
+      type: room.type,
+      // Phase 4.2: prefer the grounded description from the taxonomy
+      // overlay when present. Fall back to the static design copy so
+      // rooms without overlay entries still render.
+      description: tax.description ?? room.description,
+      tagline: room.tagline ?? null,
+      atmosphere: room.atmosphere,
+      emotional_temperature: room.emotionalTemperature,
+      manifesto: room.culture.manifesto,
+      listening_ritual: room.culture.listeningRitual,
+      what_we_look_for: room.culture.whatWeLookFor,
+      what_we_avoid: room.culture.whatWeAvoid,
+      associated_archetypes: room.culture.associatedArchetypes.map(a => a.name),
+      seasonal_moods: room.culture.seasonalMoods,
+      related_rooms: room.culture.relatedRooms,
+      atmosphere_notes: room.atmosphereNotes,
+      member_count_label: room.memberCountLabel,
+      emotional_tags: room.emotionalTags,
+      sonic_tags: room.sonicTags,
+      aesthetics: room.aesthetics,
+      current_season: room.currentSeason ?? null,
+      curator_id: curatorId(room.curator.id),
+      current_cycle_id: null, // set after cycles are upserted
+      // Phase 4.2 taxonomy columns the recommender reads.
+      genres: tax.genres,
+      moods: tax.moods,
+      energy_level: tax.energy_level,
+      cadence: tax.cadence,
+      featured: tax.featured ?? false,
+      recommendation_weight: tax.recommendation_weight ?? 50,
+      culture_extras: {
+        invitationText: room.culture.invitationText,
+        entryPhrase: room.culture.entryPhrase,
+        associatedArchetypes: room.culture.associatedArchetypes,
+        albumSample: room.albumSample.map(a => a.id),
+        weeklyPhase: room.weeklyPhase,
+        phaseDay: room.phaseDay,
+      },
+    }
+  })
 
   const { error: roomErr } = await db
     .from('rooms')
