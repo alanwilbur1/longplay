@@ -43,6 +43,16 @@ function leadClause(f: ExplanationFactor): string {
   switch (f.kind) {
     case 'genre-match':
       return `Matches what you already listen to (${f.detail})`
+    case 'canonical-genre-match':
+      return `Matches what you already listen to (${f.detail})`
+    case 'enriched-genre-match':
+      return `Aligns with related genres in your library (${f.detail})`
+    case 'affinity-tag-match':
+      return `Fits the listening affinities we've noticed (${f.detail})`
+    case 'artist-match':
+      return `Features ${f.detail}, who is in your top artists`
+    case 'recency-boost':
+      return `Close to what you've been playing lately`
     case 'mood-match':
       return `Fits the listening moods you described (${f.detail})`
     case 'context-match':
@@ -62,6 +72,16 @@ function tailClause(f: ExplanationFactor): string {
   switch (f.kind) {
     case 'genre-match':
       return `overlaps with your top genres (${f.detail})`
+    case 'canonical-genre-match':
+      return `overlaps with your top genres (${f.detail})`
+    case 'enriched-genre-match':
+      return `overlaps with related genres from your library (${f.detail})`
+    case 'affinity-tag-match':
+      return `your affinities (${f.detail}) are central here`
+    case 'artist-match':
+      return `${f.detail} is featured in the current cycle`
+    case 'recency-boost':
+      return `it's close to what you've been playing lately`
     case 'mood-match':
       return `the moods you chose (${f.detail}) are central here`
     case 'context-match':
