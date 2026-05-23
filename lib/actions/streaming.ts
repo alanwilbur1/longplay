@@ -213,6 +213,13 @@ export interface SyncActionResult {
      *  followers / image_url). A late 429 during single-id fallback
      *  must NEVER drop this to zero when earlier successes existed. */
     partial_hydration_persisted: number
+    /** Phase 4.5 enrichment counters. Zero when no external provider
+     *  is configured (LASTFM_API_KEY unset) — never blocks sync. */
+    enrichment_jobs_queued: number
+    enrichment_jobs_run: number
+    enrichment_jobs_succeeded: number
+    enrichment_jobs_failed: number
+    enrichment_genres_added: number
   }
   refreshed: boolean
   /** Whether listening_profile_snapshots recompute landed. */
@@ -223,6 +230,10 @@ export interface SyncActionResult {
    *  because hydration can fail without failing the sync — the row
    *  upserts still land. */
   hydration_error: string | null
+  /** Phase 4.5 — provider(s) the enrichment round used. */
+  enrichment_provider: string | null
+  /** Phase 4.5 — 'rate_limited' when the round bailed early. */
+  enrichment_state: 'rate_limited' | null
   /** Null on full success. On failure, a safe code + message — never
    *  the raw provider body. */
   error: { code: string; message: string } | null
@@ -242,6 +253,11 @@ function emptySyncCounts(): SyncActionResult['counts'] {
     hydration_batches_attempted: 0,
     hydration_batches_succeeded: 0,
     partial_hydration_persisted: 0,
+    enrichment_jobs_queued: 0,
+    enrichment_jobs_run: 0,
+    enrichment_jobs_succeeded: 0,
+    enrichment_jobs_failed: 0,
+    enrichment_genres_added: 0,
   }
 }
 
@@ -295,6 +311,8 @@ export async function syncMyConnection(
       snapshot_updated: false,
       top_genres_count: 0,
       hydration_error: null,
+      enrichment_provider: null,
+      enrichment_state: null,
       error: { code: 'unknown_source', message: 'Unknown streaming source.' },
     }
   }
@@ -310,6 +328,8 @@ export async function syncMyConnection(
       snapshot_updated: false,
       top_genres_count: 0,
       hydration_error: null,
+      enrichment_provider: null,
+      enrichment_state: null,
       error: { code: 'not_authenticated', message: 'Please sign in to sync.' },
     }
   }
@@ -342,6 +362,8 @@ export async function syncMyConnection(
     snapshot_updated: outcome.snapshot_updated,
     top_genres_count: outcome.top_genres_count,
     hydration_error: outcome.hydration_error,
+    enrichment_provider: outcome.enrichment_provider,
+    enrichment_state: outcome.enrichment_state,
     error: toSafeError(outcome),
   }
 }

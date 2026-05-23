@@ -1,6 +1,11 @@
 import 'server-only'
 
 import { getSupabaseAdminClient } from '@/lib/supabase/admin'
+import {
+  enqueueArtistGenreEnrichments,
+  runArtistGenreEnrichmentRound,
+} from '@/lib/enrichment'
+import type { EnrichmentRoundStats } from '@/lib/enrichment/types'
 import { getProvider, type SourceId } from './index'
 import type { SyncResult } from './types'
 
@@ -54,6 +59,13 @@ export interface SyncOutcome {
      *  429 in the fallback must NEVER cause this to drop to zero
      *  when earlier requests succeeded. */
     partial_hydration_persisted: number
+    /** Phase 4.5 enrichment counters — see EnrichmentRoundStats.
+     *  All zero when no external provider is configured. */
+    enrichment_jobs_queued: number
+    enrichment_jobs_run: number
+    enrichment_jobs_succeeded: number
+    enrichment_jobs_failed: number
+    enrichment_genres_added: number
   }
   refreshed: boolean
   last_sync_at: string | null
@@ -62,6 +74,11 @@ export interface SyncOutcome {
   /** Null on full success. On hydration failure, a short safe string
    *  like "401: The access token expired". Never contains tokens. */
   hydration_error: string | null
+  /** Phase 4.5: which external provider(s) the enrichment round
+   *  contacted, comma-joined. Null when no enrichment ran. */
+  enrichment_provider: string | null
+  /** Phase 4.5: 'rate_limited' when the round bailed early, else null. */
+  enrichment_state: 'rate_limited' | null
   error: { stage: string; message: string } | null
 }
 
@@ -83,12 +100,19 @@ function emptyOutcome(): SyncOutcome {
       hydration_batches_attempted: 0,
       hydration_batches_succeeded: 0,
       partial_hydration_persisted: 0,
+      enrichment_jobs_queued: 0,
+      enrichment_jobs_run: 0,
+      enrichment_jobs_succeeded: 0,
+      enrichment_jobs_failed: 0,
+      enrichment_genres_added: 0,
     },
     refreshed: false,
     last_sync_at: null,
     snapshot_updated: false,
     top_genres_count: 0,
     hydration_error: null,
+    enrichment_provider: null,
+    enrichment_state: null,
     error: null,
   }
 }
@@ -423,6 +447,63 @@ export async function syncProviderForUser(
     }
   }
 
+  // 8. Phase 4.5: enqueue external genre enrichment for artists
+  // whose Spotify-side genres came back empty. This runs AFTER the
+  // sync's own state is durable (last_sync_at + snapshot already
+  // written), so an enrichment failure can never roll the sync back.
+  //
+  // The actual fetches run in a bounded round below — best-effort,
+  // time-capped, never blocks completion.
+  try {
+    const seeds = result.artists
+      .filter((a) => !a.genres || a.genres.length === 0)
+      .map((a) => ({
+        user_id: userId,
+        source_id: sourceId,
+        external_artist_id: a.external_artist_id,
+        artist_name: a.name,
+      }))
+    if (seeds.length > 0) {
+      await enqueueArtistGenreEnrichments(seeds)
+    }
+
+    const stats: EnrichmentRoundStats = await runArtistGenreEnrichmentRound(
+      userId,
+      { maxJobs: 10, concurrency: 2, timeoutMs: 5000 },
+    )
+    outcome.counts.enrichment_jobs_queued = stats.queued
+    outcome.counts.enrichment_jobs_run = stats.run
+    outcome.counts.enrichment_jobs_succeeded = stats.succeeded
+    outcome.counts.enrichment_jobs_failed = stats.failed
+    outcome.counts.enrichment_genres_added = stats.canonical_genres_added
+    outcome.enrichment_provider =
+      stats.providers_used.length > 0 ? stats.providers_used.join(',') : null
+    outcome.enrichment_state = stats.rate_limited ? 'rate_limited' : null
+
+    // 9. If enrichment actually landed genres, recompute the snapshot
+    // again so the new canonical_genres get folded into top_genres
+    // and affinity_tags. This is the only reason we re-recompute —
+    // skip when nothing changed.
+    if (stats.succeeded > 0) {
+      try {
+        const snap = await recomputeListeningProfileSnapshot(userId)
+        outcome.top_genres_count = snap.top_genres_count
+      } catch (err) {
+        if (process.env.NODE_ENV !== 'production') {
+          console.warn('[sync] post-enrichment snapshot recompute failed', {
+            message: err instanceof Error ? err.message : String(err),
+          })
+        }
+      }
+    }
+  } catch (err) {
+    if (process.env.NODE_ENV !== 'production') {
+      console.warn('[sync] enrichment round failed', {
+        message: err instanceof Error ? err.message : String(err),
+      })
+    }
+  }
+
   return outcome
 }
 
@@ -463,12 +544,38 @@ export async function recomputeListeningProfileSnapshot(
   type FA = { external_artist_id: string; genres: string[] | null; rank: number | null }
   const aRows = (artists ?? []) as unknown as FA[]
 
+  // Phase 4.5: pull successfully-enriched canonical genres for the
+  // same user. Indexed by external_artist_id so we can union with the
+  // Spotify-side genres without re-querying per artist. We DO NOT
+  // replace Spotify genres — both sources contribute.
+  const { data: enrichmentRows } = await admin
+    .from('artist_genre_enrichments')
+    .select('external_artist_id, canonical_genres')
+    .eq('user_id', userId)
+    .eq('status', 'succeeded')
+  type AGE = { external_artist_id: string; canonical_genres: string[] | null }
+  const enrichmentByArtist = new Map<string, string[]>()
+  for (const row of (enrichmentRows ?? []) as unknown as AGE[]) {
+    enrichmentByArtist.set(
+      row.external_artist_id,
+      Array.isArray(row.canonical_genres) ? row.canonical_genres : [],
+    )
+  }
+
   // Weighted genre tally. Earlier ranks count more (Lanczos-ish
   // 1/log2(rank+2) curve). Unranked artists contribute a flat 0.3.
+  // Per artist, Spotify genres ∪ enrichment canonical_genres are
+  // counted together (union, not sum — one artist contributes one
+  // weight per distinct genre regardless of source).
   const genreScore = new Map<string, number>()
   for (const a of aRows) {
     const weight = a.rank ? 1 / Math.log2(a.rank + 2) : 0.3
-    for (const g of normalizeGenres(a.genres ?? [])) {
+    const combined = new Set<string>()
+    for (const g of normalizeGenres(a.genres ?? [])) combined.add(g)
+    for (const g of normalizeGenres(enrichmentByArtist.get(a.external_artist_id) ?? [])) {
+      combined.add(g)
+    }
+    for (const g of combined) {
       genreScore.set(g, (genreScore.get(g) ?? 0) + weight)
     }
   }

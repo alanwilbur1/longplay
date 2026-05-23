@@ -59,18 +59,33 @@ export async function getRecommendedRooms(limit = 3): Promise<RecommendedRoom[]>
     listenerGenres = (snapshot as { top_genres: string[] }).top_genres
   }
   if (listenerGenres.length === 0) {
-    const { data: favArtists } = await supabase
-      .from('favorite_artists')
-      .select('genres')
-      .eq('user_id', user.id)
-      .limit(50)
-    listenerGenres = Array.from(
-      new Set(
-        (favArtists ?? [])
-          .flatMap((row: { genres: string[] | null }) => row.genres ?? [])
-          .filter((g: string) => g.length > 0),
-      ),
-    )
+    // Phase 4.5: fall back to favorite_artists.genres ∪ external
+    // enrichment canonical_genres. Either alone is often empty
+    // (Spotify routinely returns []), but the union is reliably
+    // populated once a sync has run.
+    const [favArtists, enrichments] = await Promise.all([
+      supabase
+        .from('favorite_artists')
+        .select('genres')
+        .eq('user_id', user.id)
+        .limit(50),
+      supabase
+        .from('artist_genre_enrichments')
+        .select('canonical_genres')
+        .eq('user_id', user.id)
+        .eq('status', 'succeeded')
+        .limit(50),
+    ])
+    const merged = new Set<string>()
+    for (const row of (favArtists.data ?? []) as Array<{ genres: string[] | null }>) {
+      for (const g of row.genres ?? []) if (g) merged.add(g)
+    }
+    for (const row of (enrichments.data ?? []) as Array<{
+      canonical_genres: string[] | null
+    }>) {
+      for (const g of row.canonical_genres ?? []) if (g) merged.add(g)
+    }
+    listenerGenres = Array.from(merged)
   }
 
   // Snapshot affinity tags get merged into the calibration answers so

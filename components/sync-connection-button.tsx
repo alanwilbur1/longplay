@@ -114,6 +114,25 @@ export function SyncConnectionButton({
         </span>
       )}
 
+      {/* Phase 4.5 enrichment audit strip — only visible when the
+          round actually ran (queued > 0). Shows queued / run / ok /
+          failed counts, distinct canonical genres added this round,
+          provider name, and rate-limit state. */}
+      {!isPending && result && result.counts.enrichment_jobs_queued > 0 && (
+        <span
+          data-testid="enrichment-strip"
+          className="text-[10px] font-mono text-muted-foreground/60 mt-1 max-w-[340px] text-right leading-tight"
+        >
+          enrich:{result.counts.enrichment_jobs_succeeded}/
+          {result.counts.enrichment_jobs_run} ran of{' '}
+          {result.counts.enrichment_jobs_queued} queued • fail:
+          {result.counts.enrichment_jobs_failed} • +genres:
+          {result.counts.enrichment_genres_added}
+          {result.enrichment_provider ? ` • ${result.enrichment_provider}` : ''}
+          {result.enrichment_state === 'rate_limited' ? ' • rl' : ''}
+        </span>
+      )}
+
       {!isPending && result && !result.ok && result.error && (
         <span className="text-[10px] text-burgundy/80 mt-1 max-w-[300px] text-right leading-tight">
           {result.error.message}
