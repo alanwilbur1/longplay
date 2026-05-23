@@ -199,18 +199,47 @@ function EditorialRoomCard({ room, href }: { room: Room; href: string }) {
 }
 
 function GenreRoomCard({ room, href }: { room: Room; href: string }) {
+  // Phase 1 content-quality fix: this card was text-only, which made
+  // the 3 new genre rooms (hip-hop-hours, southern-listening,
+  // soul-quarters) visually indistinguishable from the existing 3 in
+  // the grid. Add a square cover image at the top using the
+  // room-level cover_art the seed now populates, falling back to the
+  // current cycle's album cover and finally to the room's aesthetic
+  // gradient so cards never collapse to "nothing rendered".
+  const coverSrc = room.coverArt ?? room.currentAlbum.cover ?? ''
+  const hasCover = coverSrc.length > 0
   return (
     <Link
       href={href}
-      className="group block p-4 border border-border/20 hover:border-border/40 transition-all duration-500"
+      className="group block border border-border/20 hover:border-border/40 transition-all duration-500 overflow-hidden"
     >
-      <h3 className="font-serif text-base text-cream mb-1 group-hover:text-cream/80 transition-colors">
-        {room.name}
-      </h3>
-      <p className="text-xs text-muted-foreground leading-relaxed mb-3">
-        {room.tagline || room.atmosphere}
-      </p>
-      <p className="text-[10px] text-tobacco">{room.memberCountLabel}</p>
+      <div
+        className={`relative aspect-square overflow-hidden bg-gradient-to-br ${room.aesthetics?.backgroundGradient ?? 'from-charcoal to-card'}`}
+      >
+        {hasCover && (
+          // Plain <img> (not next/image) so we don't need to allowlist
+          // placehold.co + every album CDN in next.config — the
+          // moodboard aesthetic doesn't require Next's optimization
+          // pipeline here.
+          // eslint-disable-next-line @next/next/no-img-element
+          <img
+            src={coverSrc}
+            alt={room.name}
+            className="absolute inset-0 w-full h-full object-cover transition-transform duration-700 group-hover:scale-105"
+            loading="lazy"
+          />
+        )}
+        <div className="absolute inset-0 bg-gradient-to-t from-background/85 via-background/20 to-transparent pointer-events-none" />
+      </div>
+      <div className="p-4">
+        <h3 className="font-serif text-base text-cream mb-1 group-hover:text-cream/80 transition-colors">
+          {room.name}
+        </h3>
+        <p className="text-xs text-muted-foreground leading-relaxed mb-3 line-clamp-2">
+          {room.tagline || room.atmosphere}
+        </p>
+        <p className="text-[10px] text-tobacco">{room.memberCountLabel}</p>
+      </div>
     </Link>
   )
 }
