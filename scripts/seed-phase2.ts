@@ -478,7 +478,13 @@ async function main() {
 
   const { error: roomErr } = await db
     .from('rooms')
-    .upsert(roomRows, { onConflict: 'id' })
+    // Explicit `ignoreDuplicates: false` so the contract is obvious
+    // in code: on slug/id conflict, EVERY column in the payload is
+    // updated (ON CONFLICT (id) DO UPDATE SET ...). This is the
+    // Supabase JS v2 default — we set it explicitly here because
+    // Phase 1 audits surfaced confusion about whether re-running the
+    // seed propagates taxonomy updates to existing rows. It does.
+    .upsert(roomRows, { onConflict: 'id', ignoreDuplicates: false })
   if (roomErr) throw new Error(`Rooms upsert: ${roomErr.message}`)
 
   for (const row of roomRows) {
