@@ -214,7 +214,7 @@ function GenreRoomCard({ room, href }: { room: Room; href: string }) {
       className="group block border border-border/20 hover:border-border/40 transition-all duration-500 overflow-hidden"
     >
       <div
-        className={`relative aspect-square overflow-hidden bg-gradient-to-br ${room.aesthetics?.backgroundGradient ?? 'from-charcoal to-card'}`}
+        className={`relative aspect-square overflow-hidden bg-gradient-to-br ${room.aesthetics?.backgroundGradient || 'from-charcoal to-card'}`}
       >
         {hasCover && (
           // Plain <img> (not next/image) so we don't need to allowlist
