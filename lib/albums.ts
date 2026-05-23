@@ -801,7 +801,13 @@ export const ALBUMS = {
     title: "To Pimp a Butterfly",
     artist: "Kendrick Lamar",
     year: "2015",
-    cover: "",
+    // Placeholder cover. Operator follow-up: replace with a verified
+    // Spotify CDN URL (i.scdn.co/image/...) or Apple Music URL. The
+    // placehold.co service returns a real 600×600 image so cover_art
+    // is non-null and recommendation cards render. Without this the
+    // seed's `cover.length > 0` gate would NULL the column —
+    // see audit on branch claude/recommendation-content-quality-phase-1.
+    cover: "https://placehold.co/600x600/2a1a0e/d4a574?text=To+Pimp+A+Butterfly",
     fallbackGradient: "from-amber-900 to-stone-900",
     description: "A wide-frame jazz-rap statement: identity, lineage, and Black American art recorded as one continuous record.",
     emotionalTags: ["confessional", "cinematic", "communal"],
@@ -816,7 +822,8 @@ export const ALBUMS = {
     title: "Southeastern",
     artist: "Jason Isbell",
     year: "2013",
-    cover: "",
+    // Placeholder cover — see toPimpAButterfly note.
+    cover: "https://placehold.co/600x600/2a2522/c4b59e?text=Southeastern",
     fallbackGradient: "from-stone-700 to-stone-900",
     description: "Sober, hard-won Americana songwriting — twelve songs that ask listeners to sit close.",
     emotionalTags: ["warm", "songwriter", "reflective"],
@@ -831,7 +838,8 @@ export const ALBUMS = {
     title: "A Seat at the Table",
     artist: "Solange",
     year: "2016",
-    cover: "",
+    // Placeholder cover — see toPimpAButterfly note.
+    cover: "https://placehold.co/600x600/3a1f1f/e8b4a8?text=A+Seat+At+The+Table",
     fallbackGradient: "from-amber-700 to-rose-900",
     description: "A self-possessed neo-soul album about interiority and inheritance — slow, deliberate, headphone music.",
     emotionalTags: ["warm", "intimate", "communal"],
