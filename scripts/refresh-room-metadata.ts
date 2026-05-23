@@ -29,6 +29,7 @@
  */
 
 import { createClient } from '@supabase/supabase-js'
+import WS from 'ws'
 import { ALL_ROOMS } from '../lib/rooms'
 
 // ── Inline the same RoomTaxonomyOverlay shape + ROOM_TAXONOMY map
@@ -206,7 +207,36 @@ async function main() {
     console.error('Missing SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY.')
     process.exit(1)
   }
-  const db = createClient(url, key, { auth: { persistSession: false } })
+  // Node 20 ships without a global WebSocket implementation. supabase-js
+  // v2 constructs its realtime sub-client at createClient() time and the
+  // realtime client errors out ("Node.js 20 detected without native
+  // WebSocket support") even when no .subscribe() is ever called. This
+  // script only ever does REST reads + updates, but we still need to
+  // satisfy that check. Two layers of defence:
+  //
+  //   1. Polyfill globalThis.WebSocket from the `ws` package — same
+  //      pattern as scripts/seed-phase2.ts.
+  //   2. Also pass `realtime.transport` explicitly so the realtime
+  //      sub-client picks ws when it instantiates, regardless of
+  //      whatever its internal feature-detection does.
+  //
+  // Either alone would likely be enough; doing both means the script
+  // works under Node 18/20/22 without further fiddling.
+  if (typeof globalThis.WebSocket === 'undefined') {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    ;(globalThis as any).WebSocket = WS
+  }
+
+  const db = createClient(url, key, {
+    auth: { persistSession: false },
+    realtime: {
+      // `ws`'s default export is the WebSocket constructor — shape-
+      // compatible with the browser WebSocket type that supabase-js
+      // expects. Cast is necessary because the types differ on
+      // peripheral fields we never use.
+      transport: WS as unknown as typeof WebSocket,
+    },
+  })
 
   console.log(`\n── refresh-room-metadata${dryRun ? ' (DRY RUN — no writes)' : ''} ──\n`)
 
