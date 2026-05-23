@@ -1,6 +1,7 @@
 import { NextResponse, type NextRequest } from 'next/server'
 import { getSupabaseAdminClient } from '@/lib/supabase/admin'
 import { getProvider, isSourceId, type SourceId } from '@/lib/streaming'
+import { syncProviderForUser } from '@/lib/streaming/sync'
 import { consumeOauthStateCookie } from '@/lib/actions/streaming'
 
 /**
@@ -131,6 +132,21 @@ export async function GET(
     return redirectBack(request, cookieState.returnTo, {
       connection_error: 'persist_failed',
     })
+  }
+
+  // Best-effort initial sync. Spotify's recently-played + top-* +
+  // saved-albums APIs each return up to 50 items, so total ingest fits
+  // well under any reasonable timeout. Errors here never block the
+  // redirect — the listener can hit "Sync now" from /profile.
+  try {
+    await syncProviderForUser(cookieState.userId, source as SourceId)
+  } catch (err) {
+    if (process.env.NODE_ENV !== 'production') {
+      console.warn('[oauth-callback] initial sync failed', {
+        source,
+        message: err instanceof Error ? err.message : String(err),
+      })
+    }
   }
 
   return redirectBack(request, cookieState.returnTo, {

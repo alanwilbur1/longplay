@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { useRouter, usePathname, useSearchParams } from 'next/navigation'
 import Link from 'next/link'
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar'
@@ -15,6 +15,7 @@ import {
   initiateConnection,
   listMyConnections,
 } from '@/lib/actions/streaming'
+import { SyncConnectionButton } from '@/components/sync-connection-button'
 
 /**
  * ProfileScreen
@@ -162,7 +163,28 @@ export function ProfileScreen() {
   // ── Listening connections (real DB-backed; no fake demo state) ────────────
   // Re-loads when the URL search params change so a successful OAuth
   // round-trip (which lands back here with ?connection=connected) shows
-  // the freshly-persisted row immediately.
+  // the freshly-persisted row immediately. Also re-called by the
+  // SyncButton after a sync completes so last_sync_at refreshes
+  // without a hard reload.
+  const refetchConnections = useCallback(async () => {
+    setConnectionsLoading(true)
+    setConnectionsError(null)
+    try {
+      const result = await listMyConnections()
+      setConnections(result.rows)
+      setConnectionsError(result.error)
+      setConnectionsQueriedAs(result.queriedAs)
+    } catch (err) {
+      setConnections([])
+      setConnectionsError({
+        code: 'EXCEPTION',
+        message: err instanceof Error ? err.message : String(err),
+      })
+    } finally {
+      setConnectionsLoading(false)
+    }
+  }, [])
+
   const connectionRefreshKey = searchParams?.toString() ?? ''
   useEffect(() => {
     if (!isAuthenticated) {
@@ -172,23 +194,8 @@ export function ProfileScreen() {
       setConnectionsLoading(false)
       return
     }
-    setConnectionsLoading(true)
-    setConnectionsError(null)
-    listMyConnections()
-      .then((result) => {
-        setConnections(result.rows)
-        setConnectionsError(result.error)
-        setConnectionsQueriedAs(result.queriedAs)
-      })
-      .catch((err) => {
-        setConnections([])
-        setConnectionsError({
-          code: 'EXCEPTION',
-          message: err instanceof Error ? err.message : String(err),
-        })
-      })
-      .finally(() => setConnectionsLoading(false))
-  }, [isAuthenticated, connectionRefreshKey])
+    void refetchConnections()
+  }, [isAuthenticated, connectionRefreshKey, refetchConnections])
 
   // ── Moment counts from DB ─────────────────────────────────────────────────
   useEffect(() => {
@@ -459,16 +466,32 @@ export function ProfileScreen() {
                     </div>
                   </div>
 
-                  {connectionsLoading ? (
+                  {/* Loading placeholder is only shown on the INITIAL
+                      load (no rows yet). A refetch triggered by the
+                      SyncButton's onSynced callback would otherwise
+                      unmount the button mid-flight and drop its
+                      `result` state — including the hydration audit
+                      strip. */}
+                  {connectionsLoading && connections.length === 0 ? (
                     <span className="text-xs text-muted-foreground/50">…</span>
                   ) : isConnected ? (
                     <div className="flex items-center gap-3">
-                      {/* No "Synced X ago" copy — until the Phase 4.x sync
-                          worker exists, last_sync_at is never meaningfully
-                          populated. Render an honest fixed state. */}
                       <span className="text-xs text-olive uppercase tracking-wider">
-                        Connected
+                        {conn.last_sync_at
+                          ? `Synced ${new Date(conn.last_sync_at).toLocaleString('en-US', {
+                              month: 'short',
+                              day: 'numeric',
+                              hour: 'numeric',
+                              minute: '2-digit',
+                            })}`
+                          : 'Connected — not yet synced'}
                       </span>
+                      <SyncConnectionButton
+                        sourceId={provider.sourceId}
+                        onSynced={() => {
+                          void refetchConnections()
+                        }}
+                      />
                       <form action={disconnectConnection}>
                         <input type="hidden" name="source" value={provider.sourceId} />
                         <button

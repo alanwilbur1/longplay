@@ -8,6 +8,8 @@
  * Reads:
  *   - user_profiles.preferences.calibrationAnswers (set during onboarding)
  *   - favorite_artists.genres (when populated by streaming sync)
+ *   - listening_profile_snapshots.top_genres + affinity_tags
+ *     (richer than raw favorite_artists; populated by Phase 4.3 sync)
  *   - club_memberships (to exclude already-joined rooms)
  *   - rooms (Phase 4.2 taxonomy columns)
  *
@@ -42,19 +44,58 @@ export async function getRecommendedRooms(limit = 3): Promise<RecommendedRoom[]>
   }
   const calibrationAnswers = preferences.calibrationAnswers ?? {}
 
-  // 2. Genres from the listener's favorite artists.
-  const { data: favArtists } = await supabase
-    .from('favorite_artists')
-    .select('genres')
+  // 2. Genres from the listener's favorite artists + snapshot.
+  //    The snapshot's top_genres are pre-ranked and deduped; if it
+  //    exists, prefer it. Fall back to flattened favorite_artists.genres
+  //    when the snapshot hasn't been computed yet.
+  const { data: snapshot } = await supabase
+    .from('listening_profile_snapshots')
+    .select('top_genres, affinity_tags')
     .eq('user_id', user.id)
-    .limit(50)
-  const listenerGenres = Array.from(
-    new Set(
-      (favArtists ?? [])
-        .flatMap((row: { genres: string[] | null }) => row.genres ?? [])
-        .filter((g: string) => g.length > 0),
-    ),
-  )
+    .maybeSingle()
+
+  let listenerGenres: string[] = []
+  if (snapshot && Array.isArray((snapshot as { top_genres?: string[] }).top_genres)) {
+    listenerGenres = (snapshot as { top_genres: string[] }).top_genres
+  }
+  if (listenerGenres.length === 0) {
+    // Phase 4.5: fall back to favorite_artists.genres ∪ external
+    // enrichment canonical_genres. Either alone is often empty
+    // (Spotify routinely returns []), but the union is reliably
+    // populated once a sync has run.
+    const [favArtists, enrichments] = await Promise.all([
+      supabase
+        .from('favorite_artists')
+        .select('genres')
+        .eq('user_id', user.id)
+        .limit(50),
+      supabase
+        .from('artist_genre_enrichments')
+        .select('canonical_genres')
+        .eq('user_id', user.id)
+        .eq('status', 'succeeded')
+        .limit(50),
+    ])
+    const merged = new Set<string>()
+    for (const row of (favArtists.data ?? []) as Array<{ genres: string[] | null }>) {
+      for (const g of row.genres ?? []) if (g) merged.add(g)
+    }
+    for (const row of (enrichments.data ?? []) as Array<{
+      canonical_genres: string[] | null
+    }>) {
+      for (const g of row.canonical_genres ?? []) if (g) merged.add(g)
+    }
+    listenerGenres = Array.from(merged)
+  }
+
+  // Snapshot affinity tags get merged into the calibration answers so
+  // the scorer treats them as additional scenario tags. Keyed under a
+  // synthetic 'snapshot' step so they coexist with real calibration.
+  const enrichedAnswers: Record<string, string[]> = { ...calibrationAnswers }
+  const affinity = (snapshot as { affinity_tags?: string[] } | null)?.affinity_tags
+  if (affinity && affinity.length > 0) {
+    enrichedAnswers['snapshot'] = affinity
+  }
 
   // 3. Slugs the listener has already joined.
   const { data: memberships } = await supabase
@@ -111,7 +152,12 @@ export async function getRecommendedRooms(limit = 3): Promise<RecommendedRoom[]>
 
   // 5. Rank + explain.
   const ranked = rankRooms(
-    { calibrationAnswers, listenerGenres, joinedRoomSlugs, candidates },
+    {
+      calibrationAnswers: enrichedAnswers,
+      listenerGenres,
+      joinedRoomSlugs,
+      candidates,
+    },
     limit,
   )
 
