@@ -199,34 +199,45 @@ function EditorialRoomCard({ room, href }: { room: Room; href: string }) {
 }
 
 function GenreRoomCard({ room, href }: { room: Room; href: string }) {
-  // Phase 1 content-quality fix: this card was text-only, which made
-  // the 3 new genre rooms (hip-hop-hours, southern-listening,
-  // soul-quarters) visually indistinguishable from the existing 3 in
-  // the grid. Add a square cover image at the top using the
-  // room-level cover_art the seed now populates, falling back to the
-  // current cycle's album cover and finally to the room's aesthetic
-  // gradient so cards never collapse to "nothing rendered".
+  // Phase 1 content-quality + cover-fallback fix:
+  //
+  // We need cover imagery on the genre cards (otherwise the 3 new
+  // rooms — hip-hop-hours, southern-listening, soul-quarters — were
+  // visually identical to the existing 3). BUT the cover URLs we
+  // have today are a mix: placehold.co placeholders, real Spotify
+  // CDN hashes, hand-typed Apple Music URLs. Any of those can 404 /
+  // be CORS-blocked / be network-blocked, and a raw <img> with no
+  // onError renders the browser's broken-image icon + alt text —
+  // which is what was showing up across the grid in the prior pass.
+  //
+  // Use CSS background-image on a layered overlay div instead:
+  //   - if the URL loads: cover renders via background-image
+  //   - if it 404s / fails: the browser silently skips it. No
+  //     broken-image icon. No alt text leak. The parent's
+  //     `bg-gradient-to-br ${gradient}` shows through naturally.
+  //   - no JS state, no flicker, no race with React hydration
+  //
+  // The seeded URL set (placehold.co / i.scdn.co / mzstatic.com)
+  // contains no quotes/backslashes, so plain url("…") interpolation
+  // is safe today. If we ever start sourcing covers from user input
+  // we'd need to escape ' " \ in coverSrc — gated by a TODO.
   const coverSrc = room.coverArt ?? room.currentAlbum.cover ?? ''
   const hasCover = coverSrc.length > 0
+  const gradient = room.aesthetics?.backgroundGradient || 'from-charcoal to-card'
   return (
     <Link
       href={href}
       className="group block border border-border/20 hover:border-border/40 transition-all duration-500 overflow-hidden"
     >
       <div
-        className={`relative aspect-square overflow-hidden bg-gradient-to-br ${room.aesthetics?.backgroundGradient || 'from-charcoal to-card'}`}
+        className={`relative aspect-square overflow-hidden bg-gradient-to-br ${gradient}`}
       >
         {hasCover && (
-          // Plain <img> (not next/image) so we don't need to allowlist
-          // placehold.co + every album CDN in next.config — the
-          // moodboard aesthetic doesn't require Next's optimization
-          // pipeline here.
-          // eslint-disable-next-line @next/next/no-img-element
-          <img
-            src={coverSrc}
-            alt={room.name}
-            className="absolute inset-0 w-full h-full object-cover transition-transform duration-700 group-hover:scale-105"
-            loading="lazy"
+          <div
+            className="absolute inset-0 bg-cover bg-center transition-transform duration-700 group-hover:scale-105"
+            style={{ backgroundImage: `url("${coverSrc}")` }}
+            role="presentation"
+            aria-hidden="true"
           />
         )}
         <div className="absolute inset-0 bg-gradient-to-t from-background/85 via-background/20 to-transparent pointer-events-none" />
