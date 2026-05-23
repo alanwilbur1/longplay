@@ -200,6 +200,12 @@ function assembleRoom(
     aesthetics,
     currentSeason: (row.current_season as Room['currentSeason']) ?? undefined,
     cycleId: (currentCycle?.id as string) ?? null,
+    // Phase 1: surface rooms.cover_art so cards can render the
+    // anchor-album cover at room level (separate from the cycle's
+    // currentAlbum.cover, even if they happen to match today).
+    // Null when the seed couldn't populate it (e.g. an album with
+    // an empty cover URL — see audit on commit ad4f89c).
+    coverArt: (row.cover_art as string | null) ?? null,
   }
 }
 

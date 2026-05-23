@@ -184,6 +184,13 @@ export interface Room {
   // Null for static/fallback rooms that have no live cycle row.
   cycleId?: string | null
 
+  // Room-level cover art (Phase 1 content quality). Sourced from
+  // rooms.cover_art (which the seed populates from the anchor album
+  // cover). Falls back to currentAlbum.cover at render time when
+  // absent — keeps existing static rooms in lib/rooms.ts working
+  // without each having to declare a cover.
+  coverArt?: string | null
+
   // Current season (computed from date, but can be overridden)
   currentSeason?: Season
 }
