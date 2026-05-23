@@ -792,6 +792,51 @@ export const ALBUMS = {
     emotionalTags: ["joy", "colorful", "celebratory"],
     spotifyId: "0ajoNtBO6xHfWEkORtRCAv",
   },
+
+  // ============================================
+  // KENDRICK LAMAR — anchor album for hip-hop-hours
+  // ============================================
+  toPimpAButterfly: {
+    id: 'to-pimp-a-butterfly',
+    title: "To Pimp a Butterfly",
+    artist: "Kendrick Lamar",
+    year: "2015",
+    cover: "",
+    fallbackGradient: "from-amber-900 to-stone-900",
+    description: "A wide-frame jazz-rap statement: identity, lineage, and Black American art recorded as one continuous record.",
+    emotionalTags: ["confessional", "cinematic", "communal"],
+    roomAssociations: ["hip-hop-hours"],
+  },
+
+  // ============================================
+  // JASON ISBELL — anchor album for southern-listening
+  // ============================================
+  southeastern: {
+    id: 'southeastern',
+    title: "Southeastern",
+    artist: "Jason Isbell",
+    year: "2013",
+    cover: "",
+    fallbackGradient: "from-stone-700 to-stone-900",
+    description: "Sober, hard-won Americana songwriting — twelve songs that ask listeners to sit close.",
+    emotionalTags: ["warm", "songwriter", "reflective"],
+    roomAssociations: ["southern-listening"],
+  },
+
+  // ============================================
+  // SOLANGE — anchor album for soul-quarters
+  // ============================================
+  aSeatAtTheTable: {
+    id: 'a-seat-at-the-table',
+    title: "A Seat at the Table",
+    artist: "Solange",
+    year: "2016",
+    cover: "",
+    fallbackGradient: "from-amber-700 to-rose-900",
+    description: "A self-possessed neo-soul album about interiority and inheritance — slow, deliberate, headphone music.",
+    emotionalTags: ["warm", "intimate", "communal"],
+    roomAssociations: ["soul-quarters"],
+  },
 } as const
 
 export type AlbumKey = keyof typeof ALBUMS
