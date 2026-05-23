@@ -213,21 +213,21 @@ export async function runRecommendationPipeline(
     .map((r) => r.current_cycle_id)
     .filter((id): id is string => typeof id === 'string' && id.length > 0)
 
-  interface CycleAlbum {
-    id: string
-    album?:
-      | { artist?: string | null; emotional_tags?: string[]; sonic_tags?: string[] }
-      | { artist?: string | null; emotional_tags?: string[]; sonic_tags?: string[] }[]
-      | null
-  }
   const cycleAlbumMap = new Map<
     string,
     { artist: string | null; emotional_tags: string[]; sonic_tags: string[] }
   >()
   if (cycleIds.length > 0) {
+    // Two-step join. We use the unhinted nested-select form
+    // (`albums(...)` without a `!fk_name` directive) because `cycles`
+    // has exactly one FK to `albums` (cycles.album_id), so PostgREST
+    // unambiguously resolves it without needing the constraint name.
+    // The hinted form is brittle: if the Postgres constraint name
+    // ever changed (e.g. a migration rename), the join would silently
+    // return nulls and artist-match would never fire.
     const { data: cycleRows } = await supabase
       .from('cycles')
-      .select('id, albums!cycles_album_id_fkey(artist, emotional_tags, sonic_tags)')
+      .select('id, album_id, albums(artist, emotional_tags, sonic_tags)')
       .in('id', cycleIds)
     const cycles = (cycleRows ?? []) as unknown as Array<{
       id: string
