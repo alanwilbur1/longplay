@@ -1,8 +1,57 @@
 'use client'
 
 import Link from 'next/link'
-import { AlbumCover } from '@/components/album-cover'
 import { type Room } from '@/lib/rooms'
+
+/**
+ * CoverTile — bulletproof external-cover renderer used everywhere on
+ * /rooms. CSS background-image on a layered overlay div. When the
+ * URL fails (404 / CORS / network / dead Spotify hash) the browser
+ * silently skips the background and the parent's `bg-gradient-to-br
+ * ${gradient}` shows through. No broken-image icon possible, no alt
+ * text leak possible, no React state, no flicker, no race with
+ * hydration.
+ *
+ * Seeded URLs (placehold.co / i.scdn.co / mzstatic.com) contain no
+ * quotes or backslashes so plain url("…") interpolation is safe.
+ * If user-input covers ever land here, escape ' " \ in coverSrc.
+ */
+function CoverTile({
+  coverSrc,
+  fallbackGradient,
+  className,
+  innerClassName,
+  children,
+}: {
+  coverSrc: string | null | undefined
+  fallbackGradient: string
+  className?: string
+  /** Extra classes applied to the cover overlay div — useful for
+   *  hover transforms that should only animate the image, not the
+   *  parent backdrop. */
+  innerClassName?: string
+  /** Anything that should overlay the cover (gradient veils, labels,
+   *  "Now playing" pills, etc). Sits above the cover, below the
+   *  parent's border. */
+  children?: React.ReactNode
+}) {
+  const hasCover = !!coverSrc && coverSrc.length > 0
+  return (
+    <div
+      className={`relative overflow-hidden bg-gradient-to-br ${fallbackGradient || 'from-charcoal to-card'} ${className ?? ''}`}
+    >
+      {hasCover && (
+        <div
+          className={`absolute inset-0 bg-cover bg-center ${innerClassName ?? ''}`}
+          style={{ backgroundImage: `url("${coverSrc}")` }}
+          role="presentation"
+          aria-hidden="true"
+        />
+      )}
+      {children}
+    </div>
+  )
+}
 
 interface RoomsScreenProps {
   editorialRooms: Room[]
@@ -61,21 +110,21 @@ export function RoomsScreen({
                 href={`/room/${room.slug}`}
                 className="group shrink-0 w-32 md:w-40"
               >
-                <div className="relative aspect-square mb-3 overflow-hidden bg-muted rounded">
-                  <AlbumCover
-                    src={room.currentAlbum.cover}
-                    alt={room.name}
-                    title={room.currentAlbum.title}
-                    artist={room.currentAlbum.artist}
-                    fallbackGradient={room.currentAlbum.fallbackGradient}
-                    fill
-                    className="transition-transform duration-700 group-hover:scale-105"
-                  />
-                  <div className="absolute inset-0 bg-gradient-to-t from-background/80 to-transparent" />
+                <CoverTile
+                  coverSrc={room.coverArt ?? room.currentAlbum.cover}
+                  fallbackGradient={
+                    room.currentAlbum.fallbackGradient ||
+                    room.aesthetics?.backgroundGradient ||
+                    'from-charcoal to-card'
+                  }
+                  className="aspect-square mb-3 rounded"
+                  innerClassName="transition-transform duration-700 group-hover:scale-105"
+                >
+                  <div className="absolute inset-0 bg-gradient-to-t from-background/80 to-transparent pointer-events-none" />
                   <div className="absolute bottom-2 left-2 right-2">
                     <p className="text-[10px] text-cream/80 truncate">Now playing</p>
                   </div>
-                </div>
+                </CoverTile>
                 <h3 className="font-serif text-sm text-cream group-hover:text-cream/80 transition-colors truncate">
                   {room.name}
                 </h3>
@@ -158,25 +207,27 @@ function EditorialRoomCard({ room, href }: { room: Room; href: string }) {
       href={href}
       className="group block bg-card/30 border border-border/20 p-6 transition-all duration-500 hover:border-border/40"
     >
-      {/* Album samples */}
+      {/* Album samples — CSS-backed tiles. Same resilience as
+          GenreRoomCard: dead album-cover URLs degrade to the
+          per-album fallbackGradient with no broken-icon or
+          alt-text leak. Each tile sits in a positioned wrapper so
+          the slight horizontal stack (translateX) and z-index
+          layering match the previous AlbumCover-based layout. */}
       <div className="flex gap-2 mb-6">
         {room.albumSample.map((album, i) => (
-          <div 
-            key={album.id} 
-            className="relative w-20 h-20 overflow-hidden bg-muted shrink-0"
-            style={{ 
+          <div
+            key={album.id}
+            className="relative shrink-0"
+            style={{
               transform: `translateX(-${i * 8}px)`,
-              zIndex: room.albumSample.length - i
+              zIndex: room.albumSample.length - i,
             }}
           >
-            <AlbumCover
-              src={album.cover}
-              alt={album.title}
-              title={album.title}
-              artist={album.artist}
+            <CoverTile
+              coverSrc={album.cover}
               fallbackGradient={album.fallbackGradient}
-              fill
-              className="transition-transform duration-700 group-hover:scale-105"
+              className="w-20 h-20"
+              innerClassName="transition-transform duration-700 group-hover:scale-105"
             />
           </div>
         ))}
@@ -199,49 +250,24 @@ function EditorialRoomCard({ room, href }: { room: Room; href: string }) {
 }
 
 function GenreRoomCard({ room, href }: { room: Room; href: string }) {
-  // Phase 1 content-quality + cover-fallback fix:
-  //
-  // We need cover imagery on the genre cards (otherwise the 3 new
-  // rooms — hip-hop-hours, southern-listening, soul-quarters — were
-  // visually identical to the existing 3). BUT the cover URLs we
-  // have today are a mix: placehold.co placeholders, real Spotify
-  // CDN hashes, hand-typed Apple Music URLs. Any of those can 404 /
-  // be CORS-blocked / be network-blocked, and a raw <img> with no
-  // onError renders the browser's broken-image icon + alt text —
-  // which is what was showing up across the grid in the prior pass.
-  //
-  // Use CSS background-image on a layered overlay div instead:
-  //   - if the URL loads: cover renders via background-image
-  //   - if it 404s / fails: the browser silently skips it. No
-  //     broken-image icon. No alt text leak. The parent's
-  //     `bg-gradient-to-br ${gradient}` shows through naturally.
-  //   - no JS state, no flicker, no race with React hydration
-  //
-  // The seeded URL set (placehold.co / i.scdn.co / mzstatic.com)
-  // contains no quotes/backslashes, so plain url("…") interpolation
-  // is safe today. If we ever start sourcing covers from user input
-  // we'd need to escape ' " \ in coverSrc — gated by a TODO.
-  const coverSrc = room.coverArt ?? room.currentAlbum.cover ?? ''
-  const hasCover = coverSrc.length > 0
-  const gradient = room.aesthetics?.backgroundGradient || 'from-charcoal to-card'
+  // Phase 1 content-quality: cover imagery via shared CoverTile.
+  // CoverTile uses CSS background-image internally, so dead cover
+  // URLs (placehold.co / real-but-404 Spotify hashes / network-
+  // blocked CDNs) degrade silently to the aesthetic gradient. No
+  // broken-image icon, no alt-text leak.
   return (
     <Link
       href={href}
       className="group block border border-border/20 hover:border-border/40 transition-all duration-500 overflow-hidden"
     >
-      <div
-        className={`relative aspect-square overflow-hidden bg-gradient-to-br ${gradient}`}
+      <CoverTile
+        coverSrc={room.coverArt ?? room.currentAlbum.cover}
+        fallbackGradient={room.aesthetics?.backgroundGradient || 'from-charcoal to-card'}
+        className="aspect-square"
+        innerClassName="transition-transform duration-700 group-hover:scale-105"
       >
-        {hasCover && (
-          <div
-            className="absolute inset-0 bg-cover bg-center transition-transform duration-700 group-hover:scale-105"
-            style={{ backgroundImage: `url("${coverSrc}")` }}
-            role="presentation"
-            aria-hidden="true"
-          />
-        )}
         <div className="absolute inset-0 bg-gradient-to-t from-background/85 via-background/20 to-transparent pointer-events-none" />
-      </div>
+      </CoverTile>
       <div className="p-4">
         <h3 className="font-serif text-base text-cream mb-1 group-hover:text-cream/80 transition-colors">
           {room.name}
