@@ -1,46 +1,119 @@
 'use client'
 
+import { useEffect, useState } from 'react'
 import Link from 'next/link'
 import { type Room } from '@/lib/rooms'
 
+type CoverStatus = 'pending' | 'loaded' | 'failed' | 'absent'
+
 /**
- * CoverTile — bulletproof external-cover renderer used everywhere on
- * /rooms. CSS background-image on a layered overlay div. When the
- * URL fails (404 / CORS / network / dead Spotify hash) the browser
- * silently skips the background and the parent's `bg-gradient-to-br
- * ${gradient}` shows through. No broken-image icon possible, no alt
- * text leak possible, no React state, no flicker, no race with
- * hydration.
+ * Use a fire-and-forget `new Image()` ping to detect whether a cover
+ * URL actually resolves. CSS background-image alone silently fails
+ * on 404 — which fixed the broken-icon problem but meant we couldn't
+ * distinguish "URL was missing" from "URL was dead". The ping fires
+ * the browser's normal image fetch, then onload/onerror tell us
+ * which bucket the URL fell into so we can render an INTENTIONAL
+ * fallback (vinyl + title + artist) instead of silently degrading
+ * to a flat gradient block.
  *
- * Seeded URLs (placehold.co / i.scdn.co / mzstatic.com) contain no
- * quotes or backslashes so plain url("…") interpolation is safe.
- * If user-input covers ever land here, escape ' " \ in coverSrc.
+ * Strict-mode safe via the cancelled flag.
+ */
+function useCoverStatus(coverSrc: string | null | undefined): CoverStatus {
+  const [status, setStatus] = useState<CoverStatus>(coverSrc ? 'pending' : 'absent')
+  useEffect(() => {
+    if (!coverSrc) {
+      setStatus('absent')
+      return
+    }
+    setStatus('pending')
+    let cancelled = false
+    const img = new window.Image()
+    img.onload = () => {
+      if (!cancelled) setStatus('loaded')
+    }
+    img.onerror = () => {
+      if (!cancelled) setStatus('failed')
+    }
+    img.src = coverSrc
+    return () => {
+      cancelled = true
+      img.onload = null
+      img.onerror = null
+    }
+  }, [coverSrc])
+  return status
+}
+
+/** Domain-only host extraction for the debug strip. Returns "—" on
+ *  unparseable URLs without throwing. */
+function safeHost(src: string | null | undefined): string {
+  if (!src) return '—'
+  try {
+    return new URL(src).host
+  } catch {
+    return '—'
+  }
+}
+
+/**
+ * CoverTile — every external cover URL on /rooms flows through this.
+ *
+ * Render path:
+ *   - status='loaded' → CSS background-image. No <img> in the DOM,
+ *     so broken-icon and alt-text leaks are structurally impossible.
+ *   - status='failed' OR 'absent' → IntentionalCoverFallback
+ *     (vinyl glyph + title + optional subtitle) on top of the
+ *     aesthetic gradient. Not pretending to be a cover.
+ *   - status='pending' → just the aesthetic gradient while the
+ *     ping resolves. Brief.
+ *
+ * Phase-1.1 debug strip: when `debugSlug` is provided, renders a
+ * one-line mono diagnostic at the bottom of the tile showing slug,
+ * status, host, and url prefix. Temporary; remove once cover URL
+ * triage in lib/albums.ts is complete.
  */
 function CoverTile({
   coverSrc,
   fallbackGradient,
+  fallbackLabel,
   className,
   innerClassName,
   children,
+  debugSlug,
 }: {
   coverSrc: string | null | undefined
   fallbackGradient: string
+  /** Shown when the cover URL is absent OR fails to load. Either a
+   *  plain string (acts as title) or { title, subtitle?, compact? }.
+   *  `compact` = true drops the vinyl glyph + subtitle, keeps just
+   *  the title — used for the 80×80 album-sample tiles. */
+  fallbackLabel?:
+    | string
+    | { title: string; subtitle?: string; compact?: boolean }
   className?: string
-  /** Extra classes applied to the cover overlay div — useful for
-   *  hover transforms that should only animate the image, not the
-   *  parent backdrop. */
   innerClassName?: string
-  /** Anything that should overlay the cover (gradient veils, labels,
-   *  "Now playing" pills, etc). Sits above the cover, below the
-   *  parent's border. */
   children?: React.ReactNode
+  /** Pass the room/album slug to render the temporary debug strip. */
+  debugSlug?: string
 }) {
-  const hasCover = !!coverSrc && coverSrc.length > 0
+  const status = useCoverStatus(coverSrc)
+  // Optimistic render: show the cover during 'pending' AND 'loaded'.
+  // The ping confirms failure asynchronously; if it does, we swap to
+  // the fallback. This keeps successful covers from flashing gradient
+  // during the initial hydration tick.
+  const showCover = !!coverSrc && (status === 'pending' || status === 'loaded')
+  const showFallbackLabel = status === 'failed' || status === 'absent'
+
+  const label =
+    typeof fallbackLabel === 'string'
+      ? { title: fallbackLabel, subtitle: undefined, compact: false }
+      : fallbackLabel ?? null
+
   return (
     <div
       className={`relative overflow-hidden bg-gradient-to-br ${fallbackGradient || 'from-charcoal to-card'} ${className ?? ''}`}
     >
-      {hasCover && (
+      {showCover && (
         <div
           className={`absolute inset-0 bg-cover bg-center ${innerClassName ?? ''}`}
           style={{ backgroundImage: `url("${coverSrc}")` }}
@@ -48,7 +121,43 @@ function CoverTile({
           aria-hidden="true"
         />
       )}
+
+      {showFallbackLabel && label && (
+        <div className="absolute inset-0 flex flex-col items-center justify-center p-3 text-center pointer-events-none">
+          {!label.compact && (
+            <svg
+              viewBox="0 0 48 48"
+              fill="none"
+              className="w-10 h-10 mb-3 text-cream/40"
+              aria-hidden="true"
+            >
+              <circle cx="24" cy="24" r="22" stroke="currentColor" strokeWidth="1.5" />
+              <circle cx="24" cy="24" r="14" stroke="currentColor" strokeWidth="1" opacity="0.6" />
+              <circle cx="24" cy="24" r="6" stroke="currentColor" strokeWidth="1" opacity="0.4" />
+              <circle cx="24" cy="24" r="2.5" fill="currentColor" opacity="0.8" />
+            </svg>
+          )}
+          <p
+            className={`font-serif ${label.compact ? 'text-[10px]' : 'text-sm'} text-cream/90 leading-tight line-clamp-2 ${label.compact ? '' : 'mb-1'}`}
+          >
+            {label.title}
+          </p>
+          {!label.compact && label.subtitle && (
+            <p className="text-xs text-cream/60 line-clamp-1">{label.subtitle}</p>
+          )}
+        </div>
+      )}
+
       {children}
+
+      {debugSlug && (
+        <div className="absolute left-1 bottom-1 right-1 z-10 pointer-events-none">
+          <p className="text-[9px] font-mono text-cream/70 bg-background/70 px-1.5 py-0.5 rounded truncate">
+            {debugSlug} · cov={coverSrc ? 'yes' : 'no'} · st={status} · h=
+            {safeHost(coverSrc)} · {coverSrc ? coverSrc.slice(0, 40) + (coverSrc.length > 40 ? '…' : '') : '∅'}
+          </p>
+        </div>
+      )}
     </div>
   )
 }
@@ -117,8 +226,13 @@ export function RoomsScreen({
                     room.aesthetics?.backgroundGradient ||
                     'from-charcoal to-card'
                   }
+                  fallbackLabel={{
+                    title: room.currentAlbum.title,
+                    subtitle: room.currentAlbum.artist,
+                  }}
                   className="aspect-square mb-3 rounded"
                   innerClassName="transition-transform duration-700 group-hover:scale-105"
+                  debugSlug={room.slug}
                 >
                   <div className="absolute inset-0 bg-gradient-to-t from-background/80 to-transparent pointer-events-none" />
                   <div className="absolute bottom-2 left-2 right-2">
@@ -226,8 +340,10 @@ function EditorialRoomCard({ room, href }: { room: Room; href: string }) {
             <CoverTile
               coverSrc={album.cover}
               fallbackGradient={album.fallbackGradient}
+              fallbackLabel={{ title: album.title, compact: true }}
               className="w-20 h-20"
               innerClassName="transition-transform duration-700 group-hover:scale-105"
+              debugSlug={`${room.slug}/${album.id}`}
             />
           </div>
         ))}
@@ -263,8 +379,13 @@ function GenreRoomCard({ room, href }: { room: Room; href: string }) {
       <CoverTile
         coverSrc={room.coverArt ?? room.currentAlbum.cover}
         fallbackGradient={room.aesthetics?.backgroundGradient || 'from-charcoal to-card'}
+        fallbackLabel={{
+          title: room.name,
+          subtitle: room.currentAlbum.artist,
+        }}
         className="aspect-square"
         innerClassName="transition-transform duration-700 group-hover:scale-105"
+        debugSlug={room.slug}
       >
         <div className="absolute inset-0 bg-gradient-to-t from-background/85 via-background/20 to-transparent pointer-events-none" />
       </CoverTile>
