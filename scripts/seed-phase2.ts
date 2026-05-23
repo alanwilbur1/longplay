@@ -50,12 +50,36 @@ interface RoomTaxonomyOverlay {
   recommendation_weight?: number
 }
 
+// Phase 1 content-quality pass — see audit (committed in feature
+// branch claude/recommendation-content-quality-phase-1):
+//
+//   1. Hyphen drift: room.genres now use Spotify-shaped strings with
+//      SPACES, not hyphens, so canonical-genre-match against
+//      snapshot.top_genres actually fires (e.g. 'modern classical'
+//      not 'modern-classical', 'free jazz' not 'free-jazz').
+//   2. Mood-shaped values move OUT of genres[] INTO moods[]:
+//        late-night, confessional, songwriter, analog, score,
+//        cinematic.
+//   3. Compound Spotify genres added where they fit (indie folk,
+//      indie rock, indie pop, chamber folk, spiritual jazz, art pop,
+//      ambient electronic, neo soul, jazz rap).
+//   4. Affinity-tag landing surface expanded: ambient / indie /
+//      electronic / jazz / singer-songwriter / album-listener are
+//      now present in room.moods where they fit naturally — never
+//      forced onto an incoherent room.
+//
+// recommendation_weight values and featured flags preserved verbatim
+// from the prior taxonomy.
 const ROOM_TAXONOMY: Record<string, RoomTaxonomyOverlay> = {
   'nocturnal-room': {
     description:
       'Late-night indie, electronic, and memory-heavy albums for people who listen after the house goes quiet.',
-    genres: ['indie', 'electronic', 'ambient', 'late-night'],
-    moods: ['late-night', 'nocturnal', 'intimate', 'reflective'],
+    // 'late-night' was a mood masquerading as a genre — moved to
+    // moods only. 'indie rock' / 'indie folk' compounds added so
+    // listeners whose top_genres contain them match at canonical
+    // strength (12/match) instead of 0.
+    genres: ['indie', 'indie rock', 'indie folk', 'electronic', 'ambient'],
+    moods: ['late-night', 'nocturnal', 'intimate', 'reflective', 'album-listener'],
     energy_level: 'low',
     cadence: 'weekly',
     featured: true,
@@ -64,8 +88,11 @@ const ROOM_TAXONOMY: Record<string, RoomTaxonomyOverlay> = {
   'analog-futures': {
     description:
       'Electronic, ambient, and post-rock records built from real instruments and synthesisers — patient, textured, and physically made.',
-    genres: ['electronic', 'ambient', 'post-rock', 'experimental'],
-    moods: ['textural', 'patient', 'experimental', 'cinematic'],
+    // 'ambient electronic' compound added. 'electronic' as a mood
+    // gives the affinity-tag-match factor (room.moods ∩ affinity_tags)
+    // somewhere to land for electronic-affinity listeners.
+    genres: ['electronic', 'ambient electronic', 'ambient', 'post-rock', 'experimental'],
+    moods: ['textural', 'patient', 'experimental', 'cinematic', 'electronic'],
     energy_level: 'medium',
     cadence: 'weekly',
     featured: true,
@@ -74,8 +101,10 @@ const ROOM_TAXONOMY: Record<string, RoomTaxonomyOverlay> = {
   'cathedral-hour': {
     description:
       'Long-form, spiritually expansive listening — ambient, modern classical, and orchestral records that ask for attention.',
-    genres: ['ambient', 'modern-classical', 'orchestral', 'spiritual'],
-    moods: ['expansive', 'spiritual', 'meditative', 'patient'],
+    // De-hyphenated 'modern classical' (matches Spotify's spelling).
+    // 'ambient' added as a mood for affinity-tag landing.
+    genres: ['ambient', 'modern classical', 'orchestral', 'spiritual'],
+    moods: ['expansive', 'spiritual', 'meditative', 'patient', 'ambient', 'album-listener'],
     energy_level: 'low',
     cadence: 'weekly',
     featured: false,
@@ -84,8 +113,12 @@ const ROOM_TAXONOMY: Record<string, RoomTaxonomyOverlay> = {
   'beautiful-damage': {
     description:
       'Confessional songwriters, intimate indie, and records that sit with sadness honestly without performing it.',
-    genres: ['indie', 'songwriter', 'folk', 'confessional'],
-    moods: ['intimate', 'confessional', 'reflective', 'catharsis'],
+    // 'songwriter' / 'confessional' were mood-shaped — moved out of
+    // genres. 'singer-songwriter' added in moods (canonical affinity
+    // tag form). 'indie folk' / 'chamber folk' / 'indie rock' compound
+    // genres added to cover the canonical match path.
+    genres: ['indie', 'indie folk', 'indie rock', 'chamber folk', 'folk'],
+    moods: ['intimate', 'confessional', 'reflective', 'catharsis', 'singer-songwriter', 'album-listener'],
     energy_level: 'low',
     cadence: 'weekly',
     featured: true,
@@ -94,8 +127,11 @@ const ROOM_TAXONOMY: Record<string, RoomTaxonomyOverlay> = {
   'records-for-rain': {
     description:
       'Quiet, weather-soft albums for grey afternoons — folk, jazz, ambient, and slow indie.',
-    genres: ['folk', 'jazz', 'ambient', 'indie'],
-    moods: ['quiet', 'soft', 'patient', 'meditative'],
+    // Compound genres added. 'ambient' / 'jazz' / 'indie' in moods
+    // give the affinity tagger somewhere to land for the three
+    // largest affinity buckets in the listener population.
+    genres: ['folk', 'indie folk', 'chamber folk', 'jazz', 'ambient', 'indie'],
+    moods: ['quiet', 'soft', 'patient', 'meditative', 'ambient', 'jazz', 'indie', 'album-listener'],
     energy_level: 'low',
     cadence: 'biweekly',
     featured: false,
@@ -104,8 +140,11 @@ const ROOM_TAXONOMY: Record<string, RoomTaxonomyOverlay> = {
   'warm-static': {
     description:
       'Warm, analog-sounding rock and pop records — songs that feel recorded in a room, not assembled in a screen.',
-    genres: ['rock', 'pop', 'analog', 'soul'],
-    moods: ['warm', 'analog', 'songwriter'],
+    // 'analog' was mood-shaped — removed from genres. 'songwriter' →
+    // 'singer-songwriter' in moods (canonical affinity form). 'art
+    // pop' / 'indie rock' compound genres added.
+    genres: ['rock', 'pop', 'art pop', 'soul', 'indie rock'],
+    moods: ['warm', 'analog', 'singer-songwriter'],
     energy_level: 'medium',
     cadence: 'weekly',
     featured: false,
@@ -114,8 +153,10 @@ const ROOM_TAXONOMY: Record<string, RoomTaxonomyOverlay> = {
   'spiritual-jazz': {
     description:
       'Spiritual and modal jazz — Coltrane through Pharoah Sanders to contemporary heirs. Album-focused, slow listening.',
-    genres: ['jazz', 'spiritual', 'modal', 'free-jazz'],
-    moods: ['spiritual', 'expansive', 'meditative'],
+    // 'free-jazz' → 'free jazz' (Spotify spelling). 'spiritual jazz'
+    // compound added. 'jazz' in moods for affinity landing.
+    genres: ['jazz', 'spiritual jazz', 'modal', 'free jazz'],
+    moods: ['spiritual', 'expansive', 'meditative', 'jazz', 'album-listener'],
     energy_level: 'medium',
     cadence: 'weekly',
     featured: false,
@@ -124,8 +165,10 @@ const ROOM_TAXONOMY: Record<string, RoomTaxonomyOverlay> = {
   'criterion-listening': {
     description:
       'Albums that pair with films — scores, soundtracks, and records that feel cinematic at album length.',
-    genres: ['soundtrack', 'score', 'cinematic', 'orchestral'],
-    moods: ['cinematic', 'atmospheric', 'reflective'],
+    // 'score' / 'cinematic' were mood-shaped — moved to moods.
+    // 'modern classical' / 'ambient' added on the canonical side.
+    genres: ['soundtrack', 'orchestral', 'modern classical', 'ambient'],
+    moods: ['cinematic', 'atmospheric', 'reflective', 'score', 'album-listener'],
     energy_level: 'medium',
     cadence: 'biweekly',
     featured: false,
@@ -134,12 +177,51 @@ const ROOM_TAXONOMY: Record<string, RoomTaxonomyOverlay> = {
   'pitchfork-deep-cuts': {
     description:
       'New and recent critically loved indie + electronic records — for listeners who keep up with the present.',
-    genres: ['indie', 'electronic', 'experimental'],
+    // Compound genres added so listeners whose Spotify snapshot
+    // includes 'indie rock' / 'indie pop' / 'art pop' match at
+    // canonical strength.
+    genres: ['indie', 'indie rock', 'indie pop', 'art pop', 'electronic', 'experimental'],
     moods: ['restless', 'cinematic', 'textural'],
     energy_level: 'medium',
     cadence: 'weekly',
     featured: true,
     recommendation_weight: 68,
+  },
+
+  // ── Phase 1: three new rooms eliminating dead zones ───────────────────
+  // The previous catalog had zero rooms covering hip-hop, country/
+  // americana, or soul/r&b — meaning the affinity-tag buckets for
+  // 'hip-hop', 'country', and 'warm' (soul/r&b family) had nowhere
+  // on a room to land. These three rooms fix that.
+  'hip-hop-hours': {
+    description:
+      'Album-length hip-hop — conscious, narrative, and produced for headphones. The records that reward sitting with side A through side B.',
+    genres: ['hip hop', 'rap', 'conscious hip hop', 'jazz rap'],
+    moods: ['intimate', 'confessional', 'cinematic', 'hip-hop', 'album-listener'],
+    energy_level: 'medium',
+    cadence: 'weekly',
+    featured: false,
+    recommendation_weight: 65,
+  },
+  'southern-listening': {
+    description:
+      'Country, Americana, and alt-country records told from a single voice — songwriter-first, slow-tempoed, made for porches and back roads.',
+    genres: ['country', 'americana', 'alt-country', 'folk'],
+    moods: ['warm', 'singer-songwriter', 'reflective', 'country', 'nocturnal', 'album-listener'],
+    energy_level: 'medium',
+    cadence: 'weekly',
+    featured: false,
+    recommendation_weight: 60,
+  },
+  'soul-quarters': {
+    description:
+      'Soul, R&B, and neo-soul records that build a whole world over the course of an album. Warm, intentional, communal listening.',
+    genres: ['soul', 'r&b', 'neo soul', 'jazz soul'],
+    moods: ['warm', 'intimate', 'communal', 'reflective', 'album-listener'],
+    energy_level: 'medium',
+    cadence: 'weekly',
+    featured: false,
+    recommendation_weight: 63,
   },
 }
 
@@ -376,6 +458,13 @@ async function main() {
       cadence: tax.cadence,
       featured: tax.featured ?? false,
       recommendation_weight: tax.recommendation_weight ?? 50,
+      // Phase 1 content-quality: previously NULL across the entire
+      // catalog. Pull from the room's anchor album cover so the
+      // recommendation cards have art on first paint. Falls back to
+      // null if the album has no cover URL.
+      cover_art: room.currentAlbum?.cover && room.currentAlbum.cover.length > 0
+        ? room.currentAlbum.cover
+        : null,
       culture_extras: {
         invitationText: room.culture.invitationText,
         entryPhrase: room.culture.entryPhrase,
@@ -389,7 +478,13 @@ async function main() {
 
   const { error: roomErr } = await db
     .from('rooms')
-    .upsert(roomRows, { onConflict: 'id' })
+    // Explicit `ignoreDuplicates: false` so the contract is obvious
+    // in code: on slug/id conflict, EVERY column in the payload is
+    // updated (ON CONFLICT (id) DO UPDATE SET ...). This is the
+    // Supabase JS v2 default — we set it explicitly here because
+    // Phase 1 audits surfaced confusion about whether re-running the
+    // seed propagates taxonomy updates to existing rows. It does.
+    .upsert(roomRows, { onConflict: 'id', ignoreDuplicates: false })
   if (roomErr) throw new Error(`Rooms upsert: ${roomErr.message}`)
 
   for (const row of roomRows) {

@@ -792,6 +792,59 @@ export const ALBUMS = {
     emotionalTags: ["joy", "colorful", "celebratory"],
     spotifyId: "0ajoNtBO6xHfWEkORtRCAv",
   },
+
+  // ============================================
+  // KENDRICK LAMAR — anchor album for hip-hop-hours
+  // ============================================
+  toPimpAButterfly: {
+    id: 'to-pimp-a-butterfly',
+    title: "To Pimp a Butterfly",
+    artist: "Kendrick Lamar",
+    year: "2015",
+    // Placeholder cover. Operator follow-up: replace with a verified
+    // Spotify CDN URL (i.scdn.co/image/...) or Apple Music URL. The
+    // placehold.co service returns a real 600×600 image so cover_art
+    // is non-null and recommendation cards render. Without this the
+    // seed's `cover.length > 0` gate would NULL the column —
+    // see audit on branch claude/recommendation-content-quality-phase-1.
+    cover: "https://placehold.co/600x600/2a1a0e/d4a574?text=To+Pimp+A+Butterfly",
+    fallbackGradient: "from-amber-900 to-stone-900",
+    description: "A wide-frame jazz-rap statement: identity, lineage, and Black American art recorded as one continuous record.",
+    emotionalTags: ["confessional", "cinematic", "communal"],
+    roomAssociations: ["hip-hop-hours"],
+  },
+
+  // ============================================
+  // JASON ISBELL — anchor album for southern-listening
+  // ============================================
+  southeastern: {
+    id: 'southeastern',
+    title: "Southeastern",
+    artist: "Jason Isbell",
+    year: "2013",
+    // Placeholder cover — see toPimpAButterfly note.
+    cover: "https://placehold.co/600x600/2a2522/c4b59e?text=Southeastern",
+    fallbackGradient: "from-stone-700 to-stone-900",
+    description: "Sober, hard-won Americana songwriting — twelve songs that ask listeners to sit close.",
+    emotionalTags: ["warm", "songwriter", "reflective"],
+    roomAssociations: ["southern-listening"],
+  },
+
+  // ============================================
+  // SOLANGE — anchor album for soul-quarters
+  // ============================================
+  aSeatAtTheTable: {
+    id: 'a-seat-at-the-table',
+    title: "A Seat at the Table",
+    artist: "Solange",
+    year: "2016",
+    // Placeholder cover — see toPimpAButterfly note.
+    cover: "https://placehold.co/600x600/3a1f1f/e8b4a8?text=A+Seat+At+The+Table",
+    fallbackGradient: "from-amber-700 to-rose-900",
+    description: "A self-possessed neo-soul album about interiority and inheritance — slow, deliberate, headphone music.",
+    emotionalTags: ["warm", "intimate", "communal"],
+    roomAssociations: ["soul-quarters"],
+  },
 } as const
 
 export type AlbumKey = keyof typeof ALBUMS
