@@ -234,6 +234,33 @@ export interface SyncActionResult {
   enrichment_provider: string | null
   /** Phase 4.5 — 'rate_limited' when the round bailed early. */
   enrichment_state: 'rate_limited' | null
+  /** Phase 4.5 lifecycle debug. See SyncOutcome.enrichment_debug. */
+  enrichment_debug: {
+    seeds_built: number
+    enqueue: {
+      attempted: number
+      inserted: number
+      existed: number
+      failed: number
+      first_error: string | null
+    }
+    round: {
+      queued: number
+      selected: number
+      run: number
+      succeeded: number
+      failed: number
+      skipped_backoff: number
+      skipped_cached: number
+      skipped_inflight: number
+      canonical_genres_added: number
+      provider_resolved: 'lastfm' | null
+      rate_limited: boolean
+      last_error: string | null
+      db_error: string | null
+    }
+    post_recompute_triggered: boolean
+  } | null
   /** Null on full success. On failure, a safe code + message — never
    *  the raw provider body. */
   error: { code: string; message: string } | null
@@ -313,6 +340,7 @@ export async function syncMyConnection(
       hydration_error: null,
       enrichment_provider: null,
       enrichment_state: null,
+      enrichment_debug: null,
       error: { code: 'unknown_source', message: 'Unknown streaming source.' },
     }
   }
@@ -330,6 +358,7 @@ export async function syncMyConnection(
       hydration_error: null,
       enrichment_provider: null,
       enrichment_state: null,
+      enrichment_debug: null,
       error: { code: 'not_authenticated', message: 'Please sign in to sync.' },
     }
   }
@@ -364,6 +393,7 @@ export async function syncMyConnection(
     hydration_error: outcome.hydration_error,
     enrichment_provider: outcome.enrichment_provider,
     enrichment_state: outcome.enrichment_state,
+    enrichment_debug: outcome.enrichment_debug,
     error: toSafeError(outcome),
   }
 }

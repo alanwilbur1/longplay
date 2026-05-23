@@ -114,23 +114,59 @@ export function SyncConnectionButton({
         </span>
       )}
 
-      {/* Phase 4.5 enrichment audit strip — only visible when the
-          round actually ran (queued > 0). Shows queued / run / ok /
-          failed counts, distinct canonical genres added this round,
-          provider name, and rate-limit state. */}
-      {!isPending && result && result.counts.enrichment_jobs_queued > 0 && (
-        <span
-          data-testid="enrichment-strip"
-          className="text-[10px] font-mono text-muted-foreground/60 mt-1 max-w-[340px] text-right leading-tight"
-        >
-          enrich:{result.counts.enrichment_jobs_succeeded}/
-          {result.counts.enrichment_jobs_run} ran of{' '}
-          {result.counts.enrichment_jobs_queued} queued • fail:
-          {result.counts.enrichment_jobs_failed} • +genres:
-          {result.counts.enrichment_genres_added}
-          {result.enrichment_provider ? ` • ${result.enrichment_provider}` : ''}
-          {result.enrichment_state === 'rate_limited' ? ' • rl' : ''}
-        </span>
+      {/* Phase 4.5 enrichment lifecycle strip — ALWAYS rendered when
+          we have a result, even when nothing happened. The whole
+          point is to see where the lifecycle stopped: seeds_built=0
+          (Spotify gave us genres for everyone), enqueue.failed>0
+          with first_error (table missing → migration not applied),
+          round.queued=0 (cache hit), provider_resolved=null (key
+          missing), etc. Compact two-line layout. */}
+      {!isPending && result && result.enrichment_debug && (
+        <>
+          <span
+            data-testid="enrichment-strip"
+            className="text-[10px] font-mono text-muted-foreground/60 mt-1 max-w-[340px] text-right leading-tight"
+          >
+            enrich seeds:{result.enrichment_debug.seeds_built} • enq:
+            {result.enrichment_debug.enqueue.inserted}new/
+            {result.enrichment_debug.enqueue.existed}exist
+            {result.enrichment_debug.enqueue.failed > 0
+              ? ` ${result.enrichment_debug.enqueue.failed}fail`
+              : ''}{' '}
+            • run:{result.enrichment_debug.round.run} (
+            {result.enrichment_debug.round.succeeded}✓
+            {result.enrichment_debug.round.failed}✗) +g:
+            {result.enrichment_debug.round.canonical_genres_added}
+          </span>
+          <span
+            data-testid="enrichment-strip-2"
+            className="text-[10px] font-mono text-muted-foreground/50 mt-0.5 max-w-[340px] text-right leading-tight"
+          >
+            cand:{result.enrichment_debug.round.queued} sel:
+            {result.enrichment_debug.round.selected} skip[bo:
+            {result.enrichment_debug.round.skipped_backoff} ca:
+            {result.enrichment_debug.round.skipped_cached} if:
+            {result.enrichment_debug.round.skipped_inflight}] • prov:
+            {result.enrichment_debug.round.provider_resolved ?? '∅'}
+            {result.enrichment_debug.round.rate_limited ? ' • rl' : ''}
+            {result.enrichment_debug.post_recompute_triggered ? ' • snap↻' : ''}
+          </span>
+          {result.enrichment_debug.enqueue.first_error && (
+            <span className="text-[10px] text-burgundy/80 mt-1 max-w-[340px] text-right leading-tight">
+              enq err: {result.enrichment_debug.enqueue.first_error}
+            </span>
+          )}
+          {result.enrichment_debug.round.db_error && (
+            <span className="text-[10px] text-burgundy/80 mt-1 max-w-[340px] text-right leading-tight">
+              round db err: {result.enrichment_debug.round.db_error}
+            </span>
+          )}
+          {result.enrichment_debug.round.last_error && (
+            <span className="text-[10px] text-burgundy/80 mt-1 max-w-[340px] text-right leading-tight">
+              round err: {result.enrichment_debug.round.last_error}
+            </span>
+          )}
+        </>
       )}
 
       {!isPending && result && !result.ok && result.error && (

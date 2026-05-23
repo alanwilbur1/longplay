@@ -79,6 +79,42 @@ export interface SyncOutcome {
   enrichment_provider: string | null
   /** Phase 4.5: 'rate_limited' when the round bailed early, else null. */
   enrichment_state: 'rate_limited' | null
+  /** Phase 4.5 lifecycle debug — what happened at each stage of the
+   *  enrichment pass attached to this sync. Surfaces to the UI strip
+   *  so the operator can see exactly where the pipeline stopped:
+   *
+   *    seeds_built=0           → no Spotify artists with empty genres
+   *    seeds_built=N, db_error → table missing (migration not applied)
+   *    enqueue_inserted=0      → all already existed (cache hit)
+   *    selected=0              → all candidates in backoff / cached
+   *    provider_resolved=null  → LASTFM_API_KEY missing in env
+   */
+  enrichment_debug: {
+    seeds_built: number
+    enqueue: {
+      attempted: number
+      inserted: number
+      existed: number
+      failed: number
+      first_error: string | null
+    }
+    round: {
+      queued: number
+      selected: number
+      run: number
+      succeeded: number
+      failed: number
+      skipped_backoff: number
+      skipped_cached: number
+      skipped_inflight: number
+      canonical_genres_added: number
+      provider_resolved: 'lastfm' | null
+      rate_limited: boolean
+      last_error: string | null
+      db_error: string | null
+    }
+    post_recompute_triggered: boolean
+  } | null
   error: { stage: string; message: string } | null
 }
 
@@ -113,6 +149,7 @@ function emptyOutcome(): SyncOutcome {
     hydration_error: null,
     enrichment_provider: null,
     enrichment_state: null,
+    enrichment_debug: null,
     error: null,
   }
 }
@@ -453,24 +490,87 @@ export async function syncProviderForUser(
   // written), so an enrichment failure can never roll the sync back.
   //
   // The actual fetches run in a bounded round below — best-effort,
-  // time-capped, never blocks completion.
+  // time-capped, never blocks completion. Every stage logs
+  // unconditionally (not dev-gated) so prod Vercel logs trace the
+  // lifecycle when the UI strip stays at zero.
+  const debug: NonNullable<SyncOutcome['enrichment_debug']> = {
+    seeds_built: 0,
+    enqueue: {
+      attempted: 0,
+      inserted: 0,
+      existed: 0,
+      failed: 0,
+      first_error: null,
+    },
+    round: {
+      queued: 0,
+      selected: 0,
+      run: 0,
+      succeeded: 0,
+      failed: 0,
+      skipped_backoff: 0,
+      skipped_cached: 0,
+      skipped_inflight: 0,
+      canonical_genres_added: 0,
+      provider_resolved: null,
+      rate_limited: false,
+      last_error: null,
+      db_error: null,
+    },
+    post_recompute_triggered: false,
+  }
+  outcome.enrichment_debug = debug
+
   try {
+    // Seeds: artists whose Spotify-returned genres came back empty.
+    // We do NOT seed for artists that already have Spotify genres —
+    // Spotify's data is canonical and we don't need a second opinion.
     const seeds = result.artists
       .filter((a) => !a.genres || a.genres.length === 0)
+      .filter((a) => a.external_artist_id && a.name && a.name.trim().length > 0)
       .map((a) => ({
         user_id: userId,
         source_id: sourceId,
         external_artist_id: a.external_artist_id,
         artist_name: a.name,
       }))
+    debug.seeds_built = seeds.length
+
+    console.log('[sync/enrichment] seeds built', {
+      userId,
+      sourceId,
+      total_artists: result.artists.length,
+      seeds: seeds.length,
+    })
+
     if (seeds.length > 0) {
-      await enqueueArtistGenreEnrichments(seeds)
+      const enqueueStats = await enqueueArtistGenreEnrichments(seeds)
+      debug.enqueue = enqueueStats
+      console.log('[sync/enrichment] enqueue done', {
+        userId,
+        ...enqueueStats,
+      })
     }
 
     const stats: EnrichmentRoundStats = await runArtistGenreEnrichmentRound(
       userId,
       { maxJobs: 10, concurrency: 2, timeoutMs: 5000 },
     )
+    debug.round = {
+      queued: stats.queued,
+      selected: stats.selected,
+      run: stats.run,
+      succeeded: stats.succeeded,
+      failed: stats.failed,
+      skipped_backoff: stats.skipped_backoff,
+      skipped_cached: stats.skipped_cached,
+      skipped_inflight: stats.skipped_inflight,
+      canonical_genres_added: stats.canonical_genres_added,
+      provider_resolved: stats.provider_resolved,
+      rate_limited: stats.rate_limited,
+      last_error: stats.last_error,
+      db_error: stats.db_error,
+    }
     outcome.counts.enrichment_jobs_queued = stats.queued
     outcome.counts.enrichment_jobs_run = stats.run
     outcome.counts.enrichment_jobs_succeeded = stats.succeeded
@@ -480,27 +580,49 @@ export async function syncProviderForUser(
       stats.providers_used.length > 0 ? stats.providers_used.join(',') : null
     outcome.enrichment_state = stats.rate_limited ? 'rate_limited' : null
 
+    console.log('[sync/enrichment] round done', {
+      userId,
+      provider_resolved: stats.provider_resolved,
+      queued: stats.queued,
+      selected: stats.selected,
+      run: stats.run,
+      succeeded: stats.succeeded,
+      failed: stats.failed,
+      canonical_genres_added: stats.canonical_genres_added,
+      rate_limited: stats.rate_limited,
+      db_error: stats.db_error,
+      last_error: stats.last_error,
+    })
+
     // 9. If enrichment actually landed genres, recompute the snapshot
     // again so the new canonical_genres get folded into top_genres
-    // and affinity_tags. This is the only reason we re-recompute —
-    // skip when nothing changed.
+    // and affinity_tags. Skip when nothing changed.
     if (stats.succeeded > 0) {
+      debug.post_recompute_triggered = true
       try {
         const snap = await recomputeListeningProfileSnapshot(userId)
         outcome.top_genres_count = snap.top_genres_count
+        console.log('[sync/enrichment] post-enrichment snapshot recomputed', {
+          userId,
+          top_genres_count: snap.top_genres_count,
+        })
       } catch (err) {
-        if (process.env.NODE_ENV !== 'production') {
-          console.warn('[sync] post-enrichment snapshot recompute failed', {
-            message: err instanceof Error ? err.message : String(err),
-          })
-        }
+        console.warn('[sync/enrichment] post-enrichment snapshot recompute failed', {
+          message: err instanceof Error ? err.message : String(err),
+        })
       }
     }
   } catch (err) {
-    if (process.env.NODE_ENV !== 'production') {
-      console.warn('[sync] enrichment round failed', {
-        message: err instanceof Error ? err.message : String(err),
-      })
+    const message = err instanceof Error ? err.message : String(err)
+    console.warn('[sync/enrichment] outer block threw', {
+      userId,
+      message,
+    })
+    // Preserve whatever debug fields were already set; surface the
+    // outer-block error as the round's last_error if nothing else
+    // already captured one.
+    if (!debug.round.last_error) {
+      debug.round.last_error = `outer: ${message.slice(0, 200)}`
     }
   }
 

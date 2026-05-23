@@ -7,6 +7,7 @@ import {
   type EnrichmentProviderImpl,
 } from './providers'
 import type {
+  EnrichmentEnqueueBatchStats,
   EnrichmentJob,
   EnrichmentRoundStats,
   EnrichmentStatus,
@@ -113,26 +114,76 @@ export async function enqueueArtistGenreEnrichment(params: {
 }
 
 /**
- * Bulk-enqueue artist seeds. Used by the streaming sync to enqueue
- * every Spotify artist whose genres came back empty. One call per
- * seed (Supabase doesn't expose a portable do-nothing-on-conflict
- * with returning); the admin client + the table's unique constraint
- * keep it idempotent and cheap.
+ * Bulk-enqueue artist seeds. Returns per-batch stats so the caller
+ * can distinguish "table missing — every insert failed" from
+ * "everything already existed, nothing new to do" from "we just
+ * queued 47 new jobs". The admin client + the table's unique
+ * constraint keep it idempotent and cheap.
  */
 export async function enqueueArtistGenreEnrichments(
   seeds: ArtistSeed[],
-): Promise<number> {
-  let queued = 0
-  for (const seed of seeds) {
-    const job = await enqueueArtistGenreEnrichment({
-      userId: seed.user_id,
-      sourceId: seed.source_id,
-      externalArtistId: seed.external_artist_id,
-      artistName: seed.artist_name,
-    })
-    if (job) queued += 1
+): Promise<EnrichmentEnqueueBatchStats> {
+  const stats: EnrichmentEnqueueBatchStats = {
+    attempted: 0,
+    inserted: 0,
+    existed: 0,
+    failed: 0,
+    first_error: null,
   }
-  return queued
+  if (seeds.length === 0) return stats
+
+  const admin = getSupabaseAdminClient()
+
+  for (const seed of seeds) {
+    stats.attempted += 1
+
+    // Mirror enqueueArtistGenreEnrichment but capture inserted vs
+    // existed so we have per-batch visibility. We don't reuse the
+    // single-row function because we want to know which path each
+    // seed took.
+    const { data: existing, error: selectErr } = await admin
+      .from('artist_genre_enrichments')
+      .select('id')
+      .eq('user_id', seed.user_id)
+      .eq('source_id', seed.source_id)
+      .eq('external_artist_id', seed.external_artist_id)
+      .maybeSingle()
+
+    if (selectErr) {
+      stats.failed += 1
+      if (!stats.first_error) {
+        stats.first_error = `select: ${selectErr.code ?? 'NO_CODE'}: ${selectErr.message}`
+      }
+      continue
+    }
+
+    if (existing) {
+      stats.existed += 1
+      continue
+    }
+
+    const { error: insertErr } = await admin
+      .from('artist_genre_enrichments')
+      .insert({
+        user_id: seed.user_id,
+        source_id: seed.source_id,
+        external_artist_id: seed.external_artist_id,
+        artist_name: seed.artist_name,
+        status: 'queued' as EnrichmentStatus,
+      })
+
+    if (insertErr) {
+      stats.failed += 1
+      if (!stats.first_error) {
+        stats.first_error = `insert: ${insertErr.code ?? 'NO_CODE'}: ${insertErr.message}`
+      }
+      continue
+    }
+
+    stats.inserted += 1
+  }
+
+  return stats
 }
 
 /**
@@ -316,26 +367,33 @@ export async function runArtistGenreEnrichmentRound(
 
   const stats: EnrichmentRoundStats = {
     queued: 0,
+    selected: 0,
     run: 0,
     succeeded: 0,
     failed: 0,
     skipped_backoff: 0,
+    skipped_cached: 0,
+    skipped_inflight: 0,
     canonical_genres_added: 0,
     providers_used: [],
+    provider_resolved: null,
     rate_limited: false,
     last_error: null,
+    db_error: null,
   }
 
   const provider = pickDefaultProvider()
+  stats.provider_resolved = provider?.id ?? null
   if (!provider) {
-    if (process.env.NODE_ENV !== 'production') {
-      console.log('[enrichment/round] no provider configured — skipping')
-    }
+    console.log('[enrichment/round] no provider configured — skipping', {
+      userId,
+      env_lastfm_key_present: !!process.env.LASTFM_API_KEY,
+    })
     return stats
   }
 
   const admin = getSupabaseAdminClient()
-  const { data: rows } = await admin
+  const { data: rows, error: selectErr } = await admin
     .from('artist_genre_enrichments')
     .select('*')
     .eq('user_id', userId)
@@ -344,6 +402,16 @@ export async function runArtistGenreEnrichmentRound(
     .order('last_attempted_at', { ascending: true, nullsFirst: true })
     .limit(maxJobs * 3) // overshoot so the runnable filter has slack
 
+  if (selectErr) {
+    stats.db_error = `${selectErr.code ?? 'NO_CODE'}: ${selectErr.message}`
+    console.log('[enrichment/round] select failed', {
+      userId,
+      code: selectErr.code,
+      message: selectErr.message,
+    })
+    return stats
+  }
+
   const candidates = (rows ?? []) as unknown as EnrichmentJob[]
   stats.queued = candidates.length
 
@@ -351,9 +419,26 @@ export async function runArtistGenreEnrichmentRound(
   for (const job of candidates) {
     if (runnable.length >= maxJobs) break
     const decision = isJobRunnable(job, false)
-    if (decision.runnable) runnable.push(job)
-    else if (decision.reason === 'backoff') stats.skipped_backoff += 1
+    if (decision.runnable) {
+      runnable.push(job)
+    } else if (decision.reason === 'backoff') {
+      stats.skipped_backoff += 1
+    } else if (decision.reason === 'cached') {
+      stats.skipped_cached += 1
+    } else if (decision.reason === 'inflight') {
+      stats.skipped_inflight += 1
+    }
   }
+  stats.selected = runnable.length
+
+  console.log('[enrichment/round] candidates filtered', {
+    userId,
+    queued: stats.queued,
+    selected: stats.selected,
+    skipped_backoff: stats.skipped_backoff,
+    skipped_cached: stats.skipped_cached,
+    skipped_inflight: stats.skipped_inflight,
+  })
 
   if (runnable.length === 0) return stats
 
