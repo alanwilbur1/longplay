@@ -46,13 +46,29 @@ export interface Album {
 }
 
 /**
- * Album data with verified, stable artwork URLs.
- * Using Spotify CDN (i.scdn.co) for reliable, high-resolution covers.
- * 
- * Note: In production, this static data would be replaced by
- * API calls through the AlbumResolver system (lib/album-resolver.ts).
- * 
- * All covers have been verified as of 2024-01.
+ * Album data.
+ *
+ * Artwork audit (Artwork Quality Pass):
+ * - 1 album uses an Apple Music CDN URL with a detailed verified path
+ *   (forEmma).
+ * - 19 albums carry plausible-looking Spotify CDN URLs (i.scdn.co/
+ *   image/ab67616d0000b273…). Provenance unverifiable from the dev
+ *   sandbox — runtime load detection in CoverTile (rooms-screen.tsx)
+ *   shows an intentional designed fallback (vinyl glyph + title +
+ *   artist) for any that 404.
+ * - 27 albums had obviously fabricated covers (strict sequential
+ *   alphabet hashes, repeating-char patterns, malformed length).
+ *   Their `cover` is now "" so the load detection resolves to
+ *   'absent' immediately without a wasted network ping.
+ * - 3 albums (toPimpAButterfly, southeastern, aSeatAtTheTable) use
+ *   placehold.co — intentional placeholder service that does serve
+ *   real images. Inline-marked for operator follow-up.
+ *
+ * To replace any "" cover with a real one: paste a verified Spotify
+ * CDN URL (i.scdn.co/image/ab67616d0000b273<hash>) or Apple Music
+ * URL (is{1..5}-ssl.mzstatic.com/image/thumb/...) into the cover
+ * field. The seed and refresh-room-metadata script pick it up on
+ * the next run; no recommender/scoring/DB changes needed.
  */
 export const ALBUMS = {
   // ============================================
@@ -94,7 +110,7 @@ export const ALBUMS = {
     title: "i,i",
     artist: "Bon Iver",
     year: "2019",
-    cover: "https://i.scdn.co/image/ab67616d0000b273b84b7c2a69b9a6a4c4d4e5f6",
+    cover: "",
     fallbackGradient: "from-slate-700 to-slate-900",
     description: "The fourth album, reconciling the earlier seasons.",
     emotionalTags: ["acceptance", "community", "resolution"],
@@ -204,7 +220,7 @@ export const ALBUMS = {
     title: "Pink Moon",
     artist: "Nick Drake",
     year: "1972",
-    cover: "https://i.scdn.co/image/ab67616d0000b273c38b9d336a9a0e185ed33333",
+    cover: "",
     fallbackGradient: "from-pink-900 to-stone-900",
     description: "Twenty-eight minutes of quiet revelation.",
     emotionalTags: ["sparse", "intimate", "nocturnal"],
@@ -326,7 +342,7 @@ export const ALBUMS = {
     title: "XO",
     artist: "Elliott Smith",
     year: "1998",
-    cover: "https://i.scdn.co/image/ab67616d0000b2732c5e4e5e5f5c5b5a5d5e5f5",
+    cover: "",
     fallbackGradient: "from-stone-700 to-stone-900",
     description: "Orchestral arrangements elevate the despair.",
     emotionalTags: ["orchestral", "major-label", "despair"],
@@ -380,7 +396,7 @@ export const ALBUMS = {
     title: "In a Silent Way",
     artist: "Miles Davis",
     year: "1969",
-    cover: "https://i.scdn.co/image/ab67616d0000b2738d5d5e5c5f5a5b5c5d5e5f5a",
+    cover: "",
     fallbackGradient: "from-amber-800 to-slate-900",
     description: "Where jazz began to dissolve into something new.",
     emotionalTags: ["fusion", "ambient", "pioneering"],
@@ -424,7 +440,7 @@ export const ALBUMS = {
     title: "Ys",
     artist: "Joanna Newsom",
     year: "2006",
-    cover: "https://i.scdn.co/image/ab67616d0000b273d3b7f6c3c0d7e5a4b3c2d1e0",
+    cover: "",
     fallbackGradient: "from-emerald-800 to-stone-900",
     description: "Baroque folk mythology in five epic songs.",
     emotionalTags: ["epic", "baroque", "mythology"],
@@ -435,7 +451,7 @@ export const ALBUMS = {
     title: "Divers",
     artist: "Joanna Newsom",
     year: "2015",
-    cover: "https://i.scdn.co/image/ab67616d0000b273e4f5a6b7c8d9e0f1a2b3c4d5",
+    cover: "",
     fallbackGradient: "from-teal-800 to-stone-900",
     description: "Time, loss, and love across centuries.",
     emotionalTags: ["time", "loss", "epic"],
@@ -461,7 +477,7 @@ export const ALBUMS = {
     title: "U.F.O.F.",
     artist: "Big Thief",
     year: "2019",
-    cover: "https://i.scdn.co/image/ab67616d0000b2736a7e8f9b0c1d2e3f4a5b6c7d",
+    cover: "",
     fallbackGradient: "from-slate-800 to-stone-900",
     description: "Ethereal and otherworldly folk.",
     emotionalTags: ["ethereal", "otherworldly", "folk"],
@@ -476,7 +492,7 @@ export const ALBUMS = {
     title: "songs",
     artist: "Adrianne Lenker",
     year: "2020",
-    cover: "https://i.scdn.co/image/ab67616d0000b2738e9f0a1b2c3d4e5f6a7b8c9d",
+    cover: "",
     fallbackGradient: "from-amber-800 to-stone-800",
     description: "Intimate solo recordings from a one-room cabin.",
     emotionalTags: ["intimate", "solo", "cabin"],
@@ -488,7 +504,7 @@ export const ALBUMS = {
     title: "abysskiss",
     artist: "Adrianne Lenker",
     year: "2018",
-    cover: "https://i.scdn.co/image/ab67616d0000b273a1b2c3d4e5f6a7b8c9d0e1f2",
+    cover: "",
     fallbackGradient: "from-stone-700 to-stone-900",
     description: "Solo debut of intimate folk poetry.",
     emotionalTags: ["debut", "intimate", "poetry"],
@@ -503,7 +519,7 @@ export const ALBUMS = {
     title: "Ruins",
     artist: "Grouper",
     year: "2014",
-    cover: "https://i.scdn.co/image/ab67616d0000b273b2c3d4e5f6a7b8c9d0e1f2a3",
+    cover: "",
     fallbackGradient: "from-slate-800 to-slate-950",
     description: "Recorded alone in Portugal. Piano, voice, silence.",
     emotionalTags: ["solitude", "piano", "silence"],
@@ -515,7 +531,7 @@ export const ALBUMS = {
     title: "Dragging a Dead Deer Up a Hill",
     artist: "Grouper",
     year: "2008",
-    cover: "https://i.scdn.co/image/ab67616d0000b273c3d4e5f6a7b8c9d0e1f2a3b4",
+    cover: "",
     fallbackGradient: "from-emerald-900 to-slate-900",
     description: "Ambient folk submerged in reverb and haze.",
     emotionalTags: ["ambient", "haze", "submerged"],
@@ -546,7 +562,7 @@ export const ALBUMS = {
     title: "Music for 18 Musicians",
     artist: "Steve Reich",
     year: "1978",
-    cover: "https://i.scdn.co/image/ab67616d0000b273d4e5f6a7b8c9d0e1f2a3b4c5",
+    cover: "",
     fallbackGradient: "from-orange-900 to-stone-900",
     description: "Minimalism at its most hypnotic and alive.",
     emotionalTags: ["minimalism", "hypnotic", "classical"],
@@ -562,7 +578,7 @@ export const ALBUMS = {
     title: "A Crow Looked at Me",
     artist: "Mount Eerie",
     year: "2017",
-    cover: "https://i.scdn.co/image/ab67616d0000b273e5f6a7b8c9d0e1f2a3b4c5d6",
+    cover: "",
     fallbackGradient: "from-slate-800 to-slate-950",
     description: "Grief in its most unadorned form.",
     emotionalTags: ["grief", "raw", "unadorned"],
@@ -578,7 +594,7 @@ export const ALBUMS = {
     title: "Spiderland",
     artist: "Slint",
     year: "1991",
-    cover: "https://i.scdn.co/image/ab67616d0000b273f6a7b8c9d0e1f2a3b4c5d6e7",
+    cover: "",
     fallbackGradient: "from-slate-900 to-black",
     description: "Post-rock before the term existed.",
     emotionalTags: ["post-rock", "tension", "influential"],
@@ -594,7 +610,7 @@ export const ALBUMS = {
     title: "Tender Buttons",
     artist: "Broadcast",
     year: "2005",
-    cover: "https://i.scdn.co/image/ab67616d0000b273a7b8c9d0e1f2a3b4c5d6e7f8",
+    cover: "",
     fallbackGradient: "from-pink-900 to-slate-900",
     description: "Electronic pop from another dimension.",
     emotionalTags: ["electronic", "vintage", "ethereal"],
@@ -610,7 +626,7 @@ export const ALBUMS = {
     title: "A Love Supreme",
     artist: "John Coltrane",
     year: "1965",
-    cover: "https://i.scdn.co/image/ab67616d0000b273b8c9d0e1f2a3b4c5d6e7f8a9",
+    cover: "",
     fallbackGradient: "from-amber-900 to-stone-900",
     description: "Spiritual jazz at its most transcendent.",
     emotionalTags: ["spiritual", "jazz", "transcendent"],
@@ -626,7 +642,7 @@ export const ALBUMS = {
     title: "Waltz for Debby",
     artist: "Bill Evans Trio",
     year: "1961",
-    cover: "https://i.scdn.co/image/ab67616d0000b273c9d0e1f2a3b4c5d6e7f8a9b0",
+    cover: "",
     fallbackGradient: "from-slate-700 to-slate-900",
     description: "Intimate live jazz, delicate and conversational.",
     emotionalTags: ["intimate", "live", "delicate"],
@@ -642,7 +658,7 @@ export const ALBUMS = {
     title: "Ambient 1: Music for Airports",
     artist: "Brian Eno",
     year: "1978",
-    cover: "https://i.scdn.co/image/ab67616d0000b273d0e1f2a3b4c5d6e7f8a9b0c1",
+    cover: "",
     fallbackGradient: "from-sky-900 to-slate-900",
     description: "The birth of ambient music as a genre.",
     emotionalTags: ["ambient", "pioneering", "calm"],
@@ -658,7 +674,7 @@ export const ALBUMS = {
     title: "The Disintegration Loops",
     artist: "William Basinski",
     year: "2002",
-    cover: "https://i.scdn.co/image/ab67616d0000b273e1f2a3b4c5d6e7f8a9b0c1d2",
+    cover: "",
     fallbackGradient: "from-orange-900 to-slate-950",
     description: "Tape loops decaying in real time. Elegiac and profound.",
     emotionalTags: ["decay", "elegiac", "ambient"],
@@ -674,7 +690,7 @@ export const ALBUMS = {
     title: "Age Of",
     artist: "Oneohtrix Point Never",
     year: "2018",
-    cover: "https://i.scdn.co/image/ab67616d0000b273f2a3b4c5d6e7f8a9b0c1d2e3",
+    cover: "",
     fallbackGradient: "from-violet-900 to-slate-900",
     description: "AI-age electronic music with baroque complexity.",
     emotionalTags: ["electronic", "baroque", "futuristic"],
@@ -690,7 +706,7 @@ export const ALBUMS = {
     title: "Funeral",
     artist: "Arcade Fire",
     year: "2004",
-    cover: "https://i.scdn.co/image/ab67616d0000b273a3b4c5d6e7f8a9b0c1d2e3f4",
+    cover: "",
     fallbackGradient: "from-slate-700 to-slate-900",
     description: "Triumphant indie rock about grief and survival.",
     emotionalTags: ["triumphant", "grief", "anthemic"],
@@ -706,7 +722,7 @@ export const ALBUMS = {
     title: "Souvlaki",
     artist: "Slowdive",
     year: "1993",
-    cover: "https://i.scdn.co/image/ab67616d0000b273b4c5d6e7f8a9b0c1d2e3f4a5",
+    cover: "",
     fallbackGradient: "from-pink-800 to-slate-900",
     description: "Shoegaze at its most lush and immersive.",
     emotionalTags: ["shoegaze", "lush", "dreamy"],
@@ -722,7 +738,7 @@ export const ALBUMS = {
     title: "Heaven or Las Vegas",
     artist: "Cocteau Twins",
     year: "1990",
-    cover: "https://i.scdn.co/image/ab67616d0000b273c5d6e7f8a9b0c1d2e3f4a5b6",
+    cover: "",
     fallbackGradient: "from-rose-800 to-indigo-900",
     description: "Dream pop perfection. Otherworldly and warm.",
     emotionalTags: ["dream-pop", "otherworldly", "warm"],
@@ -738,7 +754,7 @@ export const ALBUMS = {
     title: "Things We Lost in the Fire",
     artist: "Low",
     year: "2001",
-    cover: "https://i.scdn.co/image/ab67616d0000b273d6e7f8a9b0c1d2e3f4a5b6c7",
+    cover: "",
     fallbackGradient: "from-amber-900 to-slate-900",
     description: "Slowcore at its most emotionally devastating.",
     emotionalTags: ["slowcore", "devastating", "minimal"],
@@ -754,7 +770,7 @@ export const ALBUMS = {
     title: "Sleep Well Beast",
     artist: "The National",
     year: "2017",
-    cover: "https://i.scdn.co/image/ab67616d0000b273e7f8a9b0c1d2e3f4a5b6c7d8",
+    cover: "",
     fallbackGradient: "from-slate-700 to-slate-900",
     description: "Mature, restless, electronically-tinged rock.",
     emotionalTags: ["mature", "restless", "electronic"],
@@ -770,7 +786,7 @@ export const ALBUMS = {
     title: "MY WOMAN",
     artist: "Angel Olsen",
     year: "2016",
-    cover: "https://i.scdn.co/image/ab67616d0000b273f8a9b0c1d2e3f4a5b6c7d8e9",
+    cover: "",
     fallbackGradient: "from-red-900 to-stone-900",
     description: "Transformation and power through vulnerability.",
     emotionalTags: ["transformation", "power", "vulnerable"],
@@ -786,7 +802,7 @@ export const ALBUMS = {
     title: "Jubilee",
     artist: "Japanese Breakfast",
     year: "2021",
-    cover: "https://i.scdn.co/image/ab67616d0000b273a9b0c1d2e3f4a5b6c7d8e9f0",
+    cover: "",
     fallbackGradient: "from-yellow-600 to-red-900",
     description: "Joy as a deliberate, radical choice.",
     emotionalTags: ["joy", "colorful", "celebratory"],

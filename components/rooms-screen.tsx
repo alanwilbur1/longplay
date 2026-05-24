@@ -44,17 +44,6 @@ function useCoverStatus(coverSrc: string | null | undefined): CoverStatus {
   return status
 }
 
-/** Domain-only host extraction for the debug strip. Returns "—" on
- *  unparseable URLs without throwing. */
-function safeHost(src: string | null | undefined): string {
-  if (!src) return '—'
-  try {
-    return new URL(src).host
-  } catch {
-    return '—'
-  }
-}
-
 /**
  * CoverTile — every external cover URL on /rooms flows through this.
  *
@@ -64,13 +53,9 @@ function safeHost(src: string | null | undefined): string {
  *   - status='failed' OR 'absent' → IntentionalCoverFallback
  *     (vinyl glyph + title + optional subtitle) on top of the
  *     aesthetic gradient. Not pretending to be a cover.
- *   - status='pending' → just the aesthetic gradient while the
- *     ping resolves. Brief.
- *
- * Phase-1.1 debug strip: when `debugSlug` is provided, renders a
- * one-line mono diagnostic at the bottom of the tile showing slug,
- * status, host, and url prefix. Temporary; remove once cover URL
- * triage in lib/albums.ts is complete.
+ *   - status='pending' → optimistic: bg-image shows while the ping
+ *     resolves. Only swaps to fallback if ping confirms failure.
+ *     Keeps successful covers from flashing gradient first.
  */
 function CoverTile({
   coverSrc,
@@ -79,7 +64,6 @@ function CoverTile({
   className,
   innerClassName,
   children,
-  debugSlug,
 }: {
   coverSrc: string | null | undefined
   fallbackGradient: string
@@ -91,16 +75,18 @@ function CoverTile({
     | string
     | { title: string; subtitle?: string; compact?: boolean }
   className?: string
+  /** Extra classes applied to the cover overlay div — useful for
+   *  hover transforms that should only animate the image, not the
+   *  parent backdrop. */
   innerClassName?: string
+  /** Anything that should overlay the cover (gradient veils, labels,
+   *  "Now playing" pills, etc). Sits above the cover, below the
+   *  parent's border. */
   children?: React.ReactNode
-  /** Pass the room/album slug to render the temporary debug strip. */
-  debugSlug?: string
 }) {
   const status = useCoverStatus(coverSrc)
   // Optimistic render: show the cover during 'pending' AND 'loaded'.
-  // The ping confirms failure asynchronously; if it does, we swap to
-  // the fallback. This keeps successful covers from flashing gradient
-  // during the initial hydration tick.
+  // Swap to fallback only when the ping confirms failure.
   const showCover = !!coverSrc && (status === 'pending' || status === 'loaded')
   const showFallbackLabel = status === 'failed' || status === 'absent'
 
@@ -149,15 +135,6 @@ function CoverTile({
       )}
 
       {children}
-
-      {debugSlug && (
-        <div className="absolute left-1 bottom-1 right-1 z-10 pointer-events-none">
-          <p className="text-[9px] font-mono text-cream/70 bg-background/70 px-1.5 py-0.5 rounded truncate">
-            {debugSlug} · cov={coverSrc ? 'yes' : 'no'} · st={status} · h=
-            {safeHost(coverSrc)} · {coverSrc ? coverSrc.slice(0, 40) + (coverSrc.length > 40 ? '…' : '') : '∅'}
-          </p>
-        </div>
-      )}
     </div>
   )
 }
@@ -232,7 +209,6 @@ export function RoomsScreen({
                   }}
                   className="aspect-square mb-3 rounded"
                   innerClassName="transition-transform duration-700 group-hover:scale-105"
-                  debugSlug={room.slug}
                 >
                   <div className="absolute inset-0 bg-gradient-to-t from-background/80 to-transparent pointer-events-none" />
                   <div className="absolute bottom-2 left-2 right-2">
@@ -343,7 +319,6 @@ function EditorialRoomCard({ room, href }: { room: Room; href: string }) {
               fallbackLabel={{ title: album.title, compact: true }}
               className="w-20 h-20"
               innerClassName="transition-transform duration-700 group-hover:scale-105"
-              debugSlug={`${room.slug}/${album.id}`}
             />
           </div>
         ))}
@@ -385,7 +360,6 @@ function GenreRoomCard({ room, href }: { room: Room; href: string }) {
         }}
         className="aspect-square"
         innerClassName="transition-transform duration-700 group-hover:scale-105"
-        debugSlug={room.slug}
       >
         <div className="absolute inset-0 bg-gradient-to-t from-background/85 via-background/20 to-transparent pointer-events-none" />
       </CoverTile>
