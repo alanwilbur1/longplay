@@ -1,143 +1,8 @@
 'use client'
 
-import { useEffect, useState } from 'react'
 import Link from 'next/link'
+import { AlbumCover } from '@/components/album-cover'
 import { type Room } from '@/lib/rooms'
-
-type CoverStatus = 'pending' | 'loaded' | 'failed' | 'absent'
-
-/**
- * Use a fire-and-forget `new Image()` ping to detect whether a cover
- * URL actually resolves. CSS background-image alone silently fails
- * on 404 — which fixed the broken-icon problem but meant we couldn't
- * distinguish "URL was missing" from "URL was dead". The ping fires
- * the browser's normal image fetch, then onload/onerror tell us
- * which bucket the URL fell into so we can render an INTENTIONAL
- * fallback (vinyl + title + artist) instead of silently degrading
- * to a flat gradient block.
- *
- * Strict-mode safe via the cancelled flag.
- */
-function useCoverStatus(coverSrc: string | null | undefined): CoverStatus {
-  const [status, setStatus] = useState<CoverStatus>(coverSrc ? 'pending' : 'absent')
-  useEffect(() => {
-    if (!coverSrc) {
-      setStatus('absent')
-      return
-    }
-    setStatus('pending')
-    let cancelled = false
-    const img = new window.Image()
-    img.onload = () => {
-      if (!cancelled) setStatus('loaded')
-    }
-    img.onerror = () => {
-      if (!cancelled) setStatus('failed')
-    }
-    img.src = coverSrc
-    return () => {
-      cancelled = true
-      img.onload = null
-      img.onerror = null
-    }
-  }, [coverSrc])
-  return status
-}
-
-/**
- * CoverTile — every external cover URL on /rooms flows through this.
- *
- * Render path:
- *   - status='loaded' → CSS background-image. No <img> in the DOM,
- *     so broken-icon and alt-text leaks are structurally impossible.
- *   - status='failed' OR 'absent' → IntentionalCoverFallback
- *     (vinyl glyph + title + optional subtitle) on top of the
- *     aesthetic gradient. Not pretending to be a cover.
- *   - status='pending' → optimistic: bg-image shows while the ping
- *     resolves. Only swaps to fallback if ping confirms failure.
- *     Keeps successful covers from flashing gradient first.
- */
-function CoverTile({
-  coverSrc,
-  fallbackGradient,
-  fallbackLabel,
-  className,
-  innerClassName,
-  children,
-}: {
-  coverSrc: string | null | undefined
-  fallbackGradient: string
-  /** Shown when the cover URL is absent OR fails to load. Either a
-   *  plain string (acts as title) or { title, subtitle?, compact? }.
-   *  `compact` = true drops the vinyl glyph + subtitle, keeps just
-   *  the title — used for the 80×80 album-sample tiles. */
-  fallbackLabel?:
-    | string
-    | { title: string; subtitle?: string; compact?: boolean }
-  className?: string
-  /** Extra classes applied to the cover overlay div — useful for
-   *  hover transforms that should only animate the image, not the
-   *  parent backdrop. */
-  innerClassName?: string
-  /** Anything that should overlay the cover (gradient veils, labels,
-   *  "Now playing" pills, etc). Sits above the cover, below the
-   *  parent's border. */
-  children?: React.ReactNode
-}) {
-  const status = useCoverStatus(coverSrc)
-  // Optimistic render: show the cover during 'pending' AND 'loaded'.
-  // Swap to fallback only when the ping confirms failure.
-  const showCover = !!coverSrc && (status === 'pending' || status === 'loaded')
-  const showFallbackLabel = status === 'failed' || status === 'absent'
-
-  const label =
-    typeof fallbackLabel === 'string'
-      ? { title: fallbackLabel, subtitle: undefined, compact: false }
-      : fallbackLabel ?? null
-
-  return (
-    <div
-      className={`relative overflow-hidden bg-gradient-to-br ${fallbackGradient || 'from-charcoal to-card'} ${className ?? ''}`}
-    >
-      {showCover && (
-        <div
-          className={`absolute inset-0 bg-cover bg-center ${innerClassName ?? ''}`}
-          style={{ backgroundImage: `url("${coverSrc}")` }}
-          role="presentation"
-          aria-hidden="true"
-        />
-      )}
-
-      {showFallbackLabel && label && (
-        <div className="absolute inset-0 flex flex-col items-center justify-center p-3 text-center pointer-events-none">
-          {!label.compact && (
-            <svg
-              viewBox="0 0 48 48"
-              fill="none"
-              className="w-10 h-10 mb-3 text-cream/40"
-              aria-hidden="true"
-            >
-              <circle cx="24" cy="24" r="22" stroke="currentColor" strokeWidth="1.5" />
-              <circle cx="24" cy="24" r="14" stroke="currentColor" strokeWidth="1" opacity="0.6" />
-              <circle cx="24" cy="24" r="6" stroke="currentColor" strokeWidth="1" opacity="0.4" />
-              <circle cx="24" cy="24" r="2.5" fill="currentColor" opacity="0.8" />
-            </svg>
-          )}
-          <p
-            className={`font-serif ${label.compact ? 'text-[10px]' : 'text-sm'} text-cream/90 leading-tight line-clamp-2 ${label.compact ? '' : 'mb-1'}`}
-          >
-            {label.title}
-          </p>
-          {!label.compact && label.subtitle && (
-            <p className="text-xs text-cream/60 line-clamp-1">{label.subtitle}</p>
-          )}
-        </div>
-      )}
-
-      {children}
-    </div>
-  )
-}
 
 interface RoomsScreenProps {
   editorialRooms: Room[]
@@ -196,25 +61,24 @@ export function RoomsScreen({
                 href={`/room/${room.slug}`}
                 className="group shrink-0 w-32 md:w-40"
               >
-                <CoverTile
-                  coverSrc={room.coverArt ?? room.currentAlbum.cover}
-                  fallbackGradient={
-                    room.currentAlbum.fallbackGradient ||
-                    room.aesthetics?.backgroundGradient ||
-                    'from-charcoal to-card'
-                  }
-                  fallbackLabel={{
-                    title: room.currentAlbum.title,
-                    subtitle: room.currentAlbum.artist,
-                  }}
-                  className="aspect-square mb-3 rounded"
-                  innerClassName="transition-transform duration-700 group-hover:scale-105"
-                >
+                <div className="relative aspect-square mb-3 overflow-hidden rounded">
+                  <AlbumCover
+                    src={room.coverArt ?? room.currentAlbum.cover}
+                    title={room.currentAlbum.title}
+                    artist={room.currentAlbum.artist}
+                    fallbackGradient={
+                      room.currentAlbum.fallbackGradient ||
+                      room.aesthetics?.backgroundGradient ||
+                      'from-charcoal to-card'
+                    }
+                    fill
+                    className="transition-transform duration-700 group-hover:scale-105"
+                  />
                   <div className="absolute inset-0 bg-gradient-to-t from-background/80 to-transparent pointer-events-none" />
                   <div className="absolute bottom-2 left-2 right-2">
                     <p className="text-[10px] text-cream/80 truncate">Now playing</p>
                   </div>
-                </CoverTile>
+                </div>
                 <h3 className="font-serif text-sm text-cream group-hover:text-cream/80 transition-colors truncate">
                   {room.name}
                 </h3>
@@ -313,12 +177,12 @@ function EditorialRoomCard({ room, href }: { room: Room; href: string }) {
               zIndex: room.albumSample.length - i,
             }}
           >
-            <CoverTile
-              coverSrc={album.cover}
+            <AlbumCover
+              src={album.cover}
+              title={album.title}
+              artist={album.artist}
               fallbackGradient={album.fallbackGradient}
-              fallbackLabel={{ title: album.title, compact: true }}
-              className="w-20 h-20"
-              innerClassName="transition-transform duration-700 group-hover:scale-105"
+              className="w-20 h-20 transition-transform duration-700 group-hover:scale-105"
             />
           </div>
         ))}
@@ -351,18 +215,17 @@ function GenreRoomCard({ room, href }: { room: Room; href: string }) {
       href={href}
       className="group block border border-border/20 hover:border-border/40 transition-all duration-500 overflow-hidden"
     >
-      <CoverTile
-        coverSrc={room.coverArt ?? room.currentAlbum.cover}
-        fallbackGradient={room.aesthetics?.backgroundGradient || 'from-charcoal to-card'}
-        fallbackLabel={{
-          title: room.name,
-          subtitle: room.currentAlbum.artist,
-        }}
-        className="aspect-square"
-        innerClassName="transition-transform duration-700 group-hover:scale-105"
-      >
+      <div className="relative aspect-square overflow-hidden">
+        <AlbumCover
+          src={room.coverArt ?? room.currentAlbum.cover}
+          title={room.name}
+          artist={room.currentAlbum.artist}
+          fallbackGradient={room.aesthetics?.backgroundGradient || 'from-charcoal to-card'}
+          fill
+          className="transition-transform duration-700 group-hover:scale-105"
+        />
         <div className="absolute inset-0 bg-gradient-to-t from-background/85 via-background/20 to-transparent pointer-events-none" />
-      </CoverTile>
+      </div>
       <div className="p-4">
         <h3 className="font-serif text-base text-cream mb-1 group-hover:text-cream/80 transition-colors">
           {room.name}
