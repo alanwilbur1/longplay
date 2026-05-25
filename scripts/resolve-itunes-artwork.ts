@@ -221,28 +221,57 @@ function looksLikeCompilation(name: string): boolean {
 }
 
 // ── iTunes API ───────────────────────────────────────────────────────
-async function searchITunes(term: string): Promise<ITunesResult[]> {
+
+/** Build the exact iTunes Search URL we'd send. Exposed so the debug
+ *  printer can show it without re-deriving the construction. */
+function itunesSearchUrl(term: string): string {
   const url = new URL(ITUNES_BASE)
   url.searchParams.set('term', term)
   url.searchParams.set('entity', 'album')
   url.searchParams.set('country', 'US')
   url.searchParams.set('limit', '5')
+  return url.toString()
+}
 
-  const res = await fetch(url.toString(), {
+interface SearchResponse {
+  url: string
+  resultCount: number
+  results: ITunesResult[]
+  rawBody: string
+}
+
+async function searchITunes(term: string): Promise<SearchResponse> {
+  const url = itunesSearchUrl(term)
+  const res = await fetch(url, {
     headers: {
       Accept: 'application/json',
       'User-Agent': 'LongPlay/1.0 (+https://longplay.app)',
     },
   })
   if (!res.ok) throw new Error(`iTunes HTTP ${res.status}`)
-  const body = (await res.json()) as ITunesSearchResponse
-  return body.results ?? []
+  // Read as text first so the debug printer can show the raw body
+  // when resultCount is zero (helps the operator see iTunes' actual
+  // response shape — sometimes the API returns an empty results array
+  // with a non-zero resultCount, or a stray HTML error page, etc).
+  const rawBody = await res.text()
+  let body: ITunesSearchResponse
+  try {
+    body = JSON.parse(rawBody) as ITunesSearchResponse
+  } catch (err) {
+    throw new Error(`iTunes JSON parse failed: ${err instanceof Error ? err.message : String(err)}`)
+  }
+  return {
+    url,
+    resultCount: body.resultCount ?? 0,
+    results: body.results ?? [],
+    rawBody,
+  }
 }
 
 /** iTunes Lookup API: fetch by exact collectionId. Returns same
  *  shape as search. Used by override path when the operator knows
  *  the specific Apple Music collection they want. */
-async function lookupITunes(collectionId: number): Promise<ITunesResult[]> {
+async function lookupITunes(collectionId: number): Promise<SearchResponse> {
   const url = `${ITUNES_LOOKUP}?id=${encodeURIComponent(String(collectionId))}&entity=album`
   const res = await fetch(url, {
     headers: {
@@ -251,8 +280,19 @@ async function lookupITunes(collectionId: number): Promise<ITunesResult[]> {
     },
   })
   if (!res.ok) throw new Error(`iTunes lookup HTTP ${res.status}`)
-  const body = (await res.json()) as ITunesSearchResponse
-  return body.results ?? []
+  const rawBody = await res.text()
+  let body: ITunesSearchResponse
+  try {
+    body = JSON.parse(rawBody) as ITunesSearchResponse
+  } catch (err) {
+    throw new Error(`iTunes lookup JSON parse failed: ${err instanceof Error ? err.message : String(err)}`)
+  }
+  return {
+    url,
+    resultCount: body.resultCount ?? 0,
+    results: body.results ?? [],
+    rawBody,
+  }
 }
 
 // ── Manual override map ──────────────────────────────────────────────
@@ -846,14 +886,15 @@ async function main() {
       // ── Override path B: explicit iTunes collectionId ───────────
       else if (override?.collectionId) {
         console.log(`    [override: collectionId=${override.collectionId}${override.reason ? ` — ${override.reason}` : ''}]`)
-        const results = await lookupITunes(override.collectionId)
-        if (results.length === 0) {
+        const lookup = await lookupITunes(override.collectionId)
+        if (debugCandidates) {
+          printPreFilterDebug(lookup, '(lookup)')
+        }
+        if (lookup.results.length === 0) {
           unresolved += 1
           console.log(`    UNRESOLVED (lookup returned no results)`)
         } else {
-          // Lookup returns the exact album — accept its first Album
-          // entry. Still HEAD-validate before writing.
-          const r = results.find((x) => x.collectionType === 'Album' && x.artworkUrl100)
+          const r = lookup.results.find((x) => x.collectionType === 'Album' && x.artworkUrl100)
           if (!r || !r.artworkUrl100) {
             unresolved += 1
             console.log(`    UNRESOLVED (lookup result missing artworkUrl100)`)
@@ -861,9 +902,18 @@ async function main() {
             const upgraded = upgradeArtwork(r.artworkUrl100)
             let finalUrl = upgraded
             let ok = await validateArtwork(upgraded)
+            let validationNote = ok ? 'OK 1000x1000' : 'failed 1000x1000'
             if (!ok && upgraded !== r.artworkUrl100) {
               ok = await validateArtwork(r.artworkUrl100)
-              if (ok) finalUrl = r.artworkUrl100
+              if (ok) {
+                finalUrl = r.artworkUrl100
+                validationNote = 'OK (fallback 100x100)'
+              } else {
+                validationNote = 'failed 1000x1000 AND 100x100'
+              }
+            }
+            if (debugCandidates) {
+              console.log(`    [debug] artwork validation: ${validationNote}`)
             }
             if (!ok) {
               unresolved += 1
@@ -886,10 +936,23 @@ async function main() {
         if (override?.searchTerm) {
           console.log(`    [override: searchTerm="${term}"${override.reason ? ` — ${override.reason}` : ''}]`)
         }
-        const results = await searchITunes(term)
+        const search = await searchITunes(term)
+
+        // CRITICAL: debug output fires HERE — immediately after the
+        // API response, BEFORE selectMatch runs. So it prints
+        // regardless of whether selectMatch returns null / accepts
+        // candidates / rejects everything. The old placement was
+        // after selectMatch and inside the `else` (default-path)
+        // branch, which means it never fired on zero-result responses
+        // because selectMatch returned "no candidate above
+        // thresholds" first.
+        if (debugCandidates) {
+          printPreFilterDebug(search, '(search)')
+        }
+
         const { match, ambiguous: amb, reason, debug: matchDebug } = selectMatch(
           { title: item.title, artist: item.artist },
-          results,
+          search.results,
         )
 
         if (debugCandidates) {
@@ -899,7 +962,7 @@ async function main() {
         if (amb) {
           ambiguous += 1
           console.log(`    AMBIGUOUS (${reason})`)
-          for (const r of results.slice(0, 3)) {
+          for (const r of search.results.slice(0, 3)) {
             console.log(`       candidate: ${r.artistName} — ${r.collectionName}`)
           }
         } else if (!match) {
@@ -911,7 +974,6 @@ async function main() {
           let ok = await validateArtwork(upgraded)
           let validationNote = ok ? `OK 1000x1000` : 'failed 1000x1000'
           if (!ok && upgraded !== match.artworkUrl) {
-            // Fall back to the original 100x100 if 1000x1000 isn't served.
             ok = await validateArtwork(match.artworkUrl)
             if (ok) {
               finalUrl = match.artworkUrl
@@ -941,6 +1003,14 @@ async function main() {
       unresolved += 1
       const msg = err instanceof Error ? err.message : String(err)
       console.log(`    ERROR (${msg})`)
+      if (debugCandidates) {
+        // Even on error, show the URL we would have hit so the
+        // operator can reproduce manually with curl.
+        const term =
+          (useOverrides ? MANUAL_OVERRIDES[item.id]?.searchTerm : null) ??
+          `${item.artist} ${item.title}`
+        console.log(`    [debug] attempted URL: ${itunesSearchUrl(term)}`)
+      }
     }
 
     if (i < work.length - 1) {
@@ -975,11 +1045,56 @@ main().catch((err) => {
   process.exit(1)
 })
 
-// ── Debug printer ────────────────────────────────────────────────────
-// Activated by --debug-candidates. Prints the FULL per-candidate
-// classification (including rejected) for one album's iTunes search,
-// so the operator can see exactly why each candidate was kept or
-// dropped. Use with --only=<slug>.
+// ── Debug printers ───────────────────────────────────────────────────
+// Activated by --debug-candidates. Use with --only=<slug>.
+
+/**
+ * Prints the raw iTunes response BEFORE any matcher filtering runs.
+ * This is the first thing the operator sees per album under
+ * --debug-candidates — it answers the question "did iTunes return
+ * anything at all, and if so, what?". If results is empty we dump
+ * the raw response body and the request URL so the operator can
+ * curl it manually.
+ *
+ * Critical placement: this fires immediately after the await
+ * searchITunes() / lookupITunes(), BEFORE selectMatch() — so it
+ * runs regardless of whether the matcher accepts, rejects, or
+ * crashes on the response.
+ */
+function printPreFilterDebug(resp: SearchResponse, sourceLabel: string): void {
+  console.log()
+  console.log(`    [debug] fetched ${resp.results.length} raw results from iTunes ${sourceLabel}`)
+  console.log(`    [debug] resultCount=${resp.resultCount}   request URL:`)
+  console.log(`    [debug]   ${resp.url}`)
+  if (resp.results.length === 0) {
+    console.log(`    [debug] !! iTunes returned ZERO usable results !!`)
+    console.log(`    [debug] raw response body (first 500 chars):`)
+    const snippet = resp.rawBody.slice(0, 500)
+    console.log(`    [debug]   ${snippet}${resp.rawBody.length > 500 ? '…' : ''}`)
+    console.log(`    [debug] suggestions:`)
+    console.log(`    [debug]   - relax searchTerm override`)
+    console.log(`    [debug]   - try without entity=album (some albums classified as Music)`)
+    console.log(`    [debug]   - try the URL above in a browser/curl to compare`)
+    return
+  }
+  console.log(`    [debug] pre-filter raw candidate dump:`)
+  for (let i = 0; i < resp.results.length; i++) {
+    const r = resp.results[i]
+    console.log(
+      `    [debug]   ${i + 1}. "${r.artistName ?? '∅'}" — "${r.collectionName ?? '∅'}"`,
+    )
+    console.log(
+      `    [debug]      type=${r.collectionType ?? '∅'}   collectionId=${r.collectionId ?? '∅'}   artworkUrl100=${r.artworkUrl100 ? r.artworkUrl100.slice(0, 50) + '…' : '∅'}`,
+    )
+  }
+}
+
+/**
+ * Prints the FULL per-candidate classification (including REJECTED
+ * entries with reasons) AFTER selectMatch has run. This is the
+ * "why did the matcher accept/reject each" view, complementary to
+ * printPreFilterDebug's "what did iTunes return" view.
+ */
 function printCandidateDebug(
   item: { id: string; artist: string; title: string },
   searchTerm: string,
