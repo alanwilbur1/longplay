@@ -67,7 +67,13 @@ const ALLOWED_FILES_FOR_NEXT_IMAGE = new Set([
 const ALBUM_ARTWORK_ALLOWLIST: ReadonlySet<string> = new Set<string>([])
 
 interface Violation {
-  bucket: 'raw-img' | 'next-image-album' | 'no-cover' | 'placeholder' | 'dead-remote'
+  bucket:
+    | 'raw-img'
+    | 'next-image-album'
+    | 'no-cover'
+    | 'placeholder'
+    | 'insecure-remote'
+    | 'dead-remote'
   file?: string
   line?: number
   detail: string
@@ -160,7 +166,19 @@ function auditAlbumCoverage(): Violation[] {
       })
       continue
     }
-    if (cover.startsWith('https://placehold.co/')) {
+    // Insecure-remote check runs in default mode (no network needed —
+    // pure string inspection). Any http:// URL is a violation: mixed-
+    // content policies, Next image optimization, browser security
+    // rules can all silently block these.
+    if (/^http:\/\//i.test(cover)) {
+      violations.push({
+        bucket: 'insecure-remote',
+        detail: `${album.id} — "${album.title}" by ${album.artist}: insecure http:// URL (${cover.slice(0, 60)}…)`,
+      })
+      // Don't continue — also report placeholder if it's an
+      // insecure placehold.co URL (unlikely but possible).
+    }
+    if (cover.startsWith('https://placehold.co/') || cover.startsWith('http://placehold.co/')) {
       violations.push({
         bucket: 'placeholder',
         detail: `${album.id} — "${album.title}" by ${album.artist}: cover is placehold.co placeholder`,
@@ -250,10 +268,18 @@ async function main() {
 
   const all = [...rawImgViolations, ...coverageViolations, ...remoteViolations]
 
+  // Split coverage into the three buckets so the summary clearly
+  // surfaces insecure-remote (the new strict gate).
+  const noCover = coverageViolations.filter((v) => v.bucket === 'no-cover')
+  const placeholder = coverageViolations.filter((v) => v.bucket === 'placeholder')
+  const insecure = coverageViolations.filter((v) => v.bucket === 'insecure-remote')
+
   // Summary
   console.log('Summary:')
   console.log(`  [A] raw-image violations:        ${rawImgViolations.length}`)
-  console.log(`  [B] coverage violations:         ${coverageViolations.length}`)
+  console.log(`  [B] no-cover violations:         ${noCover.length}`)
+  console.log(`  [B] placeholder violations:      ${placeholder.length}`)
+  console.log(`  [B] insecure-remote violations:  ${insecure.length}`)
   if (checkRemote) {
     console.log(`  [C] dead-remote violations:      ${remoteViolations.length}`)
   } else {

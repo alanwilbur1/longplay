@@ -611,7 +611,16 @@ async function fetchCoverArtArchive(mbid: string): Promise<CAAFetchResult> {
     imageUrl = front.image
     pickedFrom = 'image'
   }
-  return { url, imageUrl, rawBody, pickedFrom }
+  // CAA's payload sometimes contains http:// URLs (the archive's
+  // legacy CDN serves both schemes but the JSON points at http).
+  // Normalize to https before returning — every consumer of this
+  // function (selection, validation, persistence) gets HTTPS.
+  return {
+    url,
+    imageUrl: imageUrl ? normalizeArtworkUrl(imageUrl) : null,
+    rawBody,
+    pickedFrom,
+  }
 }
 
 // MB candidate classification — mirrors selectMatch's structure for
@@ -1266,16 +1275,38 @@ function selectMatch(
   return { match: candidates[0], ambiguous: false, debug }
 }
 
+// ── HTTPS normalization ──────────────────────────────────────────────
+// Mixed-content policy + Next image optimization + browser security
+// rules can silently block http:// artwork. Every URL the pipeline
+// hands off — to the validator, to the writer, to the audit — gets
+// upgraded to https:// first. Applied at boundaries below (iTunes
+// upgrade, CAA selection, override paths, writeback) so no http://
+// URL can survive the pipeline.
+//
+// CAA in particular historically returned http:// URLs in its
+// `images[].thumbnails.*` payload even though https serves the same
+// asset.
+function normalizeArtworkUrl(url: string): string {
+  return url.replace(/^http:\/\//i, 'https://')
+}
+
 // ── Upgrade artworkUrl100 → 1000x1000 ────────────────────────────────
 function upgradeArtwork(url: string): string {
   // iTunes pattern: ".../<size>x<size>bb.<ext>"
   // Most albums serve 1000x1000bb.jpg cleanly; if not, the HEAD check
   // below will reject and we'll fall back to the original 100x100.
-  return url.replace(/\/\d+x\d+bb\./, '/1000x1000bb.')
+  // Result is HTTPS-normalized — iTunes occasionally returns http://
+  // URLs in legacy responses.
+  return normalizeArtworkUrl(url.replace(/\/\d+x\d+bb\./, '/1000x1000bb.'))
 }
 
 // ── HEAD validation ──────────────────────────────────────────────────
-async function validateArtwork(url: string): Promise<boolean> {
+// Defensively normalizes the URL before fetching — every caller
+// should already have normalized, but this guarantees the HEAD-check
+// never accidentally probes an http:// URL that might silently 404
+// behind a redirect or get blocked by mixed-content policy.
+async function validateArtwork(rawUrl: string): Promise<boolean> {
+  const url = normalizeArtworkUrl(rawUrl)
   const ctrl = new AbortController()
   const t = setTimeout(() => ctrl.abort(), HEAD_TIMEOUT_MS)
   try {
@@ -1307,7 +1338,13 @@ function writeAlbumCovers(updates: Map<string, string>): {
   let written = 0
   const missed: string[] = []
 
-  for (const [albumId, newUrl] of updates) {
+  for (const [albumId, rawUrl] of updates) {
+    // Final HTTPS-normalization at the persistence boundary —
+    // defense in depth. Upstream providers already normalize, but
+    // this guarantees no http:// URL can ever land in lib/albums.ts
+    // regardless of how it got into the `updates` map (override,
+    // iTunes, MB+CAA, future providers).
+    const newUrl = normalizeArtworkUrl(rawUrl)
     const escaped = albumId.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
     const idRe = new RegExp(`id:\\s*['"]${escaped}['"]`)
     const idMatch = idRe.exec(src)
@@ -1510,18 +1547,23 @@ async function main() {
 
       // ── Override path A: explicit artwork URL ───────────────────
       if (override?.artworkUrl) {
+        // HTTPS-normalize at intake — operators may paste http://
+        // URLs from documentation/Apple links. Single source of
+        // truth: by the time the URL reaches HEAD-validate or
+        // updates.set, it's https.
+        const overrideUrl = normalizeArtworkUrl(override.artworkUrl)
         console.log(`    [override: artworkUrl${override.reason ? ` — ${override.reason}` : ''}]`)
-        const ok = await validateArtwork(override.artworkUrl)
+        const ok = await validateArtwork(overrideUrl)
         if (!ok) {
           unresolved += 1
           console.log(`    UNRESOLVED (override URL did not HEAD-validate)`)
         } else {
           resolved += 1
           bumpSource('override-url')
-          updates.set(item.id, override.artworkUrl)
+          updates.set(item.id, overrideUrl)
           console.log(`    OK (source=override-url)`)
           console.log(`       before:  ${before}`)
-          console.log(`       after:   ${override.artworkUrl.slice(0, 60)}…`)
+          console.log(`       after:   ${overrideUrl.slice(0, 60)}…`)
         }
       }
       // ── Override path B: explicit iTunes collectionId ───────────
