@@ -1,0 +1,404 @@
+/**
+ * scripts/resolve-itunes-artwork.ts
+ *
+ * Replace empty / placeholder / fabricated album cover URLs in
+ * lib/albums.ts with verified artwork URLs sourced from the public
+ * iTunes Search API (no auth required).
+ *
+ * Conservative matching:
+ *   - both artist AND title must score above thresholds
+ *     (artist >= 0.85 ratio, title >= 0.75 ratio)
+ *   - obvious compilations ("Greatest Hits", "Best Of", "Anthology",
+ *     etc.) are rejected unless the album we're searching for is
+ *     itself a compilation
+ *   - if two or more candidates are too close in score, the entry
+ *     is logged as AMBIGUOUS and skipped
+ *
+ * Artwork URLs are upgraded from 100x100 to 1000x1000 (iTunes's
+ * standard high-res form: replace "/100x100bb." with "/1000x1000bb.").
+ * Every URL is validated with a HEAD request that confirms 200 +
+ * `Content-Type: image/*` before being written.
+ *
+ * Default mode is DRY-RUN. Pass --write to mutate lib/albums.ts.
+ *
+ *   tsx scripts/resolve-itunes-artwork.ts              # dry-run
+ *   tsx scripts/resolve-itunes-artwork.ts --write      # apply
+ *   tsx scripts/resolve-itunes-artwork.ts --only=i-comma-i   # single album
+ *
+ * After --write completes successfully:
+ *   tsx scripts/refresh-room-metadata.ts --dry
+ *   tsx scripts/refresh-room-metadata.ts
+ *
+ * No env vars required. No auth. iTunes Search is rate-limited per
+ * IP (~20 req/min recommended); the script paces requests at one
+ * every PER_REQUEST_DELAY_MS to stay well under.
+ */
+
+import { readFileSync, writeFileSync } from 'fs'
+import { join } from 'path'
+import { ALBUMS, type Album } from '../lib/albums'
+
+interface ITunesResult {
+  collectionType?: string
+  collectionName?: string
+  artistName?: string
+  artworkUrl100?: string
+  releaseDate?: string
+  primaryGenreName?: string
+  collectionId?: number
+}
+
+interface ITunesSearchResponse {
+  resultCount: number
+  results: ITunesResult[]
+}
+
+const ITUNES_BASE = 'https://itunes.apple.com/search'
+const PER_REQUEST_DELAY_MS = 3000
+const HEAD_TIMEOUT_MS = 5000
+const ARTIST_THRESHOLD = 0.85
+const TITLE_THRESHOLD = 0.75
+const AMBIGUITY_MARGIN = 0.1
+
+// ── Which albums need a new cover? ───────────────────────────────────
+function needsResolving(album: Album): boolean {
+  if (!album.cover || album.cover.length === 0) return true
+  if (album.cover.startsWith('https://placehold.co/')) return true
+  return false
+}
+
+// ── Similarity helpers ───────────────────────────────────────────────
+function normalize(s: string): string {
+  return s
+    .toLowerCase()
+    .replace(/[(\[].*?[)\]]/g, ' ') // drop (Deluxe Edition), [Remastered]
+    .replace(/[^a-z0-9 ]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
+function levenshtein(a: string, b: string): number {
+  const m = a.length
+  const n = b.length
+  if (m === 0) return n
+  if (n === 0) return m
+  const dp: number[][] = []
+  for (let i = 0; i <= m; i++) {
+    dp[i] = []
+    dp[i][0] = i
+  }
+  for (let j = 0; j <= n; j++) dp[0][j] = j
+  for (let i = 1; i <= m; i++) {
+    for (let j = 1; j <= n; j++) {
+      const cost = a[i - 1] === b[j - 1] ? 0 : 1
+      dp[i][j] = Math.min(dp[i - 1][j] + 1, dp[i][j - 1] + 1, dp[i - 1][j - 1] + cost)
+    }
+  }
+  return dp[m][n]
+}
+
+function ratio(a: string, b: string): number {
+  const na = normalize(a)
+  const nb = normalize(b)
+  if (na === nb) return 1
+  const maxLen = Math.max(na.length, nb.length)
+  if (maxLen === 0) return 0
+  return 1 - levenshtein(na, nb) / maxLen
+}
+
+// ── Compilation filter ───────────────────────────────────────────────
+const COMPILATION_KEYWORDS = [
+  'greatest hits',
+  'best of',
+  'compilation',
+  'anthology',
+  'essentials',
+  'collected',
+  'collection',
+  'remixes',
+  'live at',
+  'live in',
+  'live from',
+  'concert',
+  'sessions',
+  'demos',
+]
+function looksLikeCompilation(name: string): boolean {
+  const lower = name.toLowerCase()
+  return COMPILATION_KEYWORDS.some((k) => lower.includes(k))
+}
+
+// ── iTunes API ───────────────────────────────────────────────────────
+async function searchITunes(term: string): Promise<ITunesResult[]> {
+  const url = new URL(ITUNES_BASE)
+  url.searchParams.set('term', term)
+  url.searchParams.set('entity', 'album')
+  url.searchParams.set('country', 'US')
+  url.searchParams.set('limit', '5')
+
+  const res = await fetch(url.toString(), {
+    headers: {
+      Accept: 'application/json',
+      'User-Agent': 'LongPlay/1.0 (+https://longplay.app)',
+    },
+  })
+  if (!res.ok) throw new Error(`iTunes HTTP ${res.status}`)
+  const body = (await res.json()) as ITunesSearchResponse
+  return body.results ?? []
+}
+
+// ── Match selection ──────────────────────────────────────────────────
+interface Match {
+  artworkUrl: string
+  collectionName: string
+  artistName: string
+  collectionId?: number
+  artistScore: number
+  titleScore: number
+}
+
+function selectMatch(
+  album: { title: string; artist: string },
+  results: ITunesResult[],
+): { match: Match | null; ambiguous: boolean; reason?: string } {
+  const wantsCompilation = looksLikeCompilation(album.title)
+  const candidates: Match[] = []
+
+  for (const r of results) {
+    if (r.collectionType !== 'Album') continue
+    if (!r.collectionName || !r.artistName || !r.artworkUrl100) continue
+    if (!wantsCompilation && looksLikeCompilation(r.collectionName)) continue
+
+    const artistScore = ratio(album.artist, r.artistName)
+    const titleScore = ratio(album.title, r.collectionName)
+
+    if (artistScore < ARTIST_THRESHOLD) continue
+    if (titleScore < TITLE_THRESHOLD) continue
+
+    candidates.push({
+      artworkUrl: r.artworkUrl100,
+      collectionName: r.collectionName,
+      artistName: r.artistName,
+      collectionId: r.collectionId,
+      artistScore,
+      titleScore,
+    })
+  }
+
+  if (candidates.length === 0) {
+    return { match: null, ambiguous: false, reason: 'no candidate above thresholds' }
+  }
+
+  candidates.sort(
+    (a, b) => b.artistScore + b.titleScore - (a.artistScore + a.titleScore),
+  )
+
+  if (candidates.length >= 2) {
+    const top = candidates[0]
+    const second = candidates[1]
+    const margin = top.artistScore + top.titleScore - (second.artistScore + second.titleScore)
+    if (margin < AMBIGUITY_MARGIN && top.collectionId !== second.collectionId) {
+      return { match: null, ambiguous: true, reason: `top 2 within ${margin.toFixed(2)} score margin` }
+    }
+  }
+
+  return { match: candidates[0], ambiguous: false }
+}
+
+// ── Upgrade artworkUrl100 → 1000x1000 ────────────────────────────────
+function upgradeArtwork(url: string): string {
+  // iTunes pattern: ".../<size>x<size>bb.<ext>"
+  // Most albums serve 1000x1000bb.jpg cleanly; if not, the HEAD check
+  // below will reject and we'll fall back to the original 100x100.
+  return url.replace(/\/\d+x\d+bb\./, '/1000x1000bb.')
+}
+
+// ── HEAD validation ──────────────────────────────────────────────────
+async function validateArtwork(url: string): Promise<boolean> {
+  const ctrl = new AbortController()
+  const t = setTimeout(() => ctrl.abort(), HEAD_TIMEOUT_MS)
+  try {
+    const res = await fetch(url, {
+      method: 'HEAD',
+      headers: { Accept: 'image/*' },
+      signal: ctrl.signal,
+    })
+    if (!res.ok) return false
+    const ct = res.headers.get('content-type') ?? ''
+    return ct.startsWith('image/')
+  } catch {
+    return false
+  } finally {
+    clearTimeout(t)
+  }
+}
+
+// ── Write to lib/albums.ts ───────────────────────────────────────────
+// Strategy: find each album block by its unique `id: '<albumId>',`
+// then replace the *next* `cover: "..."` after that. Operates on the
+// source string so comments/whitespace stay intact.
+function writeAlbumCovers(updates: Map<string, string>): {
+  written: number
+  missed: string[]
+} {
+  const path = join(process.cwd(), 'lib/albums.ts')
+  let src = readFileSync(path, 'utf-8')
+  let written = 0
+  const missed: string[] = []
+
+  for (const [albumId, newUrl] of updates) {
+    const escaped = albumId.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+    const idRe = new RegExp(`id:\\s*['"]${escaped}['"]`)
+    const idMatch = idRe.exec(src)
+    if (!idMatch) {
+      missed.push(albumId)
+      continue
+    }
+    const after = src.slice(idMatch.index)
+    const coverRe = /cover:\s*"([^"]*)"/
+    const coverMatch = coverRe.exec(after)
+    if (!coverMatch) {
+      missed.push(albumId)
+      continue
+    }
+    const absoluteIndex = idMatch.index + coverMatch.index
+    const oldStr = coverMatch[0]
+    const newStr = `cover: "${newUrl}"`
+    src = src.slice(0, absoluteIndex) + newStr + src.slice(absoluteIndex + oldStr.length)
+    written += 1
+  }
+
+  writeFileSync(path, src, 'utf-8')
+  return { written, missed }
+}
+
+// ── Main ─────────────────────────────────────────────────────────────
+async function main() {
+  const args = process.argv.slice(2)
+  const writeMode = args.includes('--write')
+  const onlyArg = args.find((a) => a.startsWith('--only='))
+  const onlyId = onlyArg ? onlyArg.slice('--only='.length) : null
+
+  console.log(
+    `\n── iTunes artwork resolver${writeMode ? ' (WRITE MODE)' : ' (dry-run; pass --write to commit)'} ──\n`,
+  )
+
+  type WorkItem = {
+    key: string
+    id: string
+    title: string
+    artist: string
+    currentCover: string
+  }
+  const work: WorkItem[] = []
+
+  for (const [key, raw] of Object.entries(ALBUMS)) {
+    const album = raw as Album
+    if (onlyId && album.id !== onlyId) continue
+    if (!onlyId && !needsResolving(album)) continue
+    work.push({
+      key,
+      id: album.id,
+      title: album.title,
+      artist: album.artist,
+      currentCover: album.cover ?? '',
+    })
+  }
+
+  console.log(`Candidates to resolve: ${work.length}\n`)
+  if (work.length === 0) {
+    console.log('(nothing to do)')
+    process.exit(0)
+  }
+
+  let resolved = 0
+  let unresolved = 0
+  let ambiguous = 0
+  const updates = new Map<string, string>()
+
+  for (let i = 0; i < work.length; i++) {
+    const item = work[i]
+    const prefix = `[${i + 1}/${work.length}]`
+    const before =
+      item.currentCover.length === 0
+        ? '∅'
+        : item.currentCover.slice(0, 60) + (item.currentCover.length > 60 ? '…' : '')
+
+    process.stdout.write(`${prefix} ${item.artist} — ${item.title}\n`)
+
+    try {
+      const term = `${item.artist} ${item.title}`
+      const results = await searchITunes(term)
+      const { match, ambiguous: amb, reason } = selectMatch(
+        { title: item.title, artist: item.artist },
+        results,
+      )
+
+      if (amb) {
+        ambiguous += 1
+        console.log(`    AMBIGUOUS (${reason})`)
+        for (const r of results.slice(0, 3)) {
+          console.log(`       candidate: ${r.artistName} — ${r.collectionName}`)
+        }
+      } else if (!match) {
+        unresolved += 1
+        console.log(`    UNRESOLVED (${reason ?? 'no match'})`)
+      } else {
+        const upgraded = upgradeArtwork(match.artworkUrl)
+        let finalUrl = upgraded
+        let ok = await validateArtwork(upgraded)
+        if (!ok && upgraded !== match.artworkUrl) {
+          // Fall back to the original 100x100 if 1000x1000 isn't served.
+          ok = await validateArtwork(match.artworkUrl)
+          if (ok) finalUrl = match.artworkUrl
+        }
+        if (!ok) {
+          unresolved += 1
+          console.log(`    UNRESOLVED (validation failed on ${finalUrl.slice(0, 60)}…)`)
+        } else {
+          resolved += 1
+          updates.set(item.id, finalUrl)
+          console.log(
+            `    OK → matched ${match.artistName} — ${match.collectionName} (a=${match.artistScore.toFixed(2)} t=${match.titleScore.toFixed(2)})`,
+          )
+          console.log(`       before:  ${before}`)
+          console.log(`       after:   ${finalUrl.slice(0, 60)}…`)
+        }
+      }
+    } catch (err) {
+      unresolved += 1
+      const msg = err instanceof Error ? err.message : String(err)
+      console.log(`    ERROR (${msg})`)
+    }
+
+    if (i < work.length - 1) {
+      await new Promise((r) => setTimeout(r, PER_REQUEST_DELAY_MS))
+    }
+  }
+
+  console.log(
+    `\n── result: ${resolved} resolved · ${unresolved} unresolved · ${ambiguous} ambiguous ──\n`,
+  )
+
+  if (writeMode) {
+    if (updates.size === 0) {
+      console.log('(nothing to write)')
+    } else {
+      const { written, missed } = writeAlbumCovers(updates)
+      console.log(`lib/albums.ts: wrote ${written} cover URLs`)
+      if (missed.length > 0) {
+        console.log(`  ! missed (id not found in file): ${missed.join(', ')}`)
+      }
+      console.log('\nNext step:')
+      console.log('  tsx scripts/refresh-room-metadata.ts --dry')
+      console.log('  tsx scripts/refresh-room-metadata.ts')
+    }
+  } else {
+    console.log('(dry-run — pass --write to commit changes to lib/albums.ts)')
+  }
+}
+
+main().catch((err) => {
+  console.error('resolve-itunes-artwork failed:', err)
+  process.exit(1)
+})
