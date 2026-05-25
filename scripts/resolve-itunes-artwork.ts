@@ -611,13 +611,14 @@ async function fetchCoverArtArchive(mbid: string): Promise<CAAFetchResult> {
     imageUrl = front.image
     pickedFrom = 'image'
   }
-  // CAA's payload sometimes contains http:// URLs (the archive's
-  // legacy CDN serves both schemes but the JSON points at http).
-  // Normalize to https before returning — every consumer of this
-  // function (selection, validation, persistence) gets HTTPS.
+  // Return CAA's URL as given (typically http://). Don't normalize
+  // here — validation needs to try the original scheme because some
+  // CAA assets only HEAD-resolve over http. The persistence
+  // boundary (writeAlbumCovers) normalizes to https before any URL
+  // lands in lib/albums.ts.
   return {
     url,
-    imageUrl: imageUrl ? normalizeArtworkUrl(imageUrl) : null,
+    imageUrl: imageUrl ?? null,
     rawBody,
     pickedFrom,
   }
@@ -1300,22 +1301,60 @@ function upgradeArtwork(url: string): string {
   return normalizeArtworkUrl(url.replace(/\/\d+x\d+bb\./, '/1000x1000bb.'))
 }
 
-// ── HEAD validation ──────────────────────────────────────────────────
-// Defensively normalizes the URL before fetching — every caller
-// should already have normalized, but this guarantees the HEAD-check
-// never accidentally probes an http:// URL that might silently 404
-// behind a redirect or get blocked by mixed-content policy.
-async function validateArtwork(rawUrl: string): Promise<boolean> {
-  const url = normalizeArtworkUrl(rawUrl)
+// ── Validation ───────────────────────────────────────────────────────
+// Two layers:
+//
+//   tryFetch()       single HEAD or ranged-GET attempt against one URL.
+//                    Accepts 200/206 + image/* content-type.
+//
+//   validateArtwork() higher-level: HEAD first, ranged-GET fallback
+//                    (some CDNs don't support HEAD reliably).
+//                    For coverartarchive.org / archive.org URLs,
+//                    additionally tries the alternate scheme when
+//                    the original fails — CAA's JSON serves http://
+//                    URLs and HEAD against the https equivalent
+//                    sometimes 404s even though the asset works.
+//                    For all other providers, validates as-given.
+//
+//   PERSISTENCE invariant: the caller stores the URL it passed in,
+//   AFTER normalization at the writeback boundary (writeAlbumCovers).
+//   So even when we validated http://coverartarchive.org/foo, the
+//   value written to lib/albums.ts is https://coverartarchive.org/foo.
+//   audit-artwork's insecure-remote gate stays at zero.
+
+function isCAAUrl(url: string): boolean {
+  return /^https?:\/\/(?:[a-z0-9-]+\.)?(?:coverartarchive|archive)\.org\//i.test(url)
+}
+
+function alternateScheme(url: string): string {
+  if (/^http:\/\//i.test(url)) return url.replace(/^http:\/\//i, 'https://')
+  if (/^https:\/\//i.test(url)) return url.replace(/^https:\/\//i, 'http://')
+  return url
+}
+
+async function tryFetch(
+  url: string,
+  method: 'HEAD' | 'GET',
+  extraHeaders: HeadersInit = {},
+): Promise<boolean> {
   const ctrl = new AbortController()
   const t = setTimeout(() => ctrl.abort(), HEAD_TIMEOUT_MS)
   try {
     const res = await fetch(url, {
-      method: 'HEAD',
-      headers: { Accept: 'image/*' },
+      method,
+      headers: {
+        Accept: 'image/*',
+        'User-Agent': 'LongPlay/1.0 (artwork-validator)',
+        ...extraHeaders,
+      },
+      // CAA redirects http→https (or vice versa) on archive.org infra.
+      // Follow so the validation succeeds against the final asset.
+      redirect: 'follow',
       signal: ctrl.signal,
     })
-    if (!res.ok) return false
+    // 200 OK or 206 Partial Content (range request) both indicate
+    // the asset is being served.
+    if (res.status !== 200 && res.status !== 206) return false
     const ct = res.headers.get('content-type') ?? ''
     return ct.startsWith('image/')
   } catch {
@@ -1323,6 +1362,32 @@ async function validateArtwork(rawUrl: string): Promise<boolean> {
   } finally {
     clearTimeout(t)
   }
+}
+
+/** HEAD + ranged-GET fallback for one URL. */
+async function fetchValidates(url: string): Promise<boolean> {
+  if (await tryFetch(url, 'HEAD')) return true
+  // Some CDNs (notably CAA when serving from archive.org's S3-style
+  // storage) don't reliably support HEAD. Ranged GET with bytes=0-0
+  // pulls just a single byte but still surfaces status + content-type.
+  return tryFetch(url, 'GET', { Range: 'bytes=0-0' })
+}
+
+async function validateArtwork(rawUrl: string): Promise<boolean> {
+  // Non-CAA URLs (iTunes, etc.): validate exactly the URL we'd
+  // persist. Normalize first as defense — iTunes serves https
+  // anyway, but the normalize is cheap.
+  if (!isCAAUrl(rawUrl)) {
+    return fetchValidates(normalizeArtworkUrl(rawUrl))
+  }
+
+  // CAA path: try the URL as given (typically http://). If that
+  // fails, try the alternate scheme. Either passing means the
+  // asset is reachable; the writeback boundary will persist https.
+  if (await fetchValidates(rawUrl)) return true
+  const alt = alternateScheme(rawUrl)
+  if (alt !== rawUrl && (await fetchValidates(alt))) return true
+  return false
 }
 
 // ── Write to lib/albums.ts ───────────────────────────────────────────
