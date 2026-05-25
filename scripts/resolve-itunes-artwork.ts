@@ -64,6 +64,7 @@ interface ITunesSearchResponse {
 }
 
 const ITUNES_BASE = 'https://itunes.apple.com/search'
+const ITUNES_LOOKUP = 'https://itunes.apple.com/lookup'
 const PER_REQUEST_DELAY_MS = 3000
 const HEAD_TIMEOUT_MS = 5000
 const ARTIST_THRESHOLD = 0.85
@@ -155,6 +156,155 @@ async function searchITunes(term: string): Promise<ITunesResult[]> {
   if (!res.ok) throw new Error(`iTunes HTTP ${res.status}`)
   const body = (await res.json()) as ITunesSearchResponse
   return body.results ?? []
+}
+
+/** iTunes Lookup API: fetch by exact collectionId. Returns same
+ *  shape as search. Used by override path when the operator knows
+ *  the specific Apple Music collection they want. */
+async function lookupITunes(collectionId: number): Promise<ITunesResult[]> {
+  const url = `${ITUNES_LOOKUP}?id=${encodeURIComponent(String(collectionId))}&entity=album`
+  const res = await fetch(url, {
+    headers: {
+      Accept: 'application/json',
+      'User-Agent': 'LongPlay/1.0 (+https://longplay.app)',
+    },
+  })
+  if (!res.ok) throw new Error(`iTunes lookup HTTP ${res.status}`)
+  const body = (await res.json()) as ITunesSearchResponse
+  return body.results ?? []
+}
+
+// ── Manual override map ──────────────────────────────────────────────
+//
+// Activated by --use-overrides. For each album where the default
+// search+match path is too conservative (or returns ambiguous), the
+// operator can provide one of three escape hatches:
+//
+//   artworkUrl     bypass iTunes entirely; HEAD-validate this URL
+//                  and write it directly on success.
+//   collectionId   call iTunes Lookup API by ID instead of Search.
+//                  Result is matched + validated like any other.
+//   searchTerm     replace the default "{artist} {title}" query
+//                  with this string. Result is matched + validated
+//                  like any other.
+//
+// Precedence within a single override: artworkUrl > collectionId >
+// searchTerm. Any failure (URL doesn't validate, lookup returns no
+// match, search returns ambiguous) falls back to UNRESOLVED — the
+// override never silently writes a wrong value.
+//
+// Live valid covers are still skipped before overrides apply (per
+// --validate-existing rules). Overrides only run for items that
+// landed in the work list.
+//
+// Phase 1 population: searchTerm refinements for the 20 albums the
+// operator flagged as unresolved/ambiguous. searchTerm-only because
+// I can't verify specific collectionIds or URLs from the sandbox.
+// Operator should iterate: any that still come back unresolved can
+// be re-typed to `collectionId` (look up via Apple Music album URL —
+// the trailing digits) or `artworkUrl` (paste a verified CDN link).
+interface ManualOverride {
+  artworkUrl?: string
+  collectionId?: number
+  searchTerm?: string
+  reason?: string
+}
+
+const MANUAL_OVERRIDES: Record<string, ManualOverride> = {
+  // Bon Iver
+  'for-emma': {
+    searchTerm: 'Bon Iver For Emma Forever Ago',
+    reason: 'comma in title — search without punctuation',
+  },
+  '22-a-million': {
+    searchTerm: 'Bon Iver 22 A Million',
+    reason: 'comma + numeric prefix — search without punctuation',
+  },
+  // Phoebe Bridgers
+  punisher: {
+    searchTerm: 'Phoebe Bridgers Punisher',
+    reason: 'common title — multiple editions',
+  },
+  'stranger-in-the-alps': {
+    searchTerm: 'Phoebe Bridgers Stranger in the Alps',
+    reason: 'common title words',
+  },
+  // Sufjan Stevens
+  'carrie-and-lowell': {
+    searchTerm: 'Sufjan Stevens Carrie Lowell',
+    reason: 'ampersand in title — drop the &',
+  },
+  illinois: {
+    searchTerm: 'Sufjan Stevens Illinois',
+    reason: 'iTunes uses the "Illinoise" alt-spelling on some editions',
+  },
+  // Elliott Smith
+  xo: {
+    searchTerm: 'Elliott Smith XO 1998',
+    reason: '2-letter title — add year to disambiguate',
+  },
+  // Jazz catalog (deeply reissued — narrow to the source recording)
+  'kind-of-blue': {
+    searchTerm: 'Miles Davis Kind of Blue',
+    reason: 'many reissue editions — defer to top match',
+  },
+  'a-love-supreme': {
+    searchTerm: 'John Coltrane A Love Supreme',
+    reason: 'many reissue editions',
+  },
+  'waltz-for-debby': {
+    searchTerm: 'Bill Evans Waltz for Debby',
+    reason: 'artist name variants (Bill Evans / Bill Evans Trio)',
+  },
+  // Björk
+  homogenic: {
+    searchTerm: 'Bjork Homogenic',
+    reason: 'special char in artist name — use ASCII transliteration',
+  },
+  // Minimalism
+  'music-for-18-musicians': {
+    searchTerm: 'Steve Reich Music for 18 Musicians',
+    reason: 'multiple recordings by different ensembles',
+  },
+  // Mount Eerie
+  'a-crow-looked-at-me': {
+    searchTerm: 'Mount Eerie A Crow Looked at Me',
+    reason: '',
+  },
+  // Slint
+  spiderland: {
+    searchTerm: 'Slint Spiderland',
+    reason: '',
+  },
+  // William Basinski (multi-volume work)
+  'disintegration-loops': {
+    searchTerm: 'William Basinski The Disintegration Loops',
+    reason: '4-volume work — top match should be the boxed edition',
+  },
+  // Slowdive
+  souvlaki: {
+    searchTerm: 'Slowdive Souvlaki',
+    reason: '',
+  },
+  // Low — disambiguation risk: Bastille released an album with same title
+  'things-we-lost-in-the-fire': {
+    searchTerm: 'Low Things We Lost in the Fire',
+    reason: 'Bastille released same-titled album — pin to Low',
+  },
+  // The National
+  'sleep-well-beast': {
+    searchTerm: 'The National Sleep Well Beast',
+    reason: '',
+  },
+  // Currently placeholders (placehold.co)
+  southeastern: {
+    searchTerm: 'Jason Isbell Southeastern',
+    reason: 'currently placehold.co placeholder',
+  },
+  'a-seat-at-the-table': {
+    searchTerm: 'Solange A Seat at the Table',
+    reason: 'currently placehold.co placeholder',
+  },
 }
 
 // ── Match selection ──────────────────────────────────────────────────
@@ -287,6 +437,7 @@ async function main() {
   const args = process.argv.slice(2)
   const writeMode = args.includes('--write')
   const validateExisting = args.includes('--validate-existing')
+  const useOverrides = args.includes('--use-overrides')
   const onlyArg = args.find((a) => a.startsWith('--only='))
   const onlyId = onlyArg ? onlyArg.slice('--only='.length) : null
 
@@ -294,6 +445,7 @@ async function main() {
   if (writeMode) modeBits.push('WRITE MODE')
   else modeBits.push('dry-run; pass --write to commit')
   if (validateExisting) modeBits.push('--validate-existing')
+  if (useOverrides) modeBits.push('--use-overrides')
   console.log(`\n── iTunes artwork resolver (${modeBits.join(', ')}) ──\n`)
 
   type WorkItem = {
@@ -378,42 +530,101 @@ async function main() {
     )
 
     try {
-      const term = `${item.artist} ${item.title}`
-      const results = await searchITunes(term)
-      const { match, ambiguous: amb, reason } = selectMatch(
-        { title: item.title, artist: item.artist },
-        results,
-      )
+      const override = useOverrides ? MANUAL_OVERRIDES[item.id] : undefined
 
-      if (amb) {
-        ambiguous += 1
-        console.log(`    AMBIGUOUS (${reason})`)
-        for (const r of results.slice(0, 3)) {
-          console.log(`       candidate: ${r.artistName} — ${r.collectionName}`)
-        }
-      } else if (!match) {
-        unresolved += 1
-        console.log(`    UNRESOLVED (${reason ?? 'no match'})`)
-      } else {
-        const upgraded = upgradeArtwork(match.artworkUrl)
-        let finalUrl = upgraded
-        let ok = await validateArtwork(upgraded)
-        if (!ok && upgraded !== match.artworkUrl) {
-          // Fall back to the original 100x100 if 1000x1000 isn't served.
-          ok = await validateArtwork(match.artworkUrl)
-          if (ok) finalUrl = match.artworkUrl
-        }
+      // ── Override path A: explicit artwork URL ───────────────────
+      if (override?.artworkUrl) {
+        console.log(`    [override: artworkUrl${override.reason ? ` — ${override.reason}` : ''}]`)
+        const ok = await validateArtwork(override.artworkUrl)
         if (!ok) {
           unresolved += 1
-          console.log(`    UNRESOLVED (validation failed on ${finalUrl.slice(0, 60)}…)`)
+          console.log(`    UNRESOLVED (override URL did not HEAD-validate)`)
         } else {
           resolved += 1
-          updates.set(item.id, finalUrl)
-          console.log(
-            `    OK → matched ${match.artistName} — ${match.collectionName} (a=${match.artistScore.toFixed(2)} t=${match.titleScore.toFixed(2)})`,
-          )
+          updates.set(item.id, override.artworkUrl)
           console.log(`       before:  ${before}`)
-          console.log(`       after:   ${finalUrl.slice(0, 60)}…`)
+          console.log(`       after:   ${override.artworkUrl.slice(0, 60)}…`)
+        }
+      }
+      // ── Override path B: explicit iTunes collectionId ───────────
+      else if (override?.collectionId) {
+        console.log(`    [override: collectionId=${override.collectionId}${override.reason ? ` — ${override.reason}` : ''}]`)
+        const results = await lookupITunes(override.collectionId)
+        if (results.length === 0) {
+          unresolved += 1
+          console.log(`    UNRESOLVED (lookup returned no results)`)
+        } else {
+          // Lookup returns the exact album — accept its first Album
+          // entry. Still HEAD-validate before writing.
+          const r = results.find((x) => x.collectionType === 'Album' && x.artworkUrl100)
+          if (!r || !r.artworkUrl100) {
+            unresolved += 1
+            console.log(`    UNRESOLVED (lookup result missing artworkUrl100)`)
+          } else {
+            const upgraded = upgradeArtwork(r.artworkUrl100)
+            let finalUrl = upgraded
+            let ok = await validateArtwork(upgraded)
+            if (!ok && upgraded !== r.artworkUrl100) {
+              ok = await validateArtwork(r.artworkUrl100)
+              if (ok) finalUrl = r.artworkUrl100
+            }
+            if (!ok) {
+              unresolved += 1
+              console.log(`    UNRESOLVED (validation failed on ${finalUrl.slice(0, 60)}…)`)
+            } else {
+              resolved += 1
+              updates.set(item.id, finalUrl)
+              console.log(
+                `    OK → lookup ${r.artistName} — ${r.collectionName}`,
+              )
+              console.log(`       before:  ${before}`)
+              console.log(`       after:   ${finalUrl.slice(0, 60)}…`)
+            }
+          }
+        }
+      }
+      // ── Default path (with optional searchTerm override) ────────
+      else {
+        const term = override?.searchTerm ?? `${item.artist} ${item.title}`
+        if (override?.searchTerm) {
+          console.log(`    [override: searchTerm="${term}"${override.reason ? ` — ${override.reason}` : ''}]`)
+        }
+        const results = await searchITunes(term)
+        const { match, ambiguous: amb, reason } = selectMatch(
+          { title: item.title, artist: item.artist },
+          results,
+        )
+
+        if (amb) {
+          ambiguous += 1
+          console.log(`    AMBIGUOUS (${reason})`)
+          for (const r of results.slice(0, 3)) {
+            console.log(`       candidate: ${r.artistName} — ${r.collectionName}`)
+          }
+        } else if (!match) {
+          unresolved += 1
+          console.log(`    UNRESOLVED (${reason ?? 'no match'})`)
+        } else {
+          const upgraded = upgradeArtwork(match.artworkUrl)
+          let finalUrl = upgraded
+          let ok = await validateArtwork(upgraded)
+          if (!ok && upgraded !== match.artworkUrl) {
+            // Fall back to the original 100x100 if 1000x1000 isn't served.
+            ok = await validateArtwork(match.artworkUrl)
+            if (ok) finalUrl = match.artworkUrl
+          }
+          if (!ok) {
+            unresolved += 1
+            console.log(`    UNRESOLVED (validation failed on ${finalUrl.slice(0, 60)}…)`)
+          } else {
+            resolved += 1
+            updates.set(item.id, finalUrl)
+            console.log(
+              `    OK → matched ${match.artistName} — ${match.collectionName} (a=${match.artistScore.toFixed(2)} t=${match.titleScore.toFixed(2)})`,
+            )
+            console.log(`       before:  ${before}`)
+            console.log(`       after:   ${finalUrl.slice(0, 60)}…`)
+          }
         }
       }
     } catch (err) {
