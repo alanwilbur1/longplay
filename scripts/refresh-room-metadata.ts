@@ -200,6 +200,13 @@ function truncate(s: string, n = 60): string {
 
 async function main() {
   const dryRun = process.argv.includes('--dry') || process.argv.includes('--dry-run')
+  // Default-deny: never write a `cover_art = null` over an existing
+  // non-null DB value. Operator can override with --allow-null-cover
+  // (e.g. when intentionally retiring a cover). Protects against the
+  // common case where lib/albums.ts temporarily clears a cover to ""
+  // and the next refresh would silently NULL the DB column even
+  // though no artwork triage has happened yet.
+  const allowNullCover = process.argv.includes('--allow-null-cover')
 
   const url = process.env.SUPABASE_URL ?? process.env.NEXT_PUBLIC_SUPABASE_URL
   const key = process.env.SUPABASE_SERVICE_ROLE_KEY
@@ -277,31 +284,62 @@ async function main() {
       continue
     }
     const changes = diffSummary(existingRow, target)
+    // Cover_art downgrade guard: refuse to write null over an
+    // existing non-null DB value unless --allow-null-cover. We
+    // detect this by inspecting the raw fields rather than parsing
+    // the diff strings.
+    const wouldDowngradeCover =
+      target.cover_art === null && (existingRow.cover_art ?? null) !== null
+    const blockCoverDowngrade = wouldDowngradeCover && !allowNullCover
+
+    // If the ONLY change is the blocked cover downgrade, there's
+    // nothing else to write — treat as unchanged but log the block.
+    const nonCoverChanges = changes.filter((c) => !c.startsWith('cover_art:'))
     if (changes.length === 0) {
       console.log(`  · ${slug}: no changes`)
       unchanged += 1
       continue
     }
+    if (blockCoverDowngrade && nonCoverChanges.length === 0) {
+      console.log(
+        `  · ${slug}: cover_art downgrade blocked (pass --allow-null-cover to override); no other changes`,
+      )
+      unchanged += 1
+      continue
+    }
+
     console.log(`  ${dryRun ? '?' : '→'} ${slug}`)
-    for (const change of changes) console.log(`      ${change}`)
+    for (const change of changes) {
+      const isBlocked = blockCoverDowngrade && change.startsWith('cover_art:')
+      console.log(
+        `      ${change}${isBlocked ? '   ⊘ blocked by default — pass --allow-null-cover' : ''}`,
+      )
+    }
 
     if (dryRun) {
       updated += 1
       continue
     }
 
+    // Build the actual UPDATE payload. Conditionally omit cover_art
+    // when the downgrade guard fires — leaves the existing DB value
+    // intact; every other field still gets refreshed.
+    const updatePayload: Partial<UpdatePayload> = {
+      genres: target.genres,
+      moods: target.moods,
+      energy_level: target.energy_level,
+      cadence: target.cadence,
+      featured: target.featured,
+      recommendation_weight: target.recommendation_weight,
+      tagline: target.tagline,
+    }
+    if (!blockCoverDowngrade) {
+      updatePayload.cover_art = target.cover_art
+    }
+
     const { error: updErr } = await db
       .from('rooms')
-      .update({
-        genres: target.genres,
-        moods: target.moods,
-        energy_level: target.energy_level,
-        cadence: target.cadence,
-        featured: target.featured,
-        recommendation_weight: target.recommendation_weight,
-        tagline: target.tagline,
-        cover_art: target.cover_art,
-      })
+      .update(updatePayload)
       .eq('slug', slug)
     if (updErr) {
       console.log(`      ! update failed: ${updErr.message}`)

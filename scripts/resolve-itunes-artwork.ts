@@ -5,27 +5,37 @@
  * lib/albums.ts with verified artwork URLs sourced from the public
  * iTunes Search API (no auth required).
  *
- * Conservative matching:
+ * Selection set (default):
+ *   - cover === ""
+ *   - cover starts with https://placehold.co/
+ *
+ * Selection set (--validate-existing): the above PLUS any cover
+ * whose HEAD request fails (non-200 or non-image content-type).
+ * A live, valid cover is never overwritten — verified existing URLs
+ * are skipped before we even consult iTunes.
+ *
+ * Conservative matching (unchanged):
  *   - both artist AND title must score above thresholds
  *     (artist >= 0.85 ratio, title >= 0.75 ratio)
- *   - obvious compilations ("Greatest Hits", "Best Of", "Anthology",
- *     etc.) are rejected unless the album we're searching for is
- *     itself a compilation
- *   - if two or more candidates are too close in score, the entry
- *     is logged as AMBIGUOUS and skipped
+ *   - obvious compilations rejected unless we're searching for one
+ *   - top 2 within AMBIGUITY_MARGIN → AMBIGUOUS, logged, skipped
  *
- * Artwork URLs are upgraded from 100x100 to 1000x1000 (iTunes's
- * standard high-res form: replace "/100x100bb." with "/1000x1000bb.").
- * Every URL is validated with a HEAD request that confirms 200 +
- * `Content-Type: image/*` before being written.
+ * Artwork URLs are upgraded from 100x100 to 1000x1000 and HEAD-
+ * validated (image/* content-type required) before being written.
+ *
+ * Flags:
+ *   --write              commit changes to lib/albums.ts
+ *   --only=<albumId>     process a single album
+ *   --validate-existing  HEAD-check live URLs too; queue dead ones
  *
  * Default mode is DRY-RUN. Pass --write to mutate lib/albums.ts.
  *
- *   tsx scripts/resolve-itunes-artwork.ts              # dry-run
- *   tsx scripts/resolve-itunes-artwork.ts --write      # apply
- *   tsx scripts/resolve-itunes-artwork.ts --only=i-comma-i   # single album
+ *   tsx scripts/resolve-itunes-artwork.ts
+ *   tsx scripts/resolve-itunes-artwork.ts --validate-existing
+ *   tsx scripts/resolve-itunes-artwork.ts --write
+ *   tsx scripts/resolve-itunes-artwork.ts --only=i-comma-i
  *
- * After --write completes successfully:
+ * After --write:
  *   tsx scripts/refresh-room-metadata.ts --dry
  *   tsx scripts/refresh-room-metadata.ts
  *
@@ -276,12 +286,15 @@ function writeAlbumCovers(updates: Map<string, string>): {
 async function main() {
   const args = process.argv.slice(2)
   const writeMode = args.includes('--write')
+  const validateExisting = args.includes('--validate-existing')
   const onlyArg = args.find((a) => a.startsWith('--only='))
   const onlyId = onlyArg ? onlyArg.slice('--only='.length) : null
 
-  console.log(
-    `\n── iTunes artwork resolver${writeMode ? ' (WRITE MODE)' : ' (dry-run; pass --write to commit)'} ──\n`,
-  )
+  const modeBits = []
+  if (writeMode) modeBits.push('WRITE MODE')
+  else modeBits.push('dry-run; pass --write to commit')
+  if (validateExisting) modeBits.push('--validate-existing')
+  console.log(`\n── iTunes artwork resolver (${modeBits.join(', ')}) ──\n`)
 
   type WorkItem = {
     key: string
@@ -289,19 +302,55 @@ async function main() {
     title: string
     artist: string
     currentCover: string
+    reasonAdded: string
   }
   const work: WorkItem[] = []
+
+  if (validateExisting) {
+    console.log('HEAD-checking existing cover URLs first…')
+  }
 
   for (const [key, raw] of Object.entries(ALBUMS)) {
     const album = raw as Album
     if (onlyId && album.id !== onlyId) continue
-    if (!onlyId && !needsResolving(album)) continue
+
+    // Always include empties + placeholders.
+    if (!album.cover || album.cover.length === 0) {
+      work.push({
+        key,
+        id: album.id,
+        title: album.title,
+        artist: album.artist,
+        currentCover: '',
+        reasonAdded: 'empty',
+      })
+      continue
+    }
+    if (album.cover.startsWith('https://placehold.co/')) {
+      work.push({
+        key,
+        id: album.id,
+        title: album.title,
+        artist: album.artist,
+        currentCover: album.cover,
+        reasonAdded: 'placeholder',
+      })
+      continue
+    }
+
+    // For everything else: only consider if --validate-existing was
+    // passed, AND only queue when the HEAD-check fails. Live valid
+    // URLs are never overwritten.
+    if (!validateExisting) continue
+    const probe = await validateArtwork(album.cover)
+    if (probe) continue // live and serving an image → leave alone
     work.push({
       key,
       id: album.id,
       title: album.title,
       artist: album.artist,
-      currentCover: album.cover ?? '',
+      currentCover: album.cover,
+      reasonAdded: 'dead (HEAD failed)',
     })
   }
 
@@ -324,7 +373,9 @@ async function main() {
         ? '∅'
         : item.currentCover.slice(0, 60) + (item.currentCover.length > 60 ? '…' : '')
 
-    process.stdout.write(`${prefix} ${item.artist} — ${item.title}\n`)
+    process.stdout.write(
+      `${prefix} ${item.artist} — ${item.title} [queued: ${item.reasonAdded}]\n`,
+    )
 
     try {
       const term = `${item.artist} ${item.title}`
