@@ -1405,11 +1405,23 @@ function writeAlbumCovers(updates: Map<string, string>): {
 
   for (const [albumId, rawUrl] of updates) {
     // Final HTTPS-normalization at the persistence boundary —
-    // defense in depth. Upstream providers already normalize, but
-    // this guarantees no http:// URL can ever land in lib/albums.ts
-    // regardless of how it got into the `updates` map (override,
-    // iTunes, MB+CAA, future providers).
+    // defense in depth. Upstream call sites (updates.set) all
+    // normalize too, but this guarantees no http:// URL can ever
+    // land in lib/albums.ts regardless of how it got into the
+    // `updates` map (override, iTunes, MB+CAA, future providers).
     const newUrl = normalizeArtworkUrl(rawUrl)
+    // Hard invariant. normalizeArtworkUrl is a pure http→https
+    // regex so this is unreachable in practice — its purpose is
+    // to catch any future regression (a normalize path that
+    // skips http://, a new provider with a different insecure
+    // scheme, etc.) BEFORE the bad URL hits disk. The audit's
+    // insecure-remote bucket already gates merge; this gates the
+    // resolver write itself.
+    if (/^http:\/\//i.test(newUrl)) {
+      throw new Error(
+        `Attempted to persist insecure artwork URL for ${albumId}: ${newUrl}`,
+      )
+    }
     const escaped = albumId.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
     const idRe = new RegExp(`id:\\s*['"]${escaped}['"]`)
     const idMatch = idRe.exec(src)
@@ -1591,7 +1603,11 @@ async function main() {
     }
     resolved += 1
     bumpSource('musicbrainz-caa')
-    updates.set(item.id, mb.imageUrl)
+    // HTTPS-normalize at intake. CAA's JSON serves http:// URLs even
+    // when the asset is reachable via https — keep the map clean so
+    // the writeback boundary's invariant check is unreachable in
+    // practice rather than load-bearing.
+    updates.set(item.id, normalizeArtworkUrl(mb.imageUrl))
     if (mb.mbid) discoveredMBIDs.set(item.id, mb.mbid)
     console.log(
       `    OK (source=musicbrainz-caa) → MB release-group ${mb.mbid ?? '?'}`,
@@ -1675,7 +1691,10 @@ async function main() {
             } else {
               resolved += 1
               bumpSource('itunes-lookup')
-              updates.set(item.id, finalUrl)
+              // HTTPS-normalize at intake. iTunes usually serves https
+              // already but legacy responses sometimes leak http://;
+              // upgradeArtwork normalizes, but be explicit here.
+              updates.set(item.id, normalizeArtworkUrl(finalUrl))
               console.log(
                 `    OK (source=itunes-lookup) → ${r.artistName} — ${r.collectionName}`,
               )
@@ -1762,7 +1781,9 @@ async function main() {
           } else {
             resolved += 1
             bumpSource('itunes-search')
-            updates.set(item.id, finalUrl)
+            // HTTPS-normalize at intake (defense in depth — see iTunes-
+            // lookup branch above).
+            updates.set(item.id, normalizeArtworkUrl(finalUrl))
             console.log(
               `    OK (source=itunes-search) → matched ${match.artistName} — ${match.collectionName} (a=${match.artistScore.toFixed(2)} t=${match.titleScore.toFixed(2)})`,
             )
