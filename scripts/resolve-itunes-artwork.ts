@@ -1576,10 +1576,16 @@ async function main() {
       console.log(`    [musicbrainz] no usable image — ${mb.failureReason ?? 'unknown'}`)
       return false
     }
+    // Centralized validation — validateArtwork() handles HEAD,
+    // ranged-GET fallback, and CAA scheme-flexible retry (try as
+    // given, then alternate scheme). No HEAD-only fast path here;
+    // this is the single source of truth for "did the image actually
+    // resolve". Persistence boundary (writeAlbumCovers) normalizes
+    // any http:// URL to https:// before lib/albums.ts is touched.
     const ok = await validateArtwork(mb.imageUrl)
     if (!ok) {
       console.log(
-        `    [musicbrainz] CAA image did not HEAD-validate: ${mb.imageUrl.slice(0, 60)}…`,
+        `    [musicbrainz] CAA image failed validation (HEAD + ranged-GET, both schemes): ${mb.imageUrl.slice(0, 60)}…`,
       )
       return false
     }
