@@ -223,11 +223,14 @@ function looksLikeCompilation(name: string): boolean {
 // ── iTunes API ───────────────────────────────────────────────────────
 
 /** Build the exact iTunes Search URL we'd send. Exposed so the debug
- *  printer can show it without re-deriving the construction. */
-function itunesSearchUrl(term: string): string {
+ *  printer can show it without re-deriving the construction.
+ *  When `entity` is null, the entity filter is omitted entirely —
+ *  expanded-search fallback for cases where iTunes mis-categorizes
+ *  the album under Music/Compilation/etc instead of Album. */
+function itunesSearchUrl(term: string, entity: string | null = 'album'): string {
   const url = new URL(ITUNES_BASE)
   url.searchParams.set('term', term)
-  url.searchParams.set('entity', 'album')
+  if (entity !== null) url.searchParams.set('entity', entity)
   url.searchParams.set('country', 'US')
   url.searchParams.set('limit', '5')
   return url.toString()
@@ -240,8 +243,11 @@ interface SearchResponse {
   rawBody: string
 }
 
-async function searchITunes(term: string): Promise<SearchResponse> {
-  const url = itunesSearchUrl(term)
+async function searchITunes(
+  term: string,
+  entity: string | null = 'album',
+): Promise<SearchResponse> {
+  const url = itunesSearchUrl(term, entity)
   const res = await fetch(url, {
     headers: {
       Accept: 'application/json',
@@ -292,6 +298,148 @@ async function lookupITunes(collectionId: number): Promise<SearchResponse> {
     resultCount: body.resultCount ?? 0,
     results: body.results ?? [],
     rawBody,
+  }
+}
+
+// ── Expanded multi-query search ──────────────────────────────────────
+//
+// iTunes Search recall is unreliable on a single query. The same album
+// can be missing from "Phoebe Bridgers Punisher" but present in
+// "Punisher Phoebe Bridgers" — search ranking is fuzzy and ordering
+// matters. Strategy: try a series of progressively-broader queries,
+// dedupe candidates across all responses by collectionId, and let the
+// matcher pick the best from the unified pool.
+//
+// Early termination: as soon as ANY query produces a canonical exact
+// match (normalize(artist) AND normalize(title) both equal), we stop
+// firing further queries for this album. Most albums resolve on Q1;
+// only the stubborn ones run the full set.
+//
+// Entity fallback: if all entity=album queries fail to produce a
+// canonical match, we retry the most informative queries WITHOUT the
+// entity filter — catches iTunes results categorized as Music/
+// Compilation/etc that should be Album.
+//
+// Provenance: each candidate remembers which query produced it. With
+// --debug-expanded-search, the operator sees `[from: artist+title]`
+// next to each candidate in the pre-filter dump.
+
+interface QueryAttempt {
+  label: string
+  term: string
+  entity: string | null
+  resp: SearchResponse
+  /** True if a canonical exact match landed in this query's results
+   *  (and therefore expanded search terminated here). */
+  canonicalHit: boolean
+}
+
+interface ExpandedSearchResult {
+  queries: QueryAttempt[]
+  /** All results across all queries, deduped by collectionId. */
+  pooled: ITunesResult[]
+  /** Per-collectionId provenance: which query labels produced this
+   *  result. A single album frequently appears in 2-3 queries; the
+   *  list documents which. */
+  provenance: Map<number, string[]>
+}
+
+/** Build the ordered list of fallback queries for an album. */
+function buildQueryPlan(
+  album: { artist: string; title: string },
+  primaryOverride: string | null,
+): Array<{ label: string; term: string; entity: string | null }> {
+  // Tier-1 (entity=album): primary + broadening variants.
+  const tier1Term = primaryOverride ?? `${album.artist} ${album.title}`
+  const tier1Label = primaryOverride ? 'override' : 'artist+title'
+  const plan: Array<{ label: string; term: string; entity: string | null }> = [
+    { label: tier1Label, term: tier1Term, entity: 'album' },
+  ]
+  // The other 4 generated variants are added only if the override
+  // didn't already cover that shape — but for simplicity we always
+  // add them; dedup happens at the collectionId level downstream.
+  const generated: Array<{ label: string; term: string }> = [
+    { label: 'title+artist', term: `${album.title} ${album.artist}` },
+    { label: 'title-only', term: album.title },
+    { label: 'artist-only', term: album.artist },
+    { label: 'artist+album+title', term: `${album.artist} album ${album.title}` },
+  ]
+  for (const g of generated) {
+    if (g.term !== tier1Term) plan.push({ ...g, entity: 'album' })
+  }
+  // Tier-2 (no entity filter): retry the two most informative
+  // variants. The matcher's collectionType filter still applies for
+  // non-canonical results — only exact-normalized double-matches
+  // bypass it.
+  plan.push(
+    { label: 'artist+title (no-entity)', term: `${album.artist} ${album.title}`, entity: null },
+    { label: 'title-only (no-entity)', term: album.title, entity: null },
+  )
+  return plan
+}
+
+async function expandedSearch(
+  album: { artist: string; title: string },
+  options: { primaryOverride?: string | null; delayMs?: number } = {},
+): Promise<ExpandedSearchResult> {
+  const plan = buildQueryPlan(album, options.primaryOverride ?? null)
+  const delayMs = options.delayMs ?? PER_REQUEST_DELAY_MS
+  const queries: QueryAttempt[] = []
+  const pooled = new Map<number, ITunesResult>()
+  const provenance = new Map<number, string[]>()
+
+  for (let i = 0; i < plan.length; i++) {
+    const def = plan[i]
+    let resp: SearchResponse
+    try {
+      resp = await searchITunes(def.term, def.entity)
+    } catch (err) {
+      // Log the failure as part of the attempt log; downstream debug
+      // surface will show it. Other queries may still succeed.
+      resp = {
+        url: itunesSearchUrl(def.term, def.entity),
+        resultCount: 0,
+        results: [],
+        rawBody: `(error: ${err instanceof Error ? err.message : String(err)})`,
+      }
+    }
+
+    let canonicalHit = false
+    for (const r of resp.results) {
+      const id = r.collectionId
+      if (id === undefined) continue
+      if (!pooled.has(id)) pooled.set(id, r)
+      const list = provenance.get(id) ?? []
+      if (!list.includes(def.label)) list.push(def.label)
+      provenance.set(id, list)
+      // Track canonical-hit for early termination.
+      if (
+        r.collectionName &&
+        r.artistName &&
+        r.artworkUrl100 &&
+        normalizedExact(album.artist, r.artistName) &&
+        normalizedExact(album.title, r.collectionName)
+      ) {
+        canonicalHit = true
+      }
+    }
+
+    queries.push({ label: def.label, term: def.term, entity: def.entity, resp, canonicalHit })
+
+    // Early termination on canonical match.
+    if (canonicalHit) break
+
+    // Polite rate limit between queries (only when we know we'll do
+    // more — last iteration skips the sleep).
+    if (i < plan.length - 1) {
+      await new Promise((r) => setTimeout(r, delayMs))
+    }
+  }
+
+  return {
+    queries,
+    pooled: Array.from(pooled.values()),
+    provenance,
   }
 }
 
@@ -774,6 +922,7 @@ async function main() {
   const validateExisting = args.includes('--validate-existing')
   const useOverrides = args.includes('--use-overrides')
   const debugCandidates = args.includes('--debug-candidates')
+  const debugExpandedSearch = args.includes('--debug-expanded-search')
   const onlyArg = args.find((a) => a.startsWith('--only='))
   const onlyId = onlyArg ? onlyArg.slice('--only='.length) : null
 
@@ -783,6 +932,7 @@ async function main() {
   if (validateExisting) modeBits.push('--validate-existing')
   if (useOverrides) modeBits.push('--use-overrides')
   if (debugCandidates) modeBits.push('--debug-candidates')
+  if (debugExpandedSearch) modeBits.push('--debug-expanded-search')
   console.log(`\n── iTunes artwork resolver (${modeBits.join(', ')}) ──\n`)
 
   type WorkItem = {
@@ -853,6 +1003,10 @@ async function main() {
   let unresolved = 0
   let ambiguous = 0
   const updates = new Map<string, string>()
+  // Records the iTunes collectionId for every resolved album so the
+  // operator can paste a deterministic override into MANUAL_OVERRIDES
+  // for future runs. Surfaced in the end-of-run summary block.
+  const discoveredCollectionIds = new Map<string, number>()
 
   for (let i = 0; i < work.length; i++) {
     const item = work[i]
@@ -930,44 +1084,51 @@ async function main() {
           }
         }
       }
-      // ── Default path (with optional searchTerm override) ────────
+      // ── Default path (expanded multi-query search) ──────────────
       else {
-        const term = override?.searchTerm ?? `${item.artist} ${item.title}`
         if (override?.searchTerm) {
-          console.log(`    [override: searchTerm="${term}"${override.reason ? ` — ${override.reason}` : ''}]`)
-        }
-        const search = await searchITunes(term)
-
-        // CRITICAL: debug output fires HERE — immediately after the
-        // API response, BEFORE selectMatch runs. So it prints
-        // regardless of whether selectMatch returns null / accepts
-        // candidates / rejects everything. The old placement was
-        // after selectMatch and inside the `else` (default-path)
-        // branch, which means it never fired on zero-result responses
-        // because selectMatch returned "no candidate above
-        // thresholds" first.
-        if (debugCandidates) {
-          printPreFilterDebug(search, '(search)')
+          console.log(`    [override: searchTerm="${override.searchTerm}"${override.reason ? ` — ${override.reason}` : ''}]`)
         }
 
+        // Multi-query expanded search. Short-circuits as soon as ANY
+        // query produces a canonical exact match — most albums
+        // resolve on Q1. Stubborn ones run all 7.
+        const expanded = await expandedSearch(
+          { artist: item.artist, title: item.title },
+          { primaryOverride: override?.searchTerm ?? null },
+        )
+
+        // Debug: per-query attempts + pooled provenance.
+        if (debugExpandedSearch || debugCandidates) {
+          printExpandedSearchDebug(expanded)
+        }
+
+        // Run the matcher on the deduped pool, not on any single
+        // query's results. This way a canonical match that surfaced
+        // on Q3 still wins even if Q1 also returned candidates.
         const { match, ambiguous: amb, reason, debug: matchDebug } = selectMatch(
           { title: item.title, artist: item.artist },
-          search.results,
+          expanded.pooled,
         )
 
         if (debugCandidates) {
-          printCandidateDebug(item, term, matchDebug)
+          // No single "search term" makes sense here — show what we
+          // tried. Pass the first query's term as a label.
+          const headerTerm = expanded.queries[0]?.term ?? `${item.artist} ${item.title}`
+          printCandidateDebug(item, headerTerm, matchDebug)
         }
 
         if (amb) {
           ambiguous += 1
           console.log(`    AMBIGUOUS (${reason})`)
-          for (const r of search.results.slice(0, 3)) {
+          for (const r of expanded.pooled.slice(0, 3)) {
             console.log(`       candidate: ${r.artistName} — ${r.collectionName}`)
           }
         } else if (!match) {
           unresolved += 1
-          console.log(`    UNRESOLVED (${reason ?? 'no match'})`)
+          console.log(
+            `    UNRESOLVED (${reason ?? 'no match'}; tried ${expanded.queries.length} queries, ${expanded.pooled.length} pooled candidates)`,
+          )
         } else {
           const upgraded = upgradeArtwork(match.artworkUrl)
           let finalUrl = upgraded
@@ -996,6 +1157,14 @@ async function main() {
             )
             console.log(`       before:  ${before}`)
             console.log(`       after:   ${finalUrl.slice(0, 60)}…`)
+            // Track the discovered iTunes collectionId for the
+            // end-of-run summary. Lets the operator paste a
+            // deterministic override into MANUAL_OVERRIDES for
+            // future runs without having to manually look the
+            // album up on music.apple.com.
+            if (match.collectionId !== undefined) {
+              discoveredCollectionIds.set(item.id, match.collectionId)
+            }
           }
         }
       }
@@ -1022,6 +1191,21 @@ async function main() {
     `\n── result: ${resolved} resolved · ${unresolved} unresolved · ${ambiguous} ambiguous ──\n`,
   )
 
+  // ── Discovered collectionId summary ─────────────────────────────
+  // Every album resolved via expanded search through iTunes Search
+  // came back with a collectionId. Surface them so the operator can
+  // paste deterministic overrides into MANUAL_OVERRIDES for future
+  // runs — no more silent recall regressions when iTunes ranking
+  // changes.
+  if (discoveredCollectionIds.size > 0) {
+    console.log('── discovered iTunes collectionIds (copy into MANUAL_OVERRIDES for deterministic re-runs) ──')
+    for (const [albumId, collectionId] of discoveredCollectionIds) {
+      const slug = albumId.replace(/'/g, "\\'")
+      console.log(`  '${slug}': { collectionId: ${collectionId} },`)
+    }
+    console.log()
+  }
+
   if (writeMode) {
     if (updates.size === 0) {
       console.log('(nothing to write)')
@@ -1046,7 +1230,53 @@ main().catch((err) => {
 })
 
 // ── Debug printers ───────────────────────────────────────────────────
-// Activated by --debug-candidates. Use with --only=<slug>.
+// Activated by --debug-candidates / --debug-expanded-search. Use
+// with --only=<slug>.
+
+/**
+ * Prints the multi-query expanded search summary: each attempt's
+ * URL + result count + canonical-hit flag, plus the pooled
+ * candidate list with per-candidate provenance (which queries
+ * surfaced it).
+ *
+ * Replaces printPreFilterDebug for the default-path branch.
+ * printPreFilterDebug is still used by the collectionId-override
+ * (lookup) path where there's only one query.
+ */
+function printExpandedSearchDebug(ex: ExpandedSearchResult): void {
+  console.log()
+  console.log(
+    `    [debug] expanded search: ${ex.queries.length} ${ex.queries.length === 1 ? 'query' : 'queries'} attempted, ${ex.pooled.length} pooled candidates`,
+  )
+  for (let i = 0; i < ex.queries.length; i++) {
+    const q = ex.queries[i]
+    const flag = q.canonicalHit ? ' ← canonical-hit (early termination)' : ''
+    console.log(
+      `    [debug]   Q${i + 1} [${q.label}] entity=${q.entity ?? 'none'} → ${q.resp.results.length} results${flag}`,
+    )
+    console.log(`    [debug]      url: ${q.resp.url}`)
+    if (q.resp.results.length === 0 && q.resp.rawBody && q.resp.rawBody.startsWith('(error:')) {
+      console.log(`    [debug]      ${q.resp.rawBody}`)
+    }
+  }
+  if (ex.pooled.length === 0) {
+    console.log(`    [debug] pool is empty — no album-shaped iTunes results matched any query`)
+    return
+  }
+  console.log(`    [debug] pooled candidates (deduped by collectionId):`)
+  for (let i = 0; i < ex.pooled.length; i++) {
+    const r = ex.pooled[i]
+    const prov = (r.collectionId !== undefined && ex.provenance.get(r.collectionId)) || []
+    console.log(
+      `    [debug]   ${i + 1}. "${r.artistName ?? '∅'}" — "${r.collectionName ?? '∅'}"`,
+    )
+    console.log(
+      `    [debug]      type=${r.collectionType ?? '∅'}   collectionId=${r.collectionId ?? '∅'}   from: [${prov.join(', ')}]`,
+    )
+  }
+}
+
+
 
 /**
  * Prints the raw iTunes response BEFORE any matcher filtering runs.
