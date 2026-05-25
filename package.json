@@ -14,6 +14,8 @@
     "db:diff": "supabase db diff -f",
     "db:types": "supabase gen types typescript --local --schema public > lib/supabase/types.ts",
     "seed": "tsx scripts/seed-phase2.ts",
+    "refresh:album-covers": "npx tsx scripts/refresh-album-covers.ts",
+    "refresh:album-covers:write": "npx tsx scripts/refresh-album-covers.ts --write",
     "guard:service-role": "node scripts/check-service-role-leak.mjs"
   },
   "dependencies": {
