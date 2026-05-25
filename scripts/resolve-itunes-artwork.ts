@@ -79,10 +79,71 @@ function needsResolving(album: Album): boolean {
 }
 
 // ── Similarity helpers ───────────────────────────────────────────────
+//
+// Aggressive normalization is the difference between "Carrie & Lowell"
+// matching "Carrie and Lowell" or not, between "Björk" matching "Bjork"
+// or not, and between "Kind of Blue (Legacy Edition)" matching "Kind
+// of Blue" or not. We do all of this BEFORE scoring — so the score
+// thresholds (ARTIST_THRESHOLD / TITLE_THRESHOLD) operate on cleaned
+// strings, not raw user data.
+//
+// Edition-suffix list is conservative — only the patterns we've seen
+// inflate scores away from the canonical edition (Remastered, Deluxe,
+// Legacy, Monophonic, Expanded, Live, Special Anniversary, Bonus
+// Track Version, Reissue). Free-form "(2020)" years and parenthesized
+// non-edition phrases also get stripped.
+const EDITION_SUFFIX_RE = new RegExp(
+  '\\s*[\\(\\[]\\s*(?:' +
+    [
+      'remastered(?:\\s+\\d{4})?',
+      'remaster(?:ed)?(?:\\s+\\d{4})?',
+      'deluxe(?:\\s+edition)?',
+      'legacy(?:\\s+edition)?',
+      'monophonic(?:\\s+edition)?',
+      'mono(?:phonic)?\\s*(?:edition|version)?',
+      'expanded(?:\\s+edition)?',
+      'extended(?:\\s+edition)?',
+      'special(?:\\s+edition)?',
+      'anniversary(?:\\s+edition)?',
+      '\\d+(?:st|nd|rd|th)\\s+anniversary(?:\\s+edition)?',
+      'collector\'?s(?:\\s+edition)?',
+      'bonus\\s+track\\s+version',
+      'with\\s+bonus[^)\\]]*',
+      'reissue[^)\\]]*',
+      're[\\-\\s]?release',
+      'live(?:\\s+at[^)\\]]*|\\s+in[^)\\]]*|\\s+from[^)\\]]*)?',
+      'session(?:s)?',
+      'demos?',
+      'original\\s+(?:soundtrack|recording|version|cast)',
+      'soundtrack',
+      'edition',
+      'version',
+    ].join('|') +
+    ')\\s*[\\)\\]]\\s*',
+  'gi',
+)
+
 function normalize(s: string): string {
   return s
+    // Unicode NFD decomposition + strip the resulting combining
+    // marks (U+0300..U+036F, "Combining Diacritical Marks" block).
+    // Turns "Björk" → "Bjork", "Beyoncé" → "Beyonce", "Sigur Rós"
+    // → "Sigur Ros".
+    .normalize('NFD')
+    .replace(/[̀-ͯ]/g, '')
     .toLowerCase()
-    .replace(/[(\[].*?[)\]]/g, ' ') // drop (Deluxe Edition), [Remastered]
+    // Strip edition suffixes first (so subsequent paren-strip doesn't
+    // eat them ambiguously).
+    .replace(EDITION_SUFFIX_RE, ' ')
+    // Drop any remaining parenthesized/bracketed phrases — usually
+    // (2020), (Single Version), etc.
+    .replace(/[(\[][^)\]]*[)\]]/g, ' ')
+    // Normalize ampersand to "and" — common artist/title variance.
+    .replace(/\s*&\s*/g, ' and ')
+    // Drop apostrophes (curly + straight) before stripping punctuation
+    // so "Don't" stays as "dont" (single token), not "don t".
+    .replace(/[''’`´‘]/g, '')
+    // Drop remaining punctuation / non-alnum.
     .replace(/[^a-z0-9 ]/g, ' ')
     .replace(/\s+/g, ' ')
     .trim()
@@ -115,6 +176,26 @@ function ratio(a: string, b: string): number {
   const maxLen = Math.max(na.length, nb.length)
   if (maxLen === 0) return 0
   return 1 - levenshtein(na, nb) / maxLen
+}
+
+/** Returns true iff `a` and `b` are equal after normalize(). Used as
+ *  the canonical-title preference signal — exact-normalized matches
+ *  short-circuit ambiguity. */
+function normalizedExact(a: string, b: string): boolean {
+  return normalize(a) === normalize(b)
+}
+
+/** Short titles (≤ 3 chars after normalize, e.g. "xo") break
+ *  Levenshtein-ratio scoring: a 1-char difference drops the ratio
+ *  by 33-50%. For these we require exact normalized title equality.
+ *  Slightly longer titles still use ratio() as normal. */
+const SHORT_TITLE_MAX = 3
+function titleScore(albumTitle: string, candidateTitle: string): number {
+  const na = normalize(albumTitle)
+  if (na.length <= SHORT_TITLE_MAX) {
+    return normalize(candidateTitle) === na ? 1 : 0
+  }
+  return ratio(albumTitle, candidateTitle)
 }
 
 // ── Compilation filter ───────────────────────────────────────────────
@@ -210,17 +291,38 @@ interface ManualOverride {
   reason?: string
 }
 
+// Operator note (filling in collectionId on a stubborn album):
+//   1. Open https://music.apple.com in a browser.
+//   2. Search the album, click into it.
+//   3. The URL ends with the collectionId, e.g.
+//        music.apple.com/us/album/for-emma-forever-ago/1440838664
+//      Copy that trailing number (1440838664).
+//   4. Replace this entry's `searchTerm: …` with:
+//        collectionId: 1440838664,
+//      (You can keep `searchTerm` and `reason` too — collectionId
+//      takes precedence, per the override-type docs above.)
+//
+// After the v2 matcher improvements (NFD normalization, edition
+// suffix stripping, canonical-title preference, short-title exact
+// matching, ambiguity auto-resolution) most of the entries below
+// resolve through `searchTerm` alone. Albums in the "Tier-2 stubborn"
+// group below are the ones the operator flagged as still needing
+// manual help — they keep `searchTerm` overrides as the first attempt
+// but are pre-positioned for collectionId escalation if needed.
 const MANUAL_OVERRIDES: Record<string, ManualOverride> = {
-  // Bon Iver
+  // ── Bon Iver ──────────────────────────────────────────────────
+  // Tier-2 stubborn (operator may need to swap to collectionId):
   'for-emma': {
+    // collectionId: 1440838664,  // ← already known from lib/albums.ts appleMusicUrl
     searchTerm: 'Bon Iver For Emma Forever Ago',
     reason: 'comma in title — search without punctuation',
   },
   '22-a-million': {
+    // collectionId: ___,  // ← swap if matcher still fails
     searchTerm: 'Bon Iver 22 A Million',
-    reason: 'comma + numeric prefix — search without punctuation',
+    reason: 'comma + numeric prefix',
   },
-  // Phoebe Bridgers
+  // ── Phoebe Bridgers ───────────────────────────────────────────
   punisher: {
     searchTerm: 'Phoebe Bridgers Punisher',
     reason: 'common title — multiple editions',
@@ -229,7 +331,7 @@ const MANUAL_OVERRIDES: Record<string, ManualOverride> = {
     searchTerm: 'Phoebe Bridgers Stranger in the Alps',
     reason: 'common title words',
   },
-  // Sufjan Stevens
+  // ── Sufjan Stevens ────────────────────────────────────────────
   'carrie-and-lowell': {
     searchTerm: 'Sufjan Stevens Carrie Lowell',
     reason: 'ampersand in title — drop the &',
@@ -238,15 +340,15 @@ const MANUAL_OVERRIDES: Record<string, ManualOverride> = {
     searchTerm: 'Sufjan Stevens Illinois',
     reason: 'iTunes uses the "Illinoise" alt-spelling on some editions',
   },
-  // Elliott Smith
+  // ── Elliott Smith ─────────────────────────────────────────────
   xo: {
     searchTerm: 'Elliott Smith XO 1998',
-    reason: '2-letter title — add year to disambiguate',
+    reason: '2-char title — short-title exact-match required',
   },
-  // Jazz catalog (deeply reissued — narrow to the source recording)
+  // ── Jazz catalog (deeply reissued) ────────────────────────────
   'kind-of-blue': {
     searchTerm: 'Miles Davis Kind of Blue',
-    reason: 'many reissue editions — defer to top match',
+    reason: 'many reissue editions — canonical-title preference picks original',
   },
   'a-love-supreme': {
     searchTerm: 'John Coltrane A Love Supreme',
@@ -256,58 +358,91 @@ const MANUAL_OVERRIDES: Record<string, ManualOverride> = {
     searchTerm: 'Bill Evans Waltz for Debby',
     reason: 'artist name variants (Bill Evans / Bill Evans Trio)',
   },
-  // Björk
+  // ── Björk ─────────────────────────────────────────────────────
+  // Tier-2 stubborn:
   homogenic: {
+    // collectionId: ___,  // ← swap if matcher still fails
     searchTerm: 'Bjork Homogenic',
-    reason: 'special char in artist name — use ASCII transliteration',
+    reason: 'NFD normalization should match Björk now; ASCII as backup',
   },
-  // Minimalism
+  // ── Minimalism ────────────────────────────────────────────────
+  // Tier-2 stubborn:
   'music-for-18-musicians': {
+    // collectionId: ___,  // ← swap if matcher still fails
     searchTerm: 'Steve Reich Music for 18 Musicians',
     reason: 'multiple recordings by different ensembles',
   },
-  // Mount Eerie
+  // ── Mount Eerie ───────────────────────────────────────────────
+  // Tier-2 stubborn:
   'a-crow-looked-at-me': {
+    // collectionId: ___,  // ← swap if matcher still fails
     searchTerm: 'Mount Eerie A Crow Looked at Me',
     reason: '',
   },
-  // Slint
+  // ── Slint ─────────────────────────────────────────────────────
   spiderland: {
     searchTerm: 'Slint Spiderland',
     reason: '',
   },
-  // William Basinski (multi-volume work)
+  // ── William Basinski (multi-volume work) ──────────────────────
   'disintegration-loops': {
     searchTerm: 'William Basinski The Disintegration Loops',
     reason: '4-volume work — top match should be the boxed edition',
   },
-  // Slowdive
+  // ── Slowdive ──────────────────────────────────────────────────
   souvlaki: {
     searchTerm: 'Slowdive Souvlaki',
     reason: '',
   },
-  // Low — disambiguation risk: Bastille released an album with same title
+  // ── Low (disambiguation risk: Bastille released same-titled) ──
   'things-we-lost-in-the-fire': {
     searchTerm: 'Low Things We Lost in the Fire',
-    reason: 'Bastille released same-titled album — pin to Low',
+    reason: 'Bastille released same-titled album — artist exact-match pins to Low',
   },
-  // The National
+  // ── The National ──────────────────────────────────────────────
+  // Tier-2 stubborn:
   'sleep-well-beast': {
+    // collectionId: ___,  // ← swap if matcher still fails
     searchTerm: 'The National Sleep Well Beast',
     reason: '',
   },
-  // Currently placeholders (placehold.co)
+  // ── Currently placeholders (placehold.co) ─────────────────────
+  // Tier-2 stubborn (placeholders → need real URLs):
   southeastern: {
+    // collectionId: ___,  // ← swap if matcher still fails
     searchTerm: 'Jason Isbell Southeastern',
     reason: 'currently placehold.co placeholder',
   },
   'a-seat-at-the-table': {
+    // collectionId: ___,  // ← swap if matcher still fails
     searchTerm: 'Solange A Seat at the Table',
     reason: 'currently placehold.co placeholder',
   },
 }
 
 // ── Match selection ──────────────────────────────────────────────────
+//
+// Three-tier resolution path:
+//   1. CANONICAL exact match. If any candidate has BOTH normalize(artist)
+//      and normalize(title) equal to the album's, we pick the best of
+//      those (by combined score, then by lowest collectionId as a
+//      stable tie-break). No ambiguity check applies — multiple
+//      editions of the same album are all "correct".
+//
+//   2. SCORE-ranked candidates. Standard threshold gates + sort by
+//      combined score.
+//
+//   3. AMBIGUITY auto-resolution. If the top 2 are within
+//      AMBIGUITY_MARGIN AND the top has exact normalized artist+title
+//      match AND the delta is within AMBIGUITY_AUTO_RESOLVE_DELTA,
+//      pick the top instead of flagging ambiguous. This handles the
+//      "two correct editions" case the user surfaced.
+//
+// Threshold gates: candidates must clear ARTIST_THRESHOLD AND
+// TITLE_THRESHOLD, OR be exact-normalized matches on either field.
+// (Exact-normalized always passes regardless of ratio score —
+// otherwise a heavily-suffixed candidate could fail the ratio gate
+// even though it normalizes to the canonical title.)
 interface Match {
   artworkUrl: string
   collectionName: string
@@ -315,7 +450,11 @@ interface Match {
   collectionId?: number
   artistScore: number
   titleScore: number
+  exactArtist: boolean
+  exactTitle: boolean
 }
+
+const AMBIGUITY_AUTO_RESOLVE_DELTA = 0.05
 
 function selectMatch(
   album: { title: string; artist: string },
@@ -329,19 +468,28 @@ function selectMatch(
     if (!r.collectionName || !r.artistName || !r.artworkUrl100) continue
     if (!wantsCompilation && looksLikeCompilation(r.collectionName)) continue
 
-    const artistScore = ratio(album.artist, r.artistName)
-    const titleScore = ratio(album.title, r.collectionName)
+    const exactArtist = normalizedExact(album.artist, r.artistName)
+    const exactTitle = normalizedExact(album.title, r.collectionName)
 
-    if (artistScore < ARTIST_THRESHOLD) continue
-    if (titleScore < TITLE_THRESHOLD) continue
+    const artistScore = ratio(album.artist, r.artistName)
+    const titleScoreVal = titleScore(album.title, r.collectionName)
+
+    // Exact-normalized matches always pass the gate regardless of
+    // ratio score — e.g. "Kind of Blue (Legacy Edition)" normalizes
+    // to "kind of blue" exactly even though the ratio against the
+    // raw "Kind of Blue" is < 1.
+    if (!exactArtist && artistScore < ARTIST_THRESHOLD) continue
+    if (!exactTitle && titleScoreVal < TITLE_THRESHOLD) continue
 
     candidates.push({
       artworkUrl: r.artworkUrl100,
       collectionName: r.collectionName,
       artistName: r.artistName,
       collectionId: r.collectionId,
-      artistScore,
-      titleScore,
+      artistScore: exactArtist ? 1 : artistScore,
+      titleScore: exactTitle ? 1 : titleScoreVal,
+      exactArtist,
+      exactTitle,
     })
   }
 
@@ -349,15 +497,39 @@ function selectMatch(
     return { match: null, ambiguous: false, reason: 'no candidate above thresholds' }
   }
 
+  // ── Tier 1: canonical exact match wins outright ─────────────────
+  const canonical = candidates.filter((c) => c.exactArtist && c.exactTitle)
+  if (canonical.length > 0) {
+    // Combined score equal at 2.0 for all — break ties by collectionId
+    // (lowest first → typically the earliest / original release on
+    // Apple Music, not the latest remaster).
+    canonical.sort((a, b) => (a.collectionId ?? Infinity) - (b.collectionId ?? Infinity))
+    return { match: canonical[0], ambiguous: false }
+  }
+
+  // ── Tier 2: rank by combined score ──────────────────────────────
   candidates.sort(
     (a, b) => b.artistScore + b.titleScore - (a.artistScore + a.titleScore),
   )
 
+  // ── Tier 3: ambiguity check with auto-resolution ────────────────
   if (candidates.length >= 2) {
     const top = candidates[0]
     const second = candidates[1]
     const margin = top.artistScore + top.titleScore - (second.artistScore + second.titleScore)
     if (margin < AMBIGUITY_MARGIN && top.collectionId !== second.collectionId) {
+      // Auto-resolve when top is a normalized double-match AND the
+      // delta is small. We already returned in Tier 1 when there's
+      // a clean canonical match, so this catches the case where
+      // BOTH top and second exact-match (multiple editions, both
+      // "correct") — pick top by score.
+      if (
+        margin < AMBIGUITY_AUTO_RESOLVE_DELTA &&
+        top.exactArtist &&
+        top.exactTitle
+      ) {
+        return { match: top, ambiguous: false }
+      }
       return { match: null, ambiguous: true, reason: `top 2 within ${margin.toFixed(2)} score margin` }
     }
   }
