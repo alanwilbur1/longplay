@@ -422,27 +422,40 @@ const MANUAL_OVERRIDES: Record<string, ManualOverride> = {
 
 // ── Match selection ──────────────────────────────────────────────────
 //
-// Three-tier resolution path:
-//   1. CANONICAL exact match. If any candidate has BOTH normalize(artist)
-//      and normalize(title) equal to the album's, we pick the best of
-//      those (by combined score, then by lowest collectionId as a
-//      stable tie-break). No ambiguity check applies — multiple
-//      editions of the same album are all "correct".
+// Rejection order (per result):
 //
-//   2. SCORE-ranked candidates. Standard threshold gates + sort by
-//      combined score.
+//   1. Missing required fields (collectionName / artistName /
+//      artworkUrl100). Always rejected — nothing we can do with these.
 //
-//   3. AMBIGUITY auto-resolution. If the top 2 are within
-//      AMBIGUITY_MARGIN AND the top has exact normalized artist+title
-//      match AND the delta is within AMBIGUITY_AUTO_RESOLVE_DELTA,
-//      pick the top instead of flagging ambiguous. This handles the
-//      "two correct editions" case the user surfaced.
+//   2. CANONICAL EXACT MATCH SHORTCUT. If normalize(artist) AND
+//      normalize(title) both equal the album's, accept the result
+//      unconditionally — bypassing the collectionType + compilation
+//      filters that would otherwise reject e.g. iTunes results
+//      labeled "Compilation" when they're actually the canonical
+//      edition under a different category. Canonical exact match
+//      is the strongest signal we have; we trust it over iTunes'
+//      own taxonomy.
 //
-// Threshold gates: candidates must clear ARTIST_THRESHOLD AND
-// TITLE_THRESHOLD, OR be exact-normalized matches on either field.
-// (Exact-normalized always passes regardless of ratio score —
-// otherwise a heavily-suffixed candidate could fail the ratio gate
-// even though it normalizes to the canonical title.)
+//   3. Non-canonical filtering:
+//      - collectionType must be 'Album' (drops Singles/EPs)
+//      - if album isn't a compilation, drop "Greatest Hits"-style
+//        candidates
+//      - artistScore >= ARTIST_THRESHOLD (or exactArtist)
+//      - titleScore >= TITLE_THRESHOLD (or exactTitle)
+//
+// After filtering, three-tier resolution picks the winner:
+//   Tier 1 — canonical exact matches → lowest collectionId wins
+//            (typically the original Apple Music release, not a
+//             later remaster).
+//   Tier 2 — score-ranked combined artistScore + titleScore.
+//   Tier 3 — ambiguity: top 2 within AMBIGUITY_MARGIN AND
+//            different collectionIds → auto-resolve when delta is
+//            within AMBIGUITY_AUTO_RESOLVE_DELTA AND top has
+//            exact normalized artist+title.
+//
+// Debug mode (--debug-candidates) prints the full per-candidate
+// classification including REJECTED entries with reasons — exposes
+// exactly why something didn't make it into the candidate list.
 interface Match {
   artworkUrl: string
   collectionName: string
@@ -454,32 +467,127 @@ interface Match {
   exactTitle: boolean
 }
 
+interface CandidateDebug {
+  raw: ITunesResult
+  exactArtist: boolean
+  exactTitle: boolean
+  artistScore: number
+  titleScore: number
+  status: 'accepted-canonical' | 'accepted' | 'rejected'
+  rejectionReason?: string
+}
+
 const AMBIGUITY_AUTO_RESOLVE_DELTA = 0.05
 
 function selectMatch(
   album: { title: string; artist: string },
   results: ITunesResult[],
-): { match: Match | null; ambiguous: boolean; reason?: string } {
+): {
+  match: Match | null
+  ambiguous: boolean
+  reason?: string
+  debug: CandidateDebug[]
+} {
   const wantsCompilation = looksLikeCompilation(album.title)
   const candidates: Match[] = []
+  const debug: CandidateDebug[] = []
 
   for (const r of results) {
-    if (r.collectionType !== 'Album') continue
-    if (!r.collectionName || !r.artistName || !r.artworkUrl100) continue
-    if (!wantsCompilation && looksLikeCompilation(r.collectionName)) continue
+    // ── 1. Required field check ─────────────────────────────────
+    if (!r.collectionName || !r.artistName || !r.artworkUrl100) {
+      debug.push({
+        raw: r,
+        exactArtist: false,
+        exactTitle: false,
+        artistScore: 0,
+        titleScore: 0,
+        status: 'rejected',
+        rejectionReason: 'missing required field (collectionName / artistName / artworkUrl100)',
+      })
+      continue
+    }
 
     const exactArtist = normalizedExact(album.artist, r.artistName)
     const exactTitle = normalizedExact(album.title, r.collectionName)
-
     const artistScore = ratio(album.artist, r.artistName)
     const titleScoreVal = titleScore(album.title, r.collectionName)
 
-    // Exact-normalized matches always pass the gate regardless of
-    // ratio score — e.g. "Kind of Blue (Legacy Edition)" normalizes
-    // to "kind of blue" exactly even though the ratio against the
-    // raw "Kind of Blue" is < 1.
-    if (!exactArtist && artistScore < ARTIST_THRESHOLD) continue
-    if (!exactTitle && titleScoreVal < TITLE_THRESHOLD) continue
+    // ── 2. CANONICAL EXACT MATCH SHORTCUT ───────────────────────
+    // Bypass collectionType + compilation filters entirely. If
+    // both normalize the same way as the album, this IS the
+    // album — Apple's categorization is irrelevant.
+    if (exactArtist && exactTitle) {
+      const m: Match = {
+        artworkUrl: r.artworkUrl100,
+        collectionName: r.collectionName,
+        artistName: r.artistName,
+        collectionId: r.collectionId,
+        artistScore: 1,
+        titleScore: 1,
+        exactArtist: true,
+        exactTitle: true,
+      }
+      candidates.push(m)
+      debug.push({
+        raw: r,
+        exactArtist: true,
+        exactTitle: true,
+        artistScore: 1,
+        titleScore: 1,
+        status: 'accepted-canonical',
+      })
+      continue
+    }
+
+    // ── 3. Non-canonical filters ────────────────────────────────
+    if (r.collectionType !== 'Album') {
+      debug.push({
+        raw: r,
+        exactArtist,
+        exactTitle,
+        artistScore,
+        titleScore: titleScoreVal,
+        status: 'rejected',
+        rejectionReason: `collectionType="${r.collectionType ?? 'undefined'}" (not Album)`,
+      })
+      continue
+    }
+    if (!wantsCompilation && looksLikeCompilation(r.collectionName)) {
+      debug.push({
+        raw: r,
+        exactArtist,
+        exactTitle,
+        artistScore,
+        titleScore: titleScoreVal,
+        status: 'rejected',
+        rejectionReason: 'compilation (album title doesn\'t look like one)',
+      })
+      continue
+    }
+    if (!exactArtist && artistScore < ARTIST_THRESHOLD) {
+      debug.push({
+        raw: r,
+        exactArtist,
+        exactTitle,
+        artistScore,
+        titleScore: titleScoreVal,
+        status: 'rejected',
+        rejectionReason: `artistScore=${artistScore.toFixed(3)} < ${ARTIST_THRESHOLD}`,
+      })
+      continue
+    }
+    if (!exactTitle && titleScoreVal < TITLE_THRESHOLD) {
+      debug.push({
+        raw: r,
+        exactArtist,
+        exactTitle,
+        artistScore,
+        titleScore: titleScoreVal,
+        status: 'rejected',
+        rejectionReason: `titleScore=${titleScoreVal.toFixed(3)} < ${TITLE_THRESHOLD}`,
+      })
+      continue
+    }
 
     candidates.push({
       artworkUrl: r.artworkUrl100,
@@ -491,20 +599,35 @@ function selectMatch(
       exactArtist,
       exactTitle,
     })
+    debug.push({
+      raw: r,
+      exactArtist,
+      exactTitle,
+      artistScore,
+      titleScore: titleScoreVal,
+      status: 'accepted',
+    })
   }
 
   if (candidates.length === 0) {
-    return { match: null, ambiguous: false, reason: 'no candidate above thresholds' }
+    return {
+      match: null,
+      ambiguous: false,
+      reason: 'no candidate above thresholds',
+      debug,
+    }
   }
 
   // ── Tier 1: canonical exact match wins outright ─────────────────
+  // Multiple canonical exact matches → lowest collectionId wins
+  // (typically the original release, not a later remaster). This
+  // also handles the "only edition suffix differs" case — both
+  // will normalize identically, both will be canonical, and the
+  // original wins.
   const canonical = candidates.filter((c) => c.exactArtist && c.exactTitle)
   if (canonical.length > 0) {
-    // Combined score equal at 2.0 for all — break ties by collectionId
-    // (lowest first → typically the earliest / original release on
-    // Apple Music, not the latest remaster).
     canonical.sort((a, b) => (a.collectionId ?? Infinity) - (b.collectionId ?? Infinity))
-    return { match: canonical[0], ambiguous: false }
+    return { match: canonical[0], ambiguous: false, debug }
   }
 
   // ── Tier 2: rank by combined score ──────────────────────────────
@@ -518,23 +641,23 @@ function selectMatch(
     const second = candidates[1]
     const margin = top.artistScore + top.titleScore - (second.artistScore + second.titleScore)
     if (margin < AMBIGUITY_MARGIN && top.collectionId !== second.collectionId) {
-      // Auto-resolve when top is a normalized double-match AND the
-      // delta is small. We already returned in Tier 1 when there's
-      // a clean canonical match, so this catches the case where
-      // BOTH top and second exact-match (multiple editions, both
-      // "correct") — pick top by score.
       if (
         margin < AMBIGUITY_AUTO_RESOLVE_DELTA &&
         top.exactArtist &&
         top.exactTitle
       ) {
-        return { match: top, ambiguous: false }
+        return { match: top, ambiguous: false, debug }
       }
-      return { match: null, ambiguous: true, reason: `top 2 within ${margin.toFixed(2)} score margin` }
+      return {
+        match: null,
+        ambiguous: true,
+        reason: `top 2 within ${margin.toFixed(2)} score margin`,
+        debug,
+      }
     }
   }
 
-  return { match: candidates[0], ambiguous: false }
+  return { match: candidates[0], ambiguous: false, debug }
 }
 
 // ── Upgrade artworkUrl100 → 1000x1000 ────────────────────────────────
@@ -610,6 +733,7 @@ async function main() {
   const writeMode = args.includes('--write')
   const validateExisting = args.includes('--validate-existing')
   const useOverrides = args.includes('--use-overrides')
+  const debugCandidates = args.includes('--debug-candidates')
   const onlyArg = args.find((a) => a.startsWith('--only='))
   const onlyId = onlyArg ? onlyArg.slice('--only='.length) : null
 
@@ -618,6 +742,7 @@ async function main() {
   else modeBits.push('dry-run; pass --write to commit')
   if (validateExisting) modeBits.push('--validate-existing')
   if (useOverrides) modeBits.push('--use-overrides')
+  if (debugCandidates) modeBits.push('--debug-candidates')
   console.log(`\n── iTunes artwork resolver (${modeBits.join(', ')}) ──\n`)
 
   type WorkItem = {
@@ -762,10 +887,14 @@ async function main() {
           console.log(`    [override: searchTerm="${term}"${override.reason ? ` — ${override.reason}` : ''}]`)
         }
         const results = await searchITunes(term)
-        const { match, ambiguous: amb, reason } = selectMatch(
+        const { match, ambiguous: amb, reason, debug: matchDebug } = selectMatch(
           { title: item.title, artist: item.artist },
           results,
         )
+
+        if (debugCandidates) {
+          printCandidateDebug(item, term, matchDebug)
+        }
 
         if (amb) {
           ambiguous += 1
@@ -780,10 +909,19 @@ async function main() {
           const upgraded = upgradeArtwork(match.artworkUrl)
           let finalUrl = upgraded
           let ok = await validateArtwork(upgraded)
+          let validationNote = ok ? `OK 1000x1000` : 'failed 1000x1000'
           if (!ok && upgraded !== match.artworkUrl) {
             // Fall back to the original 100x100 if 1000x1000 isn't served.
             ok = await validateArtwork(match.artworkUrl)
-            if (ok) finalUrl = match.artworkUrl
+            if (ok) {
+              finalUrl = match.artworkUrl
+              validationNote = 'OK (fallback 100x100)'
+            } else {
+              validationNote = 'failed 1000x1000 AND 100x100'
+            }
+          }
+          if (debugCandidates) {
+            console.log(`    [debug] artwork validation: ${validationNote}`)
           }
           if (!ok) {
             unresolved += 1
@@ -836,3 +974,37 @@ main().catch((err) => {
   console.error('resolve-itunes-artwork failed:', err)
   process.exit(1)
 })
+
+// ── Debug printer ────────────────────────────────────────────────────
+// Activated by --debug-candidates. Prints the FULL per-candidate
+// classification (including rejected) for one album's iTunes search,
+// so the operator can see exactly why each candidate was kept or
+// dropped. Use with --only=<slug>.
+function printCandidateDebug(
+  item: { id: string; artist: string; title: string },
+  searchTerm: string,
+  debug: CandidateDebug[],
+): void {
+  console.log()
+  console.log(`    [debug] iTunes search returned ${debug.length} results for term: "${searchTerm}"`)
+  console.log(`    [debug] album normalize: "${normalize(item.title)}" by "${normalize(item.artist)}"`)
+  for (let i = 0; i < debug.length; i++) {
+    const c = debug[i]
+    const r = c.raw
+    console.log(`    [debug] candidate ${i + 1}/${debug.length}:`)
+    console.log(`       raw artist:  "${r.artistName ?? '∅'}"`)
+    console.log(`       norm artist: "${r.artistName ? normalize(r.artistName) : '∅'}"   exact=${c.exactArtist}   score=${c.artistScore.toFixed(3)}`)
+    console.log(`       raw title:   "${r.collectionName ?? '∅'}"`)
+    console.log(`       norm title:  "${r.collectionName ? normalize(r.collectionName) : '∅'}"   exact=${c.exactTitle}   score=${c.titleScore.toFixed(3)}`)
+    console.log(`       collectionType=${r.collectionType ?? '∅'}   collectionId=${r.collectionId ?? '∅'}`)
+    console.log(`       artworkUrl100: ${r.artworkUrl100 ?? '∅'}`)
+    if (c.status === 'accepted-canonical') {
+      console.log(`       STATUS: ACCEPTED (canonical exact match — bypassed type+compilation filters)`)
+    } else if (c.status === 'accepted') {
+      console.log(`       STATUS: ACCEPTED`)
+    } else {
+      console.log(`       STATUS: REJECTED — ${c.rejectionReason ?? 'unknown'}`)
+    }
+  }
+  console.log()
+}
