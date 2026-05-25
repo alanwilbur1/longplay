@@ -1,5 +1,5 @@
 {
-  "seededAt": "2026-05-15T02:07:08.064Z",
+  "seededAt": "2026-05-23T20:55:47.681Z",
   "curators": {
     "eleanor-vance": "b57b9c04-f10a-49f5-bfc2-2cf64f874f82",
     "james-okonkwo": "59408ac6-7f0b-43e6-ad11-f4756233299d",
@@ -8,6 +8,9 @@
     "nina-patel": "82bb16e6-a67e-4eb5-960d-9bae86440fdf",
     "david-park": "03e0d306-c526-47b8-86b3-ec41ddf9e8a9",
     "terrence-williams": "0179d518-1fac-4a20-9c4c-d573cb2c40cb",
+    "marcus-lane": "2088e68e-9f7c-4e43-b862-53f3a2b776b3",
+    "hannah-reeves": "c64f2eb4-d56b-46e5-8d74-0a73206d23e5",
+    "rae-thompson": "478264d6-ae72-4d1e-aacd-4e7ee1af51fe",
     "criterion-collection": "90cf0b48-4790-4eb0-bbb5-6917b856d921",
     "pitchfork": "03e54dca-0716-42f0-9e91-d9cc0b9da82f"
   },
@@ -62,7 +65,10 @@
     "things-we-lost-in-the-fire": "ce5051e7-9c6d-4552-8dca-64c532b6fc0a",
     "sleep-well-beast": "edf5861e-2d46-4ce9-aee3-1ec01da6b0b4",
     "my-woman": "f0a2b42c-ae9e-4b08-8e6c-188637d89e91",
-    "jubilee": "957f1060-c3e3-4946-90d8-23213c078b5b"
+    "jubilee": "957f1060-c3e3-4946-90d8-23213c078b5b",
+    "to-pimp-a-butterfly": "c16fd215-b842-424f-98c2-9c30d79b2e19",
+    "southeastern": "888cbc53-cebf-46cb-9442-deabf019d809",
+    "a-seat-at-the-table": "03b66cf2-0842-4f1a-825c-d630c5bb801b"
   },
   "rooms": {
     "nocturnal-room": "1dcb875b-d7df-495c-951b-e9f45d6f8c3f",
@@ -72,6 +78,9 @@
     "records-for-rain": "a57923d5-3674-4c0d-91be-3e30e32717ed",
     "warm-static": "f4157ed0-39c9-4ec5-820e-4e0d1bca0edd",
     "spiritual-jazz": "0d26bfbf-9074-43e2-a004-cc78446aa2c4",
+    "hip-hop-hours": "0db92562-c02a-4cb0-9d95-f9e15c4655c3",
+    "southern-listening": "c1e423a3-2223-40c8-ad8c-b9b465e01076",
+    "soul-quarters": "f2bb1cfd-bc4d-4862-b37b-4ddd0e46b7aa",
     "criterion-listening": "a7fcab68-2f46-44ba-9e12-76554b64ffda",
     "pitchfork-deep-cuts": "02c60a06-772b-43b5-9da7-adb4a1b11b77"
   },
@@ -83,6 +92,9 @@
     "records-for-rain": "3e4f34b8-044c-48f7-96b7-cfafb4ef8fe1",
     "warm-static": "2f8e1c21-9d06-46cd-b2d3-5127928a2465",
     "spiritual-jazz": "f637bb0d-151f-43cc-ac04-66c99fade993",
+    "hip-hop-hours": "3aabc1d3-0d33-43d5-9f79-2790821d1080",
+    "southern-listening": "9cd7f08f-5e1d-4821-8219-806b6551fbac",
+    "soul-quarters": "201ae83a-481c-4aac-8920-7d8f4ba13efe",
     "criterion-listening": "52b6f228-d560-4f36-b2d2-5434fe4ea7d8",
     "pitchfork-deep-cuts": "3bda3de0-faab-4a3a-9850-cff9f411a184"
   }
