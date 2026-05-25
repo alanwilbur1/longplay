@@ -1,6 +1,7 @@
 'use client'
 
 import Image from 'next/image'
+import { AlbumCover } from '@/components/album-cover'
 import { useAuth } from '@/components/auth-provider'
 
 // Real album artwork - emotionally resonant, culturally respected
@@ -185,11 +186,12 @@ export function CompatibilityScreen() {
         
         <div className="max-w-sm mx-auto animate-fade-in-up">
           <div className="relative aspect-square overflow-hidden mb-8">
-            <Image
+            <AlbumCover
               src={ALBUMS.pinkMoon.cover}
-              alt={ALBUMS.pinkMoon.title}
+              title={ALBUMS.pinkMoon.title}
+              artist={ALBUMS.pinkMoon.artist}
+              fallbackGradient="from-pink-900 to-stone-900"
               fill
-              className="object-cover"
             />
           </div>
           
@@ -250,12 +252,13 @@ function SharedAlbum({
 }) {
   return (
     <div className="group animate-fade-in-up shrink-0 w-40">
-      <div className="relative aspect-square mb-3 overflow-hidden bg-muted">
-        <Image
+      <div className="relative aspect-square mb-3 overflow-hidden">
+        <AlbumCover
           src={image}
-          alt={title}
+          title={title}
+          artist={artist}
           fill
-          className="object-cover transition-transform duration-700 group-hover:scale-105"
+          className="transition-transform duration-700 group-hover:scale-105"
         />
       </div>
       <p className="font-serif text-base text-cream truncate">{title}</p>

@@ -1,181 +1,161 @@
 'use client'
 
-import { useState, useEffect } from 'react'
+import { useEffect, useState } from 'react'
 import { cn } from '@/lib/utils'
 import { resolveAlbumArtwork } from '@/lib/itunes-artwork-resolver'
 
+/**
+ * AlbumCover / AlbumThumb — the ONE component for rendering album
+ * artwork anywhere in the app.
+ *
+ * Rendering rules (non-negotiable):
+ *   1. Never show the browser's broken-image icon.
+ *   2. Never leak alt text on load failure.
+ *   3. Always render something visually intentional, even when the
+ *      cover URL is missing / dead / network-blocked.
+ *
+ * Implementation: CSS `background-image` on a layered overlay div,
+ * with active load detection via `new window.Image()`. Failed
+ * background-image fetches silently leave the parent gradient
+ * showing through — no broken-icon glyph is even possible (that's
+ * an HTML `<img>` property; CSS bg-image has no equivalent).
+ *
+ * When the URL is absent OR confirmed dead, we render a designed
+ * fallback: vinyl glyph + title + artist on the album's
+ * fallbackGradient. This is the long-term presentation for albums
+ * we genuinely don't have artwork for — not an error state.
+ *
+ * Runtime iTunes resolver: when `src` is absent we optionally try
+ * `resolveAlbumArtwork(artist, title)` as a final attempt. Kept for
+ * legacy callers — most artwork should be sourced at seed time via
+ * scripts/resolve-itunes-artwork.ts.
+ *
+ * Audit invariant: `scripts/audit-artwork.ts` lints the codebase for
+ * raw `<img>` and raw `<Image>` (next/image) of album art outside
+ * this file. Add new artwork surfaces here, not via raw image tags.
+ */
+
+type CoverStatus = 'pending' | 'loaded' | 'failed' | 'absent'
+
+/** Fire-and-forget Image() ping to detect whether a URL resolves to
+ *  an actual image. Strict-mode safe via the cancelled flag. */
+function useImageStatus(src: string | null | undefined): CoverStatus {
+  const [status, setStatus] = useState<CoverStatus>(src ? 'pending' : 'absent')
+  useEffect(() => {
+    if (!src) {
+      setStatus('absent')
+      return
+    }
+    setStatus('pending')
+    let cancelled = false
+    const img = new window.Image()
+    img.onload = () => {
+      if (!cancelled) setStatus('loaded')
+    }
+    img.onerror = () => {
+      if (!cancelled) setStatus('failed')
+    }
+    img.src = src
+    return () => {
+      cancelled = true
+      img.onload = null
+      img.onerror = null
+    }
+  }, [src])
+  return status
+}
+
 interface AlbumCoverProps {
-  src?: string // Optional static src - will be overridden by iTunes resolver
+  src?: string
   alt?: string
   title: string
   artist: string
   fallbackGradient?: string
   fill?: boolean
-  priority?: boolean // Accepted for API compatibility; artwork loads via useEffect
+  /** Accepted for API compat with prior implementation; no-op. */
+  priority?: boolean
   width?: number
   height?: number
   className?: string
-  showDebug?: boolean // Show debug info under image
+  /** Accepted for API compat; no-op. */
+  showDebug?: boolean
 }
 
 export function AlbumCover({
   src,
-  alt,
+  alt: _alt,
   title,
   artist,
-  fallbackGradient = "from-charcoal to-card",
+  fallbackGradient = 'from-charcoal to-card',
   fill = false,
   width,
   height,
   className,
-  showDebug = false, // Set to true for debugging
 }: AlbumCoverProps) {
-  const [resolvedUrl, setResolvedUrl] = useState<string | null>(null)
-  const [isResolving, setIsResolving] = useState(true)
-  const [hasError, setHasError] = useState(false)
-  const [isImageLoading, setIsImageLoading] = useState(true)
-
-  // Resolve artwork: prioritize static src, fall back to iTunes API
+  // Optional runtime iTunes resolver — only fires when src is missing.
+  // Most callers pass a real src; the resolver is a safety net for
+  // legacy callsites.
+  const [resolvedSrc, setResolvedSrc] = useState<string | null>(src ?? null)
+  const [resolverDone, setResolverDone] = useState(!!src)
   useEffect(() => {
-    let cancelled = false
-    
-    async function resolve() {
-      setIsResolving(true)
-      setHasError(false)
-      
-      // If we have a static src, use it immediately
-      if (src) {
-        setResolvedUrl(src)
-        setIsResolving(false)
-        return
-      }
-      
-      // Only try iTunes API if no static src provided
-      try {
-        const url = await resolveAlbumArtwork(artist, title)
-        if (!cancelled) {
-          setResolvedUrl(url)
-          setIsResolving(false)
-        }
-      } catch {
-        // Silently fail - no artwork is fine, show fallback card
-        if (!cancelled) {
-          setIsResolving(false)
-        }
-      }
+    if (src) {
+      setResolvedSrc(src)
+      setResolverDone(true)
+      return
     }
-    
-    resolve()
-    
+    let cancelled = false
+    resolveAlbumArtwork(artist, title)
+      .then((url) => {
+        if (cancelled) return
+        setResolvedSrc(url ?? null)
+        setResolverDone(true)
+      })
+      .catch(() => {
+        if (cancelled) return
+        setResolverDone(true)
+      })
     return () => {
       cancelled = true
     }
-  }, [artist, title, src])
+  }, [src, artist, title])
 
-  const displayUrl = resolvedUrl
-  const showFallback = !isResolving && (!displayUrl || hasError)
+  const status = useImageStatus(resolverDone ? resolvedSrc : null)
+  // Optimistic: show cover during 'pending' AND 'loaded' so successful
+  // images don't flash gradient first. Swap to fallback only when the
+  // ping confirms failure.
+  const showCover =
+    !!resolvedSrc && (status === 'pending' || status === 'loaded')
+  const showFallback = status === 'failed' || status === 'absent'
 
-  // Debug info
-  const debugText = isResolving 
-    ? `${artist} / ${title} / resolving...`
-    : displayUrl 
-      ? `${artist} / ${title} / ${displayUrl.substring(0, 50)}...`
-      : `${artist} / ${title} / no artwork found`
+  const wrapperClasses = cn(
+    'relative overflow-hidden bg-gradient-to-br',
+    fallbackGradient || 'from-charcoal to-card',
+    fill ? 'absolute inset-0 w-full h-full' : '',
+    className,
+  )
 
-  // Fallback card when no image available
-  if (showFallback) {
-    return (
-      <div className={cn("relative", fill ? "absolute inset-0" : "")} style={!fill ? { width, height } : undefined}>
-        <div 
-          className={cn(
-            `bg-gradient-to-br ${fallbackGradient} flex flex-col items-center justify-center p-4 text-center h-full w-full`,
-            className
-          )}
-        >
-          {/* Vinyl record icon */}
-          <div className="w-12 h-12 mb-4 opacity-30">
-            <svg viewBox="0 0 48 48" fill="none" className="text-cream w-full h-full">
-              <circle cx="24" cy="24" r="22" stroke="currentColor" strokeWidth="1.5" />
-              <circle cx="24" cy="24" r="16" stroke="currentColor" strokeWidth="1" opacity="0.6" />
-              <circle cx="24" cy="24" r="10" stroke="currentColor" strokeWidth="1" opacity="0.4" />
-              <circle cx="24" cy="24" r="4" fill="currentColor" opacity="0.8" />
-            </svg>
-          </div>
-          <p className="font-serif text-sm text-cream/90 leading-tight line-clamp-2 mb-1 text-balance">
-            {title}
-          </p>
-          <p className="text-xs text-cream/60 line-clamp-1">
-            {artist}
-          </p>
-        </div>
-        {showDebug && (
-          <p className="absolute -bottom-6 left-0 right-0 text-[9px] text-muted-foreground/50 truncate px-1">
-            {debugText}
-          </p>
-        )}
-      </div>
-    )
-  }
+  const wrapperStyle = !fill && (width || height)
+    ? { width, height }
+    : undefined
 
   return (
-    <div className={cn("relative overflow-hidden", fill ? "absolute inset-0" : "")} style={!fill ? { width, height } : undefined}>
-      {/* Loading skeleton with warm gradient */}
-      {(isResolving || isImageLoading) && (
-        <div 
-          className={cn(
-            `absolute inset-0 bg-gradient-to-br ${fallbackGradient}`,
-          )}
-        >
-          {/* Subtle shimmer effect */}
-          <div className="absolute inset-0 overflow-hidden">
-            <div className="absolute inset-0 bg-gradient-to-r from-transparent via-cream/5 to-transparent animate-shimmer" />
-          </div>
-          {/* Loading indicator */}
-          <div className="absolute inset-0 flex items-center justify-center">
-            <div className="w-8 h-8 border border-cream/20 rounded-full border-t-cream/60 animate-spin" />
-          </div>
-        </div>
-      )}
-      
-      {displayUrl && (
-        /* eslint-disable-next-line @next/next/no-img-element */
-        <img
-          src={displayUrl}
-          alt={alt || `${title} by ${artist}`}
-          className={cn(
-            "object-cover w-full h-full transition-opacity duration-700 ease-out",
-            isImageLoading ? "opacity-0" : "opacity-100",
-            className
-          )}
-          onError={() => {
-            setHasError(true)
-            setIsImageLoading(false)
-          }}
-          onLoad={() => setIsImageLoading(false)}
-          loading="lazy"
+    <div className={wrapperClasses} style={wrapperStyle}>
+      {showCover && (
+        <div
+          className="absolute inset-0 bg-cover bg-center"
+          style={{ backgroundImage: `url("${resolvedSrc}")` }}
+          role="presentation"
+          aria-hidden="true"
         />
       )}
-      
-      {showDebug && (
-        <p className="absolute -bottom-6 left-0 right-0 text-[9px] text-muted-foreground/50 truncate px-1 z-10">
-          {debugText}
-        </p>
+      {showFallback && (
+        <DesignedFallback title={title} artist={artist} compact={false} />
       )}
     </div>
   )
 }
 
-// Simpler version for smaller thumbnails
-export function AlbumThumb({
-  src,
-  alt,
-  title,
-  artist,
-  fallbackGradient = "from-charcoal to-card",
-  size = 'md',
-  className,
-  showDebug = false,
-}: {
+interface AlbumThumbProps {
   src?: string
   alt?: string
   title: string
@@ -184,104 +164,118 @@ export function AlbumThumb({
   size?: 'sm' | 'md' | 'lg'
   className?: string
   showDebug?: boolean
-}) {
-  const [resolvedUrl, setResolvedUrl] = useState<string | null>(null)
-  const [isResolving, setIsResolving] = useState(true)
-  const [hasError, setHasError] = useState(false)
-  const [isImageLoading, setIsImageLoading] = useState(true)
+}
 
+const THUMB_SIZE_CLASSES = {
+  sm: 'w-10 h-10',
+  md: 'w-14 h-14',
+  lg: 'w-20 h-20',
+}
+
+export function AlbumThumb({
+  src,
+  alt: _alt,
+  title,
+  artist,
+  fallbackGradient = 'from-charcoal to-card',
+  size = 'md',
+  className,
+}: AlbumThumbProps) {
+  const [resolvedSrc, setResolvedSrc] = useState<string | null>(src ?? null)
+  const [resolverDone, setResolverDone] = useState(!!src)
   useEffect(() => {
-    let cancelled = false
-    
-    async function resolve() {
-      setIsResolving(true)
-      
-      // If we have a static src, use it immediately
-      if (src) {
-        setResolvedUrl(src)
-        setIsResolving(false)
-        return
-      }
-      
-      // Only try iTunes API if no static src
-      try {
-        const url = await resolveAlbumArtwork(artist, title)
-        if (!cancelled) {
-          setResolvedUrl(url)
-          setIsResolving(false)
-        }
-      } catch {
-        // Silently fail
-        if (!cancelled) {
-          setIsResolving(false)
-        }
-      }
+    if (src) {
+      setResolvedSrc(src)
+      setResolverDone(true)
+      return
     }
-    
-    resolve()
-    return () => { cancelled = true }
-  }, [artist, title, src])
+    let cancelled = false
+    resolveAlbumArtwork(artist, title)
+      .then((url) => {
+        if (cancelled) return
+        setResolvedSrc(url ?? null)
+        setResolverDone(true)
+      })
+      .catch(() => {
+        if (cancelled) return
+        setResolverDone(true)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [src, artist, title])
 
-  const sizeClasses = {
-    sm: 'w-10 h-10',
-    md: 'w-14 h-14',
-    lg: 'w-20 h-20',
-  }
+  const status = useImageStatus(resolverDone ? resolvedSrc : null)
+  const showCover =
+    !!resolvedSrc && (status === 'pending' || status === 'loaded')
+  const showFallback = status === 'failed' || status === 'absent'
 
-  const displayUrl = resolvedUrl
-  const showFallback = !isResolving && (!displayUrl || hasError)
-
-  if (showFallback) {
-    return (
-      <div className="relative">
-        <div 
-          className={cn(
-            `bg-gradient-to-br ${fallbackGradient} flex items-center justify-center shrink-0`,
-            sizeClasses[size],
-            className
-          )}
-        >
-          <span className="font-serif text-cream/70 text-xs">
-            {title.charAt(0)}
-          </span>
-        </div>
-        {showDebug && (
-          <p className="absolute -bottom-4 left-0 text-[8px] text-muted-foreground/50 truncate w-20">
-            {artist} / {title}
-          </p>
-        )}
-      </div>
-    )
-  }
+  const wrapperClasses = cn(
+    'relative overflow-hidden bg-gradient-to-br shrink-0',
+    fallbackGradient || 'from-charcoal to-card',
+    THUMB_SIZE_CLASSES[size],
+    className,
+  )
 
   return (
-    <div className="relative">
-      <div className={cn("relative overflow-hidden shrink-0", sizeClasses[size], className)}>
-        {(isResolving || isImageLoading) && (
-          <div className={cn(`absolute inset-0 bg-gradient-to-br ${fallbackGradient} animate-pulse`)} />
+    <div className={wrapperClasses}>
+      {showCover && (
+        <div
+          className="absolute inset-0 bg-cover bg-center"
+          style={{ backgroundImage: `url("${resolvedSrc}")` }}
+          role="presentation"
+          aria-hidden="true"
+        />
+      )}
+      {showFallback && (
+        <DesignedFallback title={title} artist={artist} compact={true} />
+      )}
+    </div>
+  )
+}
+
+/**
+ * Intentional designed fallback when there's no usable cover URL.
+ * Vinyl glyph + title + (optional) artist on the parent gradient.
+ * compact=true drops the glyph and artist (used for small thumbs).
+ *
+ * The wrapper provides the gradient backdrop; this fills it with
+ * the centered label content.
+ */
+function DesignedFallback({
+  title,
+  artist,
+  compact,
+}: {
+  title: string
+  artist: string
+  compact: boolean
+}) {
+  return (
+    <div className="absolute inset-0 flex flex-col items-center justify-center p-3 text-center pointer-events-none">
+      {!compact && (
+        <svg
+          viewBox="0 0 48 48"
+          fill="none"
+          className="w-10 h-10 mb-3 text-cream/40"
+          aria-hidden="true"
+        >
+          <circle cx="24" cy="24" r="22" stroke="currentColor" strokeWidth="1.5" />
+          <circle cx="24" cy="24" r="14" stroke="currentColor" strokeWidth="1" opacity="0.6" />
+          <circle cx="24" cy="24" r="6" stroke="currentColor" strokeWidth="1" opacity="0.4" />
+          <circle cx="24" cy="24" r="2.5" fill="currentColor" opacity="0.8" />
+        </svg>
+      )}
+      <p
+        className={cn(
+          'font-serif text-cream/90 leading-tight line-clamp-2',
+          compact ? 'text-[10px]' : 'text-sm mb-1',
         )}
-        {displayUrl && (
-          /* eslint-disable-next-line @next/next/no-img-element */
-          <img
-            src={displayUrl}
-            alt={alt || `${title} by ${artist}`}
-            className={cn(
-              "object-cover w-full h-full transition-opacity duration-500",
-              isImageLoading ? "opacity-0" : "opacity-100"
-            )}
-            onError={() => {
-              setHasError(true)
-              setIsImageLoading(false)
-            }}
-            onLoad={() => setIsImageLoading(false)}
-            loading="lazy"
-          />
-        )}
-      </div>
-      {showDebug && (
-        <p className="absolute -bottom-4 left-0 text-[8px] text-muted-foreground/50 truncate w-20">
-          {artist} / {title}
-        </p>
+      >
+        {title}
+      </p>
+      {!compact && (
+        <p className="text-xs text-cream/60 line-clamp-1">{artist}</p>
       )}
     </div>
   )

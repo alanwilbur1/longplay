@@ -184,6 +184,13 @@ export interface Room {
   // Null for static/fallback rooms that have no live cycle row.
   cycleId?: string | null
 
+  // Room-level cover art (Phase 1 content quality). Sourced from
+  // rooms.cover_art (which the seed populates from the anchor album
+  // cover). Falls back to currentAlbum.cover at render time when
+  // absent — keeps existing static rooms in lib/rooms.ts working
+  // without each having to declare a cover.
+  coverArt?: string | null
+
   // Current season (computed from date, but can be overridden)
   currentSeason?: Season
 }
@@ -1127,6 +1134,210 @@ const PITCHFORK_DEEP_CUTS: Room = {
 
 // ============================================
 // EXPORTS
+// ── Phase 1 content-quality: three new rooms eliminate the dead
+//    zones for hip-hop, country/americana, and soul/r&b. Each is a
+//    fully-populated Room with its own curator + culture. The
+//    ROOM_TAXONOMY overlay in scripts/seed-phase2.ts contains the
+//    recommender-side genres/moods/energy/weight for each.
+
+const HIP_HOP_HOURS: Room = {
+  id: 'hip-hop-hours',
+  slug: 'hip-hop-hours',
+  name: 'Hip-Hop Hours',
+  type: 'genre',
+  description: 'Album-length hip-hop — conscious, narrative, and produced for headphones. The records that reward sitting with side A through side B.',
+  tagline: 'Records, not playlists',
+  atmosphere: 'Intentional, communal, narrative',
+  emotionalTemperature: 'warm',
+  currentAlbum: safeAlbum(ALBUMS.toPimpAButterfly),
+  weeklyPhase: 'discussion',
+  phaseDay: 'Friday',
+  curator: {
+    id: 'marcus-lane',
+    name: 'Marcus Lane',
+    role: 'Hip-Hop Album Curator',
+    listeningPhilosophy: 'I listen to hip-hop the way the artists made it — as albums, with breath between tracks.',
+    curatorStatement: 'Hip-Hop Hours is for listeners who reach for full records, not singles. The genre has always rewarded that — the runtime, the sequencing, the way a record builds.',
+    favoriteRecords: [safeAlbum(ALBUMS.toPimpAButterfly)],
+    currentObsessions: ['Sequencing', 'Sample lineage', 'Jazz rap'],
+    recurringThemes: ['Narrative', 'Album form', 'Black American art'],
+  },
+  curatorNote: {
+    title: 'Side A to Side B',
+    excerpt: 'To Pimp a Butterfly is a thesis statement on album-length hip-hop. It earns its 79 minutes.',
+    fullText: 'To Pimp a Butterfly is a thesis statement on album-length hip-hop. It earns its 79 minutes. We listen straight through this week — no skipping, no fragmentation. The album form is the genre form here.',
+  },
+  prompts: [
+    { question: 'What does this record say at album length that a single couldn\'t?', hint: 'Notice where the form earns its runtime.' },
+    { question: 'Where does the sequencing matter most?', hint: 'Find the moment one track changes the meaning of the next.' },
+  ],
+  streamingLinks: {},
+  memberCountLabel: 'New room — early listeners welcome',
+  atmosphereNotes: ['Headphone-focused', 'Slow, intentional listening'],
+  albumSample: [safeAlbum(ALBUMS.toPimpAButterfly)],
+  pastCycles: [],
+  emotionalTags: ['Narrative', 'Confessional', 'Cinematic'],
+  sonicTags: ['Jazz-rap', 'Live instrumentation', 'Album-form'],
+  culture: {
+    manifesto: 'Hip-Hop Hours believes hip-hop is, and has always been, an album-form genre. The playlist era flattened that. We listen the way the records were made — straight through, in sequence, with breath between songs.',
+    listeningRitual: 'We listen end-to-end on Fridays. No shuffle, no skipping.',
+    whatWeLookFor: ['Narrative arcs', 'Sequenced records', 'Headphone production', 'Storytelling'],
+    whatWeAvoid: ['Single-driven records', 'Playlist-shaped listening'],
+    invitationText: 'For listeners who hear hip-hop as albums — not playlists.',
+    entryPhrase: 'Enter the Hours',
+    associatedArchetypes: [{ name: 'The Album Hip-Hop Listener', description: 'Listeners who run records front to back' }],
+    relatedRooms: ['soul-quarters', 'beautiful-damage'],
+    seasonalMoods: {
+      winter: { description: 'Indoor headphone weather.', moodShift: 'Slower, more confessional picks.' },
+      spring: { description: 'Walking-distance albums.', moodShift: 'Movement-driven records.' },
+      summer: { description: 'Long-form summer listening.', moodShift: 'Soul-leaning selections.' },
+      autumn: { description: 'Cinematic, story-rich.', moodShift: 'Narrative-forward picks.' },
+    },
+  },
+  aesthetics: {
+    themeClass: 'hip-hop-hours',
+    primaryAccent: 'text-amber-300/80',
+    backgroundGradient: 'from-amber-950/30 via-stone-900/20 to-background',
+    borderTint: 'border-amber-900/30',
+    typographyStyle: 'structured',
+    transitionSpeed: 'medium',
+    grainOpacity: 0.04,
+    spacingRhythm: 'breathable',
+  },
+}
+
+const SOUTHERN_LISTENING: Room = {
+  id: 'southern-listening',
+  slug: 'southern-listening',
+  name: 'Southern Listening',
+  type: 'genre',
+  description: 'Country, Americana, and alt-country records told from a single voice — songwriter-first, slow-tempoed, made for porches and back roads.',
+  tagline: 'Country, told from one voice',
+  atmosphere: 'Warm, plainspoken, songwriter-led',
+  emotionalTemperature: 'warm',
+  currentAlbum: safeAlbum(ALBUMS.southeastern),
+  weeklyPhase: 'private',
+  phaseDay: 'Wednesday',
+  curator: {
+    id: 'hannah-reeves',
+    name: 'Hannah Reeves',
+    role: 'Country & Americana Curator',
+    listeningPhilosophy: 'Country at its best is one voice telling one story without flinching.',
+    curatorStatement: 'Southern Listening is for the country and Americana records that take their time. Songwriting first. Production in service of the song. The Nashville machine isn\'t welcome here; the songwriters are.',
+    favoriteRecords: [safeAlbum(ALBUMS.southeastern)],
+    currentObsessions: ['Sober songwriting', 'Alt-country', 'Single-voice records'],
+    recurringThemes: ['Specificity', 'Plainspeech', 'Place'],
+  },
+  curatorNote: {
+    title: 'Sober Songs',
+    excerpt: 'Southeastern is what country sounds like when the songwriter has nothing to hide and everything to say.',
+    fullText: 'Southeastern is what country sounds like when the songwriter has nothing to hide and everything to say. Twelve songs, one voice, no choruses written by committee. We sit with it this week — slow, on purpose.',
+  },
+  prompts: [
+    { question: 'What does this song refuse to dress up?', hint: 'The best country writing names things plainly.' },
+    { question: 'Where does the place become a character?', hint: 'Listen for the geography in the lyric.' },
+  ],
+  streamingLinks: {},
+  memberCountLabel: 'New room — early listeners welcome',
+  atmosphereNotes: ['Songwriter-focused', 'Slow listening'],
+  albumSample: [safeAlbum(ALBUMS.southeastern)],
+  pastCycles: [],
+  emotionalTags: ['Warmth', 'Plainspeech', 'Reflection'],
+  sonicTags: ['Songwriter', 'Acoustic', 'Pedal-steel'],
+  culture: {
+    manifesto: 'Southern Listening is for the country, Americana, and alt-country records that come from one voice telling one story. Country and Americana have always rewarded slow listening; we honour that here.',
+    listeningRitual: 'We listen midweek, mid-morning. One album, beginning to end.',
+    whatWeLookFor: ['Songwriter records', 'Plain language', 'Place-specific writing', 'Time signatures slower than radio'],
+    whatWeAvoid: ['Bro-country', 'Production-led tracks'],
+    invitationText: 'For listeners who reach for country records like books — one voice, one story, no shortcuts.',
+    entryPhrase: 'Enter the Listening',
+    associatedArchetypes: [{ name: 'The Porch Listener', description: 'Listeners who let a record breathe' }],
+    relatedRooms: ['records-for-rain', 'beautiful-damage'],
+    seasonalMoods: {
+      winter: { description: 'Indoor, slow records.', moodShift: 'Spare arrangements.' },
+      spring: { description: 'Window-open listening.', moodShift: 'Warmer, fuller songs.' },
+      summer: { description: 'Back-porch records.', moodShift: 'Looser, communal picks.' },
+      autumn: { description: 'The natural season for this room.', moodShift: 'Reflective, autumnal records.' },
+    },
+  },
+  aesthetics: {
+    themeClass: 'southern-listening',
+    primaryAccent: 'text-stone-300/80',
+    backgroundGradient: 'from-stone-900/30 via-stone-800/20 to-background',
+    borderTint: 'border-stone-700/20',
+    typographyStyle: 'organic',
+    transitionSpeed: 'slow',
+    grainOpacity: 0.04,
+    spacingRhythm: 'breathable',
+  },
+}
+
+const SOUL_QUARTERS: Room = {
+  id: 'soul-quarters',
+  slug: 'soul-quarters',
+  name: 'Soul Quarters',
+  type: 'genre',
+  description: 'Soul, R&B, and neo-soul records that build a whole world over the course of an album. Warm, intentional, communal listening.',
+  tagline: 'Whole-world records',
+  atmosphere: 'Warm, communal, interior',
+  emotionalTemperature: 'warm',
+  currentAlbum: safeAlbum(ALBUMS.aSeatAtTheTable),
+  weeklyPhase: 'discussion',
+  phaseDay: 'Sunday',
+  curator: {
+    id: 'rae-thompson',
+    name: 'Rae Thompson',
+    role: 'Soul & R&B Curator',
+    listeningPhilosophy: 'Soul records build worlds. You don\'t walk into them halfway.',
+    curatorStatement: 'Soul Quarters is for soul, R&B, and neo-soul records that ask for the whole album. The genre has always been album-form when the artist trusts it.',
+    favoriteRecords: [safeAlbum(ALBUMS.aSeatAtTheTable)],
+    currentObsessions: ['Neo-soul sequencing', 'Interior records', 'Slow tempo'],
+    recurringThemes: ['Interiority', 'Inheritance', 'Warmth'],
+  },
+  curatorNote: {
+    title: 'World-Building',
+    excerpt: 'A Seat at the Table is a complete world. Solange built it deliberately, and we listen to it the same way.',
+    fullText: 'A Seat at the Table is a complete world. Solange built it deliberately, and we listen to it the same way — slow, full attention, no fragmenting.',
+  },
+  prompts: [
+    { question: 'What does the album build that a song couldn\'t?', hint: 'The cumulative effect.' },
+    { question: 'Where does the interlude do the heaviest lifting?', hint: 'Sometimes the spoken passages are the spine.' },
+  ],
+  streamingLinks: {},
+  memberCountLabel: 'New room — early listeners welcome',
+  atmosphereNotes: ['Headphone listening', 'Sunday-evening room'],
+  albumSample: [safeAlbum(ALBUMS.aSeatAtTheTable)],
+  pastCycles: [],
+  emotionalTags: ['Warmth', 'Interiority', 'Communal'],
+  sonicTags: ['Neo-soul', 'Live drums', 'Spoken interludes'],
+  culture: {
+    manifesto: 'Soul Quarters believes soul and R&B at their highest are album-form genres — building a complete world over the course of a record. We listen as the artist intended.',
+    listeningRitual: 'We listen on Sundays, full attention, full record.',
+    whatWeLookFor: ['World-building albums', 'Slow tempo', 'Interior records', 'Sequenced listening'],
+    whatWeAvoid: ['Single-driven projects', 'Playlist-shaped releases'],
+    invitationText: 'For listeners who hear soul as architecture — built whole, walked into slowly.',
+    entryPhrase: 'Enter the Quarters',
+    associatedArchetypes: [{ name: 'The Album-Soul Listener', description: 'Listeners who give a soul record the runtime' }],
+    relatedRooms: ['hip-hop-hours', 'warm-static'],
+    seasonalMoods: {
+      winter: { description: 'Indoor, interior weather.', moodShift: 'Warmer, slower picks.' },
+      spring: { description: 'Open-window listening.', moodShift: 'Brighter neo-soul.' },
+      summer: { description: 'Long Sunday afternoons.', moodShift: 'Looser, communal records.' },
+      autumn: { description: 'The natural season for this room.', moodShift: 'Reflective, interior records.' },
+    },
+  },
+  aesthetics: {
+    themeClass: 'soul-quarters',
+    primaryAccent: 'text-rose-300/80',
+    backgroundGradient: 'from-rose-950/30 via-amber-950/20 to-background',
+    borderTint: 'border-rose-900/20',
+    typographyStyle: 'intimate',
+    transitionSpeed: 'slow',
+    grainOpacity: 0.04,
+    spacingRhythm: 'breathable',
+  },
+}
+
 // ============================================
 export const EDITORIAL_ROOMS: Room[] = [
   NOCTURNAL_ROOM,
@@ -1139,6 +1350,11 @@ export const GENRE_ROOMS: Room[] = [
   RECORDS_FOR_RAIN,
   WARM_STATIC,
   SPIRITUAL_JAZZ,
+  // Phase 1 content-quality: rooms that fill the catalog's hip-hop /
+  // country/americana / soul dead zones for v2.1 affinity matching.
+  HIP_HOP_HOURS,
+  SOUTHERN_LISTENING,
+  SOUL_QUARTERS,
 ]
 
 export const CREATOR_ROOMS: Room[] = [

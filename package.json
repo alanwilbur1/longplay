@@ -7,6 +7,8 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint .",
+    "audit:artwork": "npx tsx scripts/audit-artwork.ts",
+    "audit:artwork:remote": "npx tsx scripts/audit-artwork.ts --check-remote",
     "db:start": "supabase start",
     "db:stop": "supabase stop",
     "db:reset": "supabase db reset",

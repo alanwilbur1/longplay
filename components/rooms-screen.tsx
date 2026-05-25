@@ -61,17 +61,20 @@ export function RoomsScreen({
                 href={`/room/${room.slug}`}
                 className="group shrink-0 w-32 md:w-40"
               >
-                <div className="relative aspect-square mb-3 overflow-hidden bg-muted rounded">
+                <div className="relative aspect-square mb-3 overflow-hidden rounded">
                   <AlbumCover
-                    src={room.currentAlbum.cover}
-                    alt={room.name}
+                    src={room.coverArt ?? room.currentAlbum.cover}
                     title={room.currentAlbum.title}
                     artist={room.currentAlbum.artist}
-                    fallbackGradient={room.currentAlbum.fallbackGradient}
+                    fallbackGradient={
+                      room.currentAlbum.fallbackGradient ||
+                      room.aesthetics?.backgroundGradient ||
+                      'from-charcoal to-card'
+                    }
                     fill
                     className="transition-transform duration-700 group-hover:scale-105"
                   />
-                  <div className="absolute inset-0 bg-gradient-to-t from-background/80 to-transparent" />
+                  <div className="absolute inset-0 bg-gradient-to-t from-background/80 to-transparent pointer-events-none" />
                   <div className="absolute bottom-2 left-2 right-2">
                     <p className="text-[10px] text-cream/80 truncate">Now playing</p>
                   </div>
@@ -158,25 +161,28 @@ function EditorialRoomCard({ room, href }: { room: Room; href: string }) {
       href={href}
       className="group block bg-card/30 border border-border/20 p-6 transition-all duration-500 hover:border-border/40"
     >
-      {/* Album samples */}
+      {/* Album samples — CSS-backed tiles. Same resilience as
+          GenreRoomCard: dead album-cover URLs degrade to the
+          per-album fallbackGradient with no broken-icon or
+          alt-text leak. Each tile sits in a positioned wrapper so
+          the slight horizontal stack (translateX) and z-index
+          layering match the previous AlbumCover-based layout. */}
       <div className="flex gap-2 mb-6">
         {room.albumSample.map((album, i) => (
-          <div 
-            key={album.id} 
-            className="relative w-20 h-20 overflow-hidden bg-muted shrink-0"
-            style={{ 
+          <div
+            key={album.id}
+            className="relative shrink-0"
+            style={{
               transform: `translateX(-${i * 8}px)`,
-              zIndex: room.albumSample.length - i
+              zIndex: room.albumSample.length - i,
             }}
           >
             <AlbumCover
               src={album.cover}
-              alt={album.title}
               title={album.title}
               artist={album.artist}
               fallbackGradient={album.fallbackGradient}
-              fill
-              className="transition-transform duration-700 group-hover:scale-105"
+              className="w-20 h-20 transition-transform duration-700 group-hover:scale-105"
             />
           </div>
         ))}
@@ -199,18 +205,36 @@ function EditorialRoomCard({ room, href }: { room: Room; href: string }) {
 }
 
 function GenreRoomCard({ room, href }: { room: Room; href: string }) {
+  // Phase 1 content-quality: cover imagery via shared CoverTile.
+  // CoverTile uses CSS background-image internally, so dead cover
+  // URLs (placehold.co / real-but-404 Spotify hashes / network-
+  // blocked CDNs) degrade silently to the aesthetic gradient. No
+  // broken-image icon, no alt-text leak.
   return (
     <Link
       href={href}
-      className="group block p-4 border border-border/20 hover:border-border/40 transition-all duration-500"
+      className="group block border border-border/20 hover:border-border/40 transition-all duration-500 overflow-hidden"
     >
-      <h3 className="font-serif text-base text-cream mb-1 group-hover:text-cream/80 transition-colors">
-        {room.name}
-      </h3>
-      <p className="text-xs text-muted-foreground leading-relaxed mb-3">
-        {room.tagline || room.atmosphere}
-      </p>
-      <p className="text-[10px] text-tobacco">{room.memberCountLabel}</p>
+      <div className="relative aspect-square overflow-hidden">
+        <AlbumCover
+          src={room.coverArt ?? room.currentAlbum.cover}
+          title={room.name}
+          artist={room.currentAlbum.artist}
+          fallbackGradient={room.aesthetics?.backgroundGradient || 'from-charcoal to-card'}
+          fill
+          className="transition-transform duration-700 group-hover:scale-105"
+        />
+        <div className="absolute inset-0 bg-gradient-to-t from-background/85 via-background/20 to-transparent pointer-events-none" />
+      </div>
+      <div className="p-4">
+        <h3 className="font-serif text-base text-cream mb-1 group-hover:text-cream/80 transition-colors">
+          {room.name}
+        </h3>
+        <p className="text-xs text-muted-foreground leading-relaxed mb-3 line-clamp-2">
+          {room.tagline || room.atmosphere}
+        </p>
+        <p className="text-[10px] text-tobacco">{room.memberCountLabel}</p>
+      </div>
     </Link>
   )
 }
