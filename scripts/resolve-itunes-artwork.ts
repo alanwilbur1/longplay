@@ -66,6 +66,13 @@ interface ITunesSearchResponse {
 const ITUNES_BASE = 'https://itunes.apple.com/search'
 const ITUNES_LOOKUP = 'https://itunes.apple.com/lookup'
 const PER_REQUEST_DELAY_MS = 3000
+// MusicBrainz strict rate limit: 1 req/sec per IP. We use 1100ms
+// (extra 100ms buffer) and apply it as a shared throttle for both
+// MB and CAA calls since CAA shares MB infra.
+const MB_DELAY_MS = 1100
+const MB_USER_AGENT = 'LongPlay/1.0 (https://longplay.app)'
+const MB_BASE = 'https://musicbrainz.org/ws/2'
+const CAA_BASE = 'https://coverartarchive.org'
 const HEAD_TIMEOUT_MS = 5000
 const ARTIST_THRESHOLD = 0.85
 const TITLE_THRESHOLD = 0.75
@@ -441,6 +448,417 @@ async function expandedSearch(
     pooled: Array.from(pooled.values()),
     provenance,
   }
+}
+
+// ── MusicBrainz + Cover Art Archive ──────────────────────────────────
+//
+// Fallback provider for albums iTunes search can't find or can't
+// match. MusicBrainz has wider coverage of catalog/independent
+// releases; Cover Art Archive (CAA) is the community-curated image
+// store hanging off MB release IDs.
+//
+// Flow per album:
+//   1. Query MB release-group endpoint with artist + title
+//   2. Filter to primary-type='Album' (drops EP/Single/Compilation)
+//   3. Pick the canonical match (lowest first-release-date wins)
+//   4. Hit CAA at /release-group/{mbid} for the front image
+//   5. Prefer thumbnails.1200 → thumbnails.large → image
+//   6. HEAD-validate the image URL as image/* before returning
+//
+// Rate limit: MB enforces strict 1 req/sec per IP. mbThrottle() is
+// a shared timer between every MB and CAA call across the whole run
+// — sequential only, no concurrency.
+
+interface MBReleaseGroup {
+  id: string
+  title?: string
+  'primary-type'?: string
+  'secondary-types'?: string[]
+  'artist-credit'?: Array<{ name?: string; artist?: { name?: string } }>
+  'first-release-date'?: string
+  score?: number
+}
+
+interface MBSearchResponse {
+  count?: number
+  'release-groups'?: MBReleaseGroup[]
+}
+
+interface CAAImage {
+  front?: boolean
+  back?: boolean
+  image?: string
+  thumbnails?: {
+    small?: string
+    large?: string
+    '250'?: string
+    '500'?: string
+    '1200'?: string
+  }
+  types?: string[]
+  approved?: boolean
+}
+
+interface CAAResponse {
+  images?: CAAImage[]
+}
+
+// Shared throttle for every MB/CAA call. Sequential only.
+let lastMBCallAt = 0
+async function mbThrottle(): Promise<void> {
+  const elapsed = Date.now() - lastMBCallAt
+  if (elapsed < MB_DELAY_MS) {
+    await new Promise((r) => setTimeout(r, MB_DELAY_MS - elapsed))
+  }
+  lastMBCallAt = Date.now()
+}
+
+interface MBSearchResult {
+  url: string
+  results: MBReleaseGroup[]
+  rawBody: string
+}
+
+function mbSearchUrl(album: { artist: string; title: string }): string {
+  const a = album.artist.replace(/"/g, '')
+  const t = album.title.replace(/"/g, '')
+  const query = `artist:"${a}" AND releasegroup:"${t}"`
+  const url = new URL(`${MB_BASE}/release-group/`)
+  url.searchParams.set('query', query)
+  url.searchParams.set('fmt', 'json')
+  url.searchParams.set('limit', '10')
+  return url.toString()
+}
+
+async function searchMusicBrainz(album: {
+  artist: string
+  title: string
+}): Promise<MBSearchResult> {
+  const url = mbSearchUrl(album)
+
+  await mbThrottle()
+  const res = await fetch(url, {
+    headers: {
+      'User-Agent': MB_USER_AGENT,
+      Accept: 'application/json',
+    },
+  })
+  if (!res.ok) throw new Error(`MusicBrainz HTTP ${res.status}`)
+  const rawBody = await res.text()
+  let body: MBSearchResponse
+  try {
+    body = JSON.parse(rawBody) as MBSearchResponse
+  } catch (err) {
+    throw new Error(`MusicBrainz JSON parse failed: ${err instanceof Error ? err.message : String(err)}`)
+  }
+  return {
+    url,
+    results: body['release-groups'] ?? [],
+    rawBody,
+  }
+}
+
+interface CAAFetchResult {
+  url: string
+  imageUrl: string | null
+  rawBody: string | null
+  /** Non-null only when we found a front-image record. Used by
+   *  debug output. */
+  pickedFrom?: 'thumbnails.1200' | 'thumbnails.large' | 'thumbnails.500' | 'image'
+}
+
+async function fetchCoverArtArchive(mbid: string): Promise<CAAFetchResult> {
+  const url = `${CAA_BASE}/release-group/${mbid}`
+  await mbThrottle()
+  const res = await fetch(url, {
+    headers: {
+      'User-Agent': MB_USER_AGENT,
+      Accept: 'application/json',
+    },
+    redirect: 'follow',
+  })
+  if (res.status === 404) {
+    // No cover art for this release group — common, not an error.
+    return { url, imageUrl: null, rawBody: null }
+  }
+  if (!res.ok) throw new Error(`Cover Art Archive HTTP ${res.status}`)
+  const rawBody = await res.text()
+  let body: CAAResponse
+  try {
+    body = JSON.parse(rawBody) as CAAResponse
+  } catch (err) {
+    throw new Error(`CAA JSON parse failed: ${err instanceof Error ? err.message : String(err)}`)
+  }
+  const images = body.images ?? []
+  const front = images.find((img) => img.front === true) ?? null
+  if (!front) {
+    return { url, imageUrl: null, rawBody }
+  }
+  // Prefer the largest thumbnail. CAA's "thumbnails.1200" is the
+  // standard high-res form; fall back through large → 500 → original.
+  let pickedFrom: CAAFetchResult['pickedFrom']
+  let imageUrl: string | null = null
+  if (front.thumbnails?.['1200']) {
+    imageUrl = front.thumbnails['1200']
+    pickedFrom = 'thumbnails.1200'
+  } else if (front.thumbnails?.large) {
+    imageUrl = front.thumbnails.large
+    pickedFrom = 'thumbnails.large'
+  } else if (front.thumbnails?.['500']) {
+    imageUrl = front.thumbnails['500']
+    pickedFrom = 'thumbnails.500'
+  } else if (front.image) {
+    imageUrl = front.image
+    pickedFrom = 'image'
+  }
+  return { url, imageUrl, rawBody, pickedFrom }
+}
+
+// MB candidate classification — mirrors selectMatch's structure for
+// iTunes but operates on MB release-groups.
+interface MBCandidateDebug {
+  raw: MBReleaseGroup
+  exactArtist: boolean
+  exactTitle: boolean
+  artistScore: number
+  titleScore: number
+  status: 'accepted-canonical' | 'accepted' | 'rejected'
+  rejectionReason?: string
+}
+
+function mbArtistName(rg: MBReleaseGroup): string {
+  // Concatenate all artist-credit names so collaborations match.
+  const credits = rg['artist-credit'] ?? []
+  return credits.map((c) => c.name ?? c.artist?.name ?? '').filter(Boolean).join(' ')
+}
+
+function selectMBMatch(
+  album: { artist: string; title: string },
+  results: MBReleaseGroup[],
+): {
+  match: MBReleaseGroup | null
+  ambiguous: boolean
+  reason?: string
+  debug: MBCandidateDebug[]
+} {
+  const wantsCompilation = looksLikeCompilation(album.title)
+  const candidates: MBReleaseGroup[] = []
+  const debug: MBCandidateDebug[] = []
+
+  for (const rg of results) {
+    if (!rg.title) {
+      debug.push({
+        raw: rg,
+        exactArtist: false,
+        exactTitle: false,
+        artistScore: 0,
+        titleScore: 0,
+        status: 'rejected',
+        rejectionReason: 'missing title',
+      })
+      continue
+    }
+    const rgArtist = mbArtistName(rg)
+    if (!rgArtist) {
+      debug.push({
+        raw: rg,
+        exactArtist: false,
+        exactTitle: false,
+        artistScore: 0,
+        titleScore: 0,
+        status: 'rejected',
+        rejectionReason: 'missing artist-credit',
+      })
+      continue
+    }
+
+    const exactArtist = normalizedExact(album.artist, rgArtist)
+    const exactTitle = normalizedExact(album.title, rg.title)
+    const artistScore = ratio(album.artist, rgArtist)
+    const titleScoreVal = titleScore(album.title, rg.title)
+
+    // Canonical exact match bypasses all other filters (same rule
+    // as the iTunes matcher — we trust normalized double-match
+    // more than MB's own taxonomy).
+    if (exactArtist && exactTitle) {
+      candidates.push(rg)
+      debug.push({
+        raw: rg,
+        exactArtist: true,
+        exactTitle: true,
+        artistScore: 1,
+        titleScore: 1,
+        status: 'accepted-canonical',
+      })
+      continue
+    }
+
+    // Non-canonical: enforce primary-type=Album.
+    if (rg['primary-type'] !== 'Album') {
+      debug.push({
+        raw: rg,
+        exactArtist,
+        exactTitle,
+        artistScore,
+        titleScore: titleScoreVal,
+        status: 'rejected',
+        rejectionReason: `primary-type="${rg['primary-type'] ?? 'unknown'}" (not Album)`,
+      })
+      continue
+    }
+    // Reject obvious compilations / live releases via secondary-types.
+    const secondary = rg['secondary-types'] ?? []
+    const isLiveOrComp = secondary.some((s) =>
+      ['compilation', 'live', 'remix', 'soundtrack'].includes(s.toLowerCase()),
+    )
+    if (!wantsCompilation && isLiveOrComp) {
+      debug.push({
+        raw: rg,
+        exactArtist,
+        exactTitle,
+        artistScore,
+        titleScore: titleScoreVal,
+        status: 'rejected',
+        rejectionReason: `secondary-types=[${secondary.join(',')}]`,
+      })
+      continue
+    }
+    if (!exactArtist && artistScore < ARTIST_THRESHOLD) {
+      debug.push({
+        raw: rg,
+        exactArtist,
+        exactTitle,
+        artistScore,
+        titleScore: titleScoreVal,
+        status: 'rejected',
+        rejectionReason: `artistScore=${artistScore.toFixed(3)} < ${ARTIST_THRESHOLD}`,
+      })
+      continue
+    }
+    if (!exactTitle && titleScoreVal < TITLE_THRESHOLD) {
+      debug.push({
+        raw: rg,
+        exactArtist,
+        exactTitle,
+        artistScore,
+        titleScore: titleScoreVal,
+        status: 'rejected',
+        rejectionReason: `titleScore=${titleScoreVal.toFixed(3)} < ${TITLE_THRESHOLD}`,
+      })
+      continue
+    }
+    candidates.push(rg)
+    debug.push({
+      raw: rg,
+      exactArtist,
+      exactTitle,
+      artistScore,
+      titleScore: titleScoreVal,
+      status: 'accepted',
+    })
+  }
+
+  if (candidates.length === 0) {
+    return {
+      match: null,
+      ambiguous: false,
+      reason: 'no MB candidate above thresholds',
+      debug,
+    }
+  }
+
+  // Tier 1: canonical exact matches → pick earliest first-release-date.
+  const canonical = candidates.filter(
+    (c) => normalizedExact(album.artist, mbArtistName(c)) && normalizedExact(album.title, c.title!),
+  )
+  if (canonical.length > 0) {
+    canonical.sort((a, b) =>
+      (a['first-release-date'] ?? '9999').localeCompare(b['first-release-date'] ?? '9999'),
+    )
+    return { match: canonical[0], ambiguous: false, debug }
+  }
+
+  // Tier 2: sort by MB's own score (descending) then by date.
+  candidates.sort((a, b) => {
+    const scoreDiff = (b.score ?? 0) - (a.score ?? 0)
+    if (scoreDiff !== 0) return scoreDiff
+    return (a['first-release-date'] ?? '9999').localeCompare(b['first-release-date'] ?? '9999')
+  })
+  return { match: candidates[0], ambiguous: false, debug }
+}
+
+interface MBResolveResult {
+  imageUrl: string | null
+  mbid: string | null
+  search: MBSearchResult
+  selection: {
+    match: MBReleaseGroup | null
+    ambiguous: boolean
+    reason?: string
+    debug: MBCandidateDebug[]
+  }
+  caa?: CAAFetchResult
+  /** Why this attempt produced no imageUrl (when it didn't). */
+  failureReason?: string
+}
+
+/** End-to-end MusicBrainz → Cover Art Archive resolution. Does NOT
+ *  validate the resulting URL — caller HEAD-validates as for any
+ *  other provider. */
+async function tryMusicBrainz(album: {
+  artist: string
+  title: string
+}): Promise<MBResolveResult> {
+  let search: MBSearchResult
+  try {
+    search = await searchMusicBrainz(album)
+  } catch (err) {
+    return {
+      imageUrl: null,
+      mbid: null,
+      search: {
+        url: mbSearchUrl(album),
+        results: [],
+        rawBody: `(error: ${err instanceof Error ? err.message : String(err)})`,
+      },
+      selection: { match: null, ambiguous: false, debug: [] },
+      failureReason: err instanceof Error ? err.message : String(err),
+    }
+  }
+  const selection = selectMBMatch(album, search.results)
+  if (!selection.match) {
+    return {
+      imageUrl: null,
+      mbid: null,
+      search,
+      selection,
+      failureReason: selection.reason ?? 'no MB match',
+    }
+  }
+  const mbid = selection.match.id
+  let caa: CAAFetchResult
+  try {
+    caa = await fetchCoverArtArchive(mbid)
+  } catch (err) {
+    return {
+      imageUrl: null,
+      mbid,
+      search,
+      selection,
+      failureReason: `CAA fetch: ${err instanceof Error ? err.message : String(err)}`,
+    }
+  }
+  if (!caa.imageUrl) {
+    return {
+      imageUrl: null,
+      mbid,
+      search,
+      selection,
+      caa,
+      failureReason: 'no front image in CAA for this release group',
+    }
+  }
+  return { imageUrl: caa.imageUrl, mbid, search, selection, caa }
 }
 
 // ── Manual override map ──────────────────────────────────────────────
@@ -921,8 +1339,10 @@ async function main() {
   const writeMode = args.includes('--write')
   const validateExisting = args.includes('--validate-existing')
   const useOverrides = args.includes('--use-overrides')
+  const useMusicbrainz = args.includes('--use-musicbrainz')
   const debugCandidates = args.includes('--debug-candidates')
   const debugExpandedSearch = args.includes('--debug-expanded-search')
+  const debugMusicbrainz = args.includes('--debug-musicbrainz')
   const onlyArg = args.find((a) => a.startsWith('--only='))
   const onlyId = onlyArg ? onlyArg.slice('--only='.length) : null
 
@@ -931,8 +1351,10 @@ async function main() {
   else modeBits.push('dry-run; pass --write to commit')
   if (validateExisting) modeBits.push('--validate-existing')
   if (useOverrides) modeBits.push('--use-overrides')
+  if (useMusicbrainz) modeBits.push('--use-musicbrainz')
   if (debugCandidates) modeBits.push('--debug-candidates')
   if (debugExpandedSearch) modeBits.push('--debug-expanded-search')
+  if (debugMusicbrainz) modeBits.push('--debug-musicbrainz')
   console.log(`\n── iTunes artwork resolver (${modeBits.join(', ')}) ──\n`)
 
   type WorkItem = {
@@ -1007,6 +1429,69 @@ async function main() {
   // operator can paste a deterministic override into MANUAL_OVERRIDES
   // for future runs. Surfaced in the end-of-run summary block.
   const discoveredCollectionIds = new Map<string, number>()
+  // Per-source resolution tally — surfaced in the final summary so
+  // the operator can see which provider did the work. Source values:
+  //   'itunes-search'   default expanded multi-query path
+  //   'itunes-lookup'   collectionId override path
+  //   'override-url'    explicit artworkUrl override
+  //   'musicbrainz-caa' MusicBrainz release-group → Cover Art Archive
+  const resolvedBySource = new Map<string, number>()
+  function bumpSource(src: string) {
+    resolvedBySource.set(src, (resolvedBySource.get(src) ?? 0) + 1)
+  }
+  // Discovered MusicBrainz release-group MBIDs (per album id). Same
+  // role as discoveredCollectionIds: enables deterministic re-runs
+  // by letting the operator pin a specific MBID rather than relying
+  // on the MB search-ranking ranking it the same way next time.
+  const discoveredMBIDs = new Map<string, string>()
+
+  /**
+   * MusicBrainz + Cover Art Archive fallback. Called after every
+   * iTunes failure path (UNRESOLVED / AMBIGUOUS / validation failed).
+   * Returns true and bumps `resolved` + records the update on
+   * success; returns false and leaves counters alone on failure.
+   *
+   * Guarded by --use-musicbrainz: when off, returns false immediately
+   * without firing any MB/CAA calls.
+   *
+   * Validation: every MB-derived URL still goes through the same
+   * validateArtwork() HEAD check as iTunes URLs. Strict.
+   */
+  async function tryMBFallback(
+    item: { id: string; artist: string; title: string },
+    before: string,
+    iTunesFailureContext: string,
+  ): Promise<boolean> {
+    if (!useMusicbrainz) return false
+    console.log(
+      `    [musicbrainz] iTunes ${iTunesFailureContext}; attempting MusicBrainz fallback`,
+    )
+    const mb = await tryMusicBrainz({ artist: item.artist, title: item.title })
+    if (debugMusicbrainz) {
+      printMBDebug(mb)
+    }
+    if (!mb.imageUrl) {
+      console.log(`    [musicbrainz] no usable image — ${mb.failureReason ?? 'unknown'}`)
+      return false
+    }
+    const ok = await validateArtwork(mb.imageUrl)
+    if (!ok) {
+      console.log(
+        `    [musicbrainz] CAA image did not HEAD-validate: ${mb.imageUrl.slice(0, 60)}…`,
+      )
+      return false
+    }
+    resolved += 1
+    bumpSource('musicbrainz-caa')
+    updates.set(item.id, mb.imageUrl)
+    if (mb.mbid) discoveredMBIDs.set(item.id, mb.mbid)
+    console.log(
+      `    OK (source=musicbrainz-caa) → MB release-group ${mb.mbid ?? '?'}`,
+    )
+    console.log(`       before:  ${before}`)
+    console.log(`       after:   ${mb.imageUrl.slice(0, 60)}…`)
+    return true
+  }
 
   for (let i = 0; i < work.length; i++) {
     const item = work[i]
@@ -1032,7 +1517,9 @@ async function main() {
           console.log(`    UNRESOLVED (override URL did not HEAD-validate)`)
         } else {
           resolved += 1
+          bumpSource('override-url')
           updates.set(item.id, override.artworkUrl)
+          console.log(`    OK (source=override-url)`)
           console.log(`       before:  ${before}`)
           console.log(`       after:   ${override.artworkUrl.slice(0, 60)}…`)
         }
@@ -1074,9 +1561,10 @@ async function main() {
               console.log(`    UNRESOLVED (validation failed on ${finalUrl.slice(0, 60)}…)`)
             } else {
               resolved += 1
+              bumpSource('itunes-lookup')
               updates.set(item.id, finalUrl)
               console.log(
-                `    OK → lookup ${r.artistName} — ${r.collectionName}`,
+                `    OK (source=itunes-lookup) → ${r.artistName} — ${r.collectionName}`,
               )
               console.log(`       before:  ${before}`)
               console.log(`       after:   ${finalUrl.slice(0, 60)}…`)
@@ -1119,16 +1607,23 @@ async function main() {
         }
 
         if (amb) {
-          ambiguous += 1
           console.log(`    AMBIGUOUS (${reason})`)
           for (const r of expanded.pooled.slice(0, 3)) {
             console.log(`       candidate: ${r.artistName} — ${r.collectionName}`)
           }
+          // MB fallback for ambiguous: MB may surface a clean
+          // single canonical match where iTunes had multiple
+          // near-ties.
+          if (!(await tryMBFallback(item, before, 'AMBIGUOUS'))) {
+            ambiguous += 1
+          }
         } else if (!match) {
-          unresolved += 1
           console.log(
             `    UNRESOLVED (${reason ?? 'no match'}; tried ${expanded.queries.length} queries, ${expanded.pooled.length} pooled candidates)`,
           )
+          if (!(await tryMBFallback(item, before, 'UNRESOLVED'))) {
+            unresolved += 1
+          }
         } else {
           const upgraded = upgradeArtwork(match.artworkUrl)
           let finalUrl = upgraded
@@ -1147,13 +1642,16 @@ async function main() {
             console.log(`    [debug] artwork validation: ${validationNote}`)
           }
           if (!ok) {
-            unresolved += 1
             console.log(`    UNRESOLVED (validation failed on ${finalUrl.slice(0, 60)}…)`)
+            if (!(await tryMBFallback(item, before, 'iTunes validation failed'))) {
+              unresolved += 1
+            }
           } else {
             resolved += 1
+            bumpSource('itunes-search')
             updates.set(item.id, finalUrl)
             console.log(
-              `    OK → matched ${match.artistName} — ${match.collectionName} (a=${match.artistScore.toFixed(2)} t=${match.titleScore.toFixed(2)})`,
+              `    OK (source=itunes-search) → matched ${match.artistName} — ${match.collectionName} (a=${match.artistScore.toFixed(2)} t=${match.titleScore.toFixed(2)})`,
             )
             console.log(`       before:  ${before}`)
             console.log(`       after:   ${finalUrl.slice(0, 60)}…`)
@@ -1191,6 +1689,15 @@ async function main() {
     `\n── result: ${resolved} resolved · ${unresolved} unresolved · ${ambiguous} ambiguous ──\n`,
   )
 
+  // ── Resolved-by-source breakdown ─────────────────────────────────
+  if (resolvedBySource.size > 0) {
+    console.log('── resolved by source ──')
+    for (const [src, n] of resolvedBySource) {
+      console.log(`  ${src.padEnd(22)} ${String(n).padStart(3)}`)
+    }
+    console.log()
+  }
+
   // ── Discovered collectionId summary ─────────────────────────────
   // Every album resolved via expanded search through iTunes Search
   // came back with a collectionId. Surface them so the operator can
@@ -1202,6 +1709,19 @@ async function main() {
     for (const [albumId, collectionId] of discoveredCollectionIds) {
       const slug = albumId.replace(/'/g, "\\'")
       console.log(`  '${slug}': { collectionId: ${collectionId} },`)
+    }
+    console.log()
+  }
+
+  // ── Discovered MusicBrainz MBIDs ─────────────────────────────────
+  // Same role as collectionId summary — operator can pin a specific
+  // MB release-group MBID for deterministic re-runs. Currently no
+  // override-map slot for MBIDs, so this is informational; if MB
+  // becomes a primary provider we'd add an override type for it.
+  if (discoveredMBIDs.size > 0) {
+    console.log('── discovered MusicBrainz release-group MBIDs ──')
+    for (const [albumId, mbid] of discoveredMBIDs) {
+      console.log(`  ${albumId.padEnd(28)} ${mbid}`)
     }
     console.log()
   }
@@ -1230,8 +1750,64 @@ main().catch((err) => {
 })
 
 // ── Debug printers ───────────────────────────────────────────────────
-// Activated by --debug-candidates / --debug-expanded-search. Use
-// with --only=<slug>.
+// Activated by --debug-candidates / --debug-expanded-search /
+// --debug-musicbrainz. Use with --only=<slug>.
+
+/**
+ * Prints MusicBrainz search + selection + CAA debug for a single
+ * MB fallback attempt. Activated by --debug-musicbrainz.
+ */
+function printMBDebug(mb: MBResolveResult): void {
+  console.log()
+  console.log(`    [mb-debug] search URL: ${mb.search.url}`)
+  console.log(`    [mb-debug] search returned ${mb.search.results.length} release-groups`)
+  if (mb.selection.debug.length > 0) {
+    console.log(`    [mb-debug] selection (${mb.selection.debug.length} considered):`)
+    for (let i = 0; i < mb.selection.debug.length; i++) {
+      const c = mb.selection.debug[i]
+      const rg = c.raw
+      const a = (rg['artist-credit'] ?? [])
+        .map((x) => x.name ?? x.artist?.name ?? '')
+        .filter(Boolean)
+        .join(', ')
+      console.log(`    [mb-debug]   ${i + 1}. "${a}" — "${rg.title ?? '∅'}"`)
+      console.log(
+        `    [mb-debug]      type=${rg['primary-type'] ?? '∅'}   secondary=[${(rg['secondary-types'] ?? []).join(',')}]   first-release=${rg['first-release-date'] ?? '∅'}   id=${rg.id}`,
+      )
+      console.log(
+        `    [mb-debug]      exactArtist=${c.exactArtist} exactTitle=${c.exactTitle} aScore=${c.artistScore.toFixed(3)} tScore=${c.titleScore.toFixed(3)}`,
+      )
+      if (c.status === 'accepted-canonical') {
+        console.log(`    [mb-debug]      STATUS: ACCEPTED (canonical exact match)`)
+      } else if (c.status === 'accepted') {
+        console.log(`    [mb-debug]      STATUS: ACCEPTED`)
+      } else {
+        console.log(`    [mb-debug]      STATUS: REJECTED — ${c.rejectionReason ?? 'unknown'}`)
+      }
+    }
+  }
+  if (mb.selection.match) {
+    console.log(
+      `    [mb-debug] selected MBID: ${mb.selection.match.id} ("${mb.selection.match.title}")`,
+    )
+  } else {
+    console.log(`    [mb-debug] no selection (${mb.selection.reason ?? mb.failureReason ?? '?'})`)
+  }
+  if (mb.caa) {
+    console.log(`    [mb-debug] CAA URL: ${mb.caa.url}`)
+    if (mb.caa.imageUrl) {
+      console.log(
+        `    [mb-debug] CAA picked: ${mb.caa.imageUrl.slice(0, 60)}…  (from: ${mb.caa.pickedFrom ?? '?'})`,
+      )
+    } else {
+      console.log(`    [mb-debug] CAA returned no front image`)
+    }
+  } else if (mb.failureReason && mb.failureReason.startsWith('CAA')) {
+    console.log(`    [mb-debug] CAA: ${mb.failureReason}`)
+  }
+  console.log()
+}
+
 
 /**
  * Prints the multi-query expanded search summary: each attempt's
