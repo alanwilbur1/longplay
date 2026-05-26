@@ -164,7 +164,7 @@ export const spotifyProvider: StreamingProvider = {
     }
   },
 
-  async sync({ accessToken }): Promise<SyncResult> {
+  async sync({ accessToken, recentlyPlayedAfter }): Promise<SyncResult> {
     const syncedAt = new Date().toISOString()
 
     // ── Pull all four data streams in parallel. ─────────────────────────
@@ -176,6 +176,20 @@ export const spotifyProvider: StreamingProvider = {
     // SimplifiedArtist (id + name only). To get genres + popularity +
     // image for those artists, we collect their IDs and batch-hydrate
     // via /v1/artists?ids=... below.
+    //
+    // Phase 6A.2B incremental cursor: if `recentlyPlayedAfter` is set,
+    // we ask Spotify for plays AFTER that timestamp via the `after`
+    // query param (milliseconds since epoch). Spotify caps recently-
+    // played at 50 items total, so for high-volume listeners we still
+    // lose plays past 50 — that's an upstream limitation, not a cursor
+    // bug. Without `after`, Spotify returns the 50 most recent plays.
+    const recentlyPlayedAfterMs = recentlyPlayedAfter
+      ? Date.parse(recentlyPlayedAfter)
+      : NaN
+    const recentParams = new URLSearchParams({ limit: '50' })
+    if (Number.isFinite(recentlyPlayedAfterMs)) {
+      recentParams.set('after', String(recentlyPlayedAfterMs))
+    }
     const [recent, topArtists, topTracks, savedAlbums] = await Promise.all([
       spotifyJson<{
         items: Array<{
@@ -190,7 +204,7 @@ export const spotifyProvider: StreamingProvider = {
           played_at: string
           context?: { type?: string }
         }>
-      }>(`${API_BASE}/me/player/recently-played?limit=50`, accessToken),
+      }>(`${API_BASE}/me/player/recently-played?${recentParams.toString()}`, accessToken),
       spotifyJson<{
         items: Array<{ id: string; name: string; genres: string[] }>
       }>(`${API_BASE}/me/top/artists?time_range=medium_term&limit=50`, accessToken),
@@ -311,6 +325,21 @@ export const spotifyProvider: StreamingProvider = {
       0,
     )
 
+    // Phase 6A.2B: report the new cursor (max played_at across this
+    // sync's events). The orchestrator persists it to
+    // listening_connections.recently_played_cursor.
+    let maxPlayedAtMs = recentlyPlayedAfterMs
+    for (const e of events) {
+      if (!e.played_at) continue
+      const t = Date.parse(e.played_at)
+      if (Number.isFinite(t) && (!Number.isFinite(maxPlayedAtMs) || t > maxPlayedAtMs)) {
+        maxPlayedAtMs = t
+      }
+    }
+    const recently_played_cursor = Number.isFinite(maxPlayedAtMs)
+      ? new Date(maxPlayedAtMs).toISOString()
+      : null
+
     return {
       events,
       artists,
@@ -324,6 +353,7 @@ export const spotifyProvider: StreamingProvider = {
         hydration_batches_attempted: hydration.attempted,
         hydration_batches_succeeded: hydration.succeeded,
         hydration_error: hydration.lastError,
+        recently_played_cursor,
       },
     }
   },

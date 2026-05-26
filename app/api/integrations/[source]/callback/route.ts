@@ -164,7 +164,9 @@ export async function GET(
   // well under any reasonable timeout. Errors here never block the
   // redirect — the listener can hit "Sync now" from /profile.
   try {
-    await syncProviderForUser(cookieState.userId, source as SourceId)
+    await syncProviderForUser(cookieState.userId, source as SourceId, {
+      trigger: 'oauth',
+    })
   } catch (err) {
     if (process.env.NODE_ENV !== 'production') {
       console.warn('[oauth-callback] initial sync failed', {

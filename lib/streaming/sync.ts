@@ -8,6 +8,12 @@ import {
 import type { EnrichmentRoundStats } from '@/lib/enrichment/types'
 import { getProvider, type SourceId } from './index'
 import { decryptToken, encryptToken } from './token-crypto'
+import {
+  classifySyncOutcome,
+  computeNextSyncAfter,
+  sanitizeErrorSummary,
+  type SyncRunStatus,
+} from './scheduler-logic'
 import type { SyncResult } from './types'
 
 /**
@@ -155,22 +161,40 @@ function emptyOutcome(): SyncOutcome {
   }
 }
 
+export interface SyncOptions {
+  /** Where the sync was triggered from. Recorded on listening_sync_runs
+   *  for audit. Defaults to 'manual' for backward compatibility — callers
+   *  in the OAuth callback and the cron scheduler set this explicitly. */
+  trigger?: 'cron' | 'oauth' | 'manual'
+}
+
 /**
  * Sync one provider for one user. Idempotent — safe to retry.
+ *
+ * Phase 6A.2B: this function is now also called by the cron scheduler
+ * (lib/streaming/scheduler.ts). It persists:
+ *   - listening_connections.recently_played_cursor (incremental window
+ *     for the next call)
+ *   - listening_connections.consecutive_failures + next_sync_after
+ *     (exponential backoff for the scheduler)
+ *   - listening_sync_runs row per attempt (audit; safe error only)
  */
 export async function syncProviderForUser(
   userId: string,
   sourceId: SourceId,
+  options: SyncOptions = {},
 ): Promise<SyncOutcome> {
   const outcome = emptyOutcome()
   const admin = getSupabaseAdminClient()
+  const trigger: 'cron' | 'oauth' | 'manual' = options.trigger ?? 'manual'
+  const startedAt = new Date()
 
   // 1. Fetch the connection (admin client bypasses RLS so we can read
   // the encrypted token columns).
   const { data: conn, error: connError } = await admin
     .from('listening_connections')
     .select(
-      'id, user_id, source_id, status, scopes, access_token_encrypted, refresh_token_encrypted, token_expires_at, last_sync_at',
+      'id, user_id, source_id, status, scopes, access_token_encrypted, refresh_token_encrypted, token_expires_at, last_sync_at, recently_played_cursor, consecutive_failures',
     )
     .eq('user_id', userId)
     .eq('source_id', sourceId)
@@ -181,6 +205,18 @@ export async function syncProviderForUser(
       stage: 'load-connection',
       message: connError?.message ?? 'no connection row',
     }
+    // No connection row to update; still record the attempt so an
+    // audit can see "user X tried to sync but had no connection row".
+    await recordSyncRun({
+      userId,
+      sourceId,
+      trigger,
+      startedAt,
+      outcome,
+      cursorBefore: null,
+      cursorAfter: null,
+      consecutiveFailuresAfter: null,
+    })
     return outcome
   }
   const connectionRow = conn as unknown as {
@@ -191,13 +227,28 @@ export async function syncProviderForUser(
     refresh_token_encrypted: string | null
     token_expires_at: string | null
     last_sync_at: string | null
+    recently_played_cursor: string | null
+    consecutive_failures: number | null
   }
+  const cursorBefore = connectionRow.recently_played_cursor
+  const prevFailures = connectionRow.consecutive_failures ?? 0
 
   if (connectionRow.status !== 'active') {
     outcome.error = {
       stage: 'connection-status',
       message: `status=${connectionRow.status} — not syncing`,
     }
+    await recordSyncRun({
+      userId,
+      sourceId,
+      trigger,
+      startedAt,
+      outcome,
+      cursorBefore,
+      cursorAfter: cursorBefore,
+      consecutiveFailuresAfter: prevFailures,
+      connectionId: connectionRow.id,
+    })
     return outcome
   }
 
@@ -240,13 +291,27 @@ export async function syncProviderForUser(
         stage: 'refresh',
         message: 'no refresh_token; reauth required',
       }
+      const failuresAfter = prevFailures + 1
       await admin
         .from('listening_connections')
         .update({
           status: 'reauth_required',
           last_error: outcome.error.message,
+          consecutive_failures: failuresAfter,
+          next_sync_after: computeNextSyncAfter(failuresAfter).toISOString(),
         })
         .eq('id', connectionRow.id)
+      await recordSyncRun({
+        userId,
+        sourceId,
+        trigger,
+        startedAt,
+        outcome,
+        cursorBefore,
+        cursorAfter: cursorBefore,
+        consecutiveFailuresAfter: failuresAfter,
+        connectionId: connectionRow.id,
+      })
       return outcome
     }
 
@@ -286,30 +351,65 @@ export async function syncProviderForUser(
         stage: 'refresh',
         message: err instanceof Error ? err.message : String(err),
       }
+      const failuresAfter = prevFailures + 1
       await admin
         .from('listening_connections')
         .update({
           status: 'reauth_required',
           last_error: outcome.error.message,
+          consecutive_failures: failuresAfter,
+          next_sync_after: computeNextSyncAfter(failuresAfter).toISOString(),
         })
         .eq('id', connectionRow.id)
+      await recordSyncRun({
+        userId,
+        sourceId,
+        trigger,
+        startedAt,
+        outcome,
+        cursorBefore,
+        cursorAfter: cursorBefore,
+        consecutiveFailuresAfter: failuresAfter,
+        connectionId: connectionRow.id,
+      })
       return outcome
     }
   }
 
-  // 3. Call provider sync.
+  // 3. Call provider sync. Pass the recently-played cursor so the
+  // provider only fetches plays we haven't seen.
   let result: SyncResult
   try {
-    result = await provider.sync({ accessToken })
+    result = await provider.sync({
+      accessToken,
+      recentlyPlayedAfter: cursorBefore,
+    })
   } catch (err) {
     outcome.error = {
       stage: 'sync',
       message: err instanceof Error ? err.message : String(err),
     }
+    const failuresAfter = prevFailures + 1
     await admin
       .from('listening_connections')
-      .update({ status: 'error', last_error: outcome.error.message })
+      .update({
+        status: 'error',
+        last_error: outcome.error.message,
+        consecutive_failures: failuresAfter,
+        next_sync_after: computeNextSyncAfter(failuresAfter).toISOString(),
+      })
       .eq('id', connectionRow.id)
+    await recordSyncRun({
+      userId,
+      sourceId,
+      trigger,
+      startedAt,
+      outcome,
+      cursorBefore,
+      cursorAfter: cursorBefore,
+      consecutiveFailuresAfter: failuresAfter,
+      connectionId: connectionRow.id,
+    })
     return outcome
   }
 
@@ -481,16 +581,29 @@ export async function syncProviderForUser(
   }
 
   // 6. Update connection last_sync_at + clear last_error (if anything
-  // upstream succeeded).
+  // upstream succeeded), advance the recently_played_cursor, and
+  // either clear consecutive_failures (success) or back off via
+  // computeNextSyncAfter (failure).
   const succeeded = outcome.error === null
   const now = new Date().toISOString()
+  const cursorAfter = result.meta?.recently_played_cursor ?? cursorBefore
+  const failuresAfter = succeeded ? 0 : prevFailures + 1
+  const connectionUpdate: Record<string, unknown> = {
+    last_sync_at: now,
+    status: succeeded ? 'active' : 'error',
+    last_error: succeeded ? null : outcome.error?.message,
+    consecutive_failures: failuresAfter,
+    next_sync_after: computeNextSyncAfter(failuresAfter).toISOString(),
+  }
+  // Only persist a new cursor when the provider actually reported one
+  // — otherwise the existing value stays. computeNextCursor never
+  // moves backward, so this is safe.
+  if (cursorAfter && cursorAfter !== cursorBefore) {
+    connectionUpdate.recently_played_cursor = cursorAfter
+  }
   await admin
     .from('listening_connections')
-    .update({
-      last_sync_at: now,
-      status: succeeded ? 'active' : 'error',
-      last_error: succeeded ? null : outcome.error?.message,
-    })
+    .update(connectionUpdate)
     .eq('id', connectionRow.id)
 
   outcome.last_sync_at = succeeded ? now : connectionRow.last_sync_at
@@ -653,7 +766,81 @@ export async function syncProviderForUser(
     }
   }
 
+  // Phase 6A.2B: durable audit. Best-effort — failures here don't
+  // surface to the caller because the sync itself has already
+  // completed and persisted its data.
+  await recordSyncRun({
+    userId,
+    sourceId,
+    trigger,
+    startedAt,
+    outcome,
+    cursorBefore,
+    cursorAfter,
+    consecutiveFailuresAfter: failuresAfter,
+    connectionId: connectionRow.id,
+  })
+
   return outcome
+}
+
+// ── Run-log helper (Phase 6A.2B) ───────────────────────────────────
+//
+// Inserts one row into listening_sync_runs per sync attempt, even on
+// early failure (load-connection, refresh, sync-exception). Wrapped
+// in try/catch so a DB outage on the audit table never poisons the
+// sync's own state. Never logs tokens.
+
+interface RecordSyncRunArgs {
+  userId: string
+  sourceId: SourceId
+  trigger: 'cron' | 'oauth' | 'manual'
+  startedAt: Date
+  outcome: SyncOutcome
+  cursorBefore: string | null
+  cursorAfter: string | null
+  consecutiveFailuresAfter: number | null
+  connectionId?: string
+}
+
+async function recordSyncRun(args: RecordSyncRunArgs): Promise<void> {
+  const admin = getSupabaseAdminClient()
+  const finishedAt = new Date()
+  const durationMs = finishedAt.getTime() - args.startedAt.getTime()
+  const status: SyncRunStatus = classifySyncOutcome({
+    ok: args.outcome.ok,
+    error: args.outcome.error,
+    hydration_error: args.outcome.hydration_error,
+    enrichment_state: args.outcome.enrichment_state,
+    refreshed: args.outcome.refreshed,
+  })
+  const errorSummary = sanitizeErrorSummary(args.outcome.error?.message ?? null)
+  try {
+    await admin.from('listening_sync_runs').insert({
+      user_id: args.userId,
+      source_id: args.sourceId,
+      trigger: args.trigger,
+      status,
+      started_at: args.startedAt.toISOString(),
+      finished_at: finishedAt.toISOString(),
+      duration_ms: durationMs,
+      counts: args.outcome.counts,
+      refreshed_token: args.outcome.refreshed,
+      recently_played_cursor_before: args.cursorBefore,
+      recently_played_cursor_after:
+        args.cursorAfter && args.cursorAfter !== args.cursorBefore
+          ? args.cursorAfter
+          : null,
+      error_summary: errorSummary,
+    })
+  } catch (err) {
+    // Best-effort. Logs go to the platform log, not the DB.
+    console.warn('[sync] failed to record sync run', {
+      user_id: args.userId,
+      source_id: args.sourceId,
+      message: err instanceof Error ? err.message : String(err),
+    })
+  }
 }
 
 export interface SnapshotRecomputeResult {

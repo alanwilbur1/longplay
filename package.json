@@ -21,6 +21,7 @@
     "tokens:encrypt-legacy": "npx tsx scripts/encrypt-legacy-tokens.ts",
     "tokens:encrypt-legacy:write": "npx tsx scripts/encrypt-legacy-tokens.ts --write",
     "test:token-crypto": "npx tsx scripts/test-token-crypto.ts",
+    "test:sync-scheduler": "npx tsx scripts/test-sync-scheduler.ts",
     "guard:service-role": "node scripts/check-service-role-leak.mjs"
   },
   "dependencies": {

@@ -45,7 +45,14 @@ export const appleMusicProvider: StreamingProvider = {
     throw new Error('[apple_music] refreshTokens not implemented in Phase 4.1')
   },
 
-  async sync(): Promise<SyncResult> {
+  // Accepts the StreamingProvider sync signature (including Phase 6A.2B's
+  // `recentlyPlayedAfter`) but ignores both params — capabilities
+  // report library-only and the scaffold returns empties until the
+  // MusicKit wiring lands.
+  async sync(_params: {
+    accessToken: string
+    recentlyPlayedAfter?: string | null
+  }): Promise<SyncResult> {
     return {
       events: [],
       artists: [],

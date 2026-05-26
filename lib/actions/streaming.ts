@@ -366,6 +366,7 @@ export async function syncMyConnection(
   const outcome: SyncOutcome = await syncProviderForUser(
     user.id,
     normalized as SourceId,
+    { trigger: 'manual' },
   )
   if (process.env.NODE_ENV !== 'production') {
     console.log('[syncMyConnection] outcome', {
