@@ -342,7 +342,7 @@ export const ALBUMS = {
     title: "XO",
     artist: "Elliott Smith",
     year: "1998",
-    cover: "https://coverartarchive.org/release/092b0441-d71e-33dc-940e-d9a83275d8a5/18047749641-1200.jpg",
+    cover: "https://is1-ssl.mzstatic.com/image/thumb/Music125/v4/83/b1/9d/83b19dd3-733c-228b-1b01-573e6cebbbd5/19UMGIM45347.rgb.jpg/1000x1000bb.jpg",
     fallbackGradient: "from-stone-700 to-stone-900",
     description: "Orchestral arrangements elevate the despair.",
     emotionalTags: ["orchestral", "major-label", "despair"],
