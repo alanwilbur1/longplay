@@ -8,6 +8,7 @@ import {
 import type { EnrichmentRoundStats } from '@/lib/enrichment/types'
 import { getProvider, type SourceId } from './index'
 import { decryptToken, encryptToken } from './token-crypto'
+import { recomputeListenerGraph } from './listener-graph'
 import {
   classifySyncOutcome,
   computeNextSyncAfter,
@@ -764,6 +765,28 @@ export async function syncProviderForUser(
     if (!debug.round.last_error) {
       debug.round.last_error = `outer: ${message.slice(0, 200)}`
     }
+  }
+
+  // Phase 6A.3: Layer 2 — regenerate the canonical listening graph
+  // from the now-fresh favorite_* / listening_events / enrichment
+  // rows. Best-effort: a Layer 2 failure can't roll back any
+  // already-persisted Layer 1 state (and the snapshot above remains
+  // valid; it still reads Layer 1 directly in 6A.3).
+  try {
+    const lg = await recomputeListenerGraph(userId)
+    console.log('[sync/layer2] listener graph regenerated', {
+      userId,
+      artists_written: lg.artists_written,
+      albums_written: lg.albums_written,
+      tracks_written: lg.tracks_written,
+      genres_written: lg.genres_written,
+      duration_ms: lg.duration_ms,
+    })
+  } catch (err) {
+    console.warn('[sync/layer2] listener graph recompute failed', {
+      userId,
+      message: err instanceof Error ? err.message : String(err),
+    })
   }
 
   // Phase 6A.2B: durable audit. Best-effort — failures here don't
