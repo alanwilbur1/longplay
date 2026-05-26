@@ -958,8 +958,20 @@ const MANUAL_OVERRIDES: Record<string, ManualOverride> = {
   },
   // ── Elliott Smith ─────────────────────────────────────────────
   xo: {
-    searchTerm: 'Elliott Smith XO 1998',
-    reason: '2-char title — short-title exact-match required',
+    // Prior runs resolved this through MusicBrainz/CAA (release
+    // 092b0441-d71e-33dc-940e-d9a83275d8a5) and the CAA URL started
+    // returning HTTP 500. Force iTunes by dropping the year qualifier
+    // from the search term — "1998" was over-filtering to a reissue
+    // edition iTunes doesn't return cleanly. Bare title + artist
+    // returns the canonical "XO" album; the short-title exact-match
+    // path (titleScore line 200-205) accepts the 2-char title.
+    //
+    // If iTunes still fails to return a canonical match, set
+    // collectionId below (paste the trailing digits from the
+    // album's music.apple.com URL — see operator note line 910).
+    // collectionId: ___,
+    searchTerm: 'Elliott Smith XO',
+    reason: 'CAA URL went 500 — force iTunes/Apple Music resolution',
   },
   // ── Jazz catalog (deeply reissued) ────────────────────────────
   'kind-of-blue': {
