@@ -7,6 +7,7 @@ import {
 } from '@/lib/enrichment'
 import type { EnrichmentRoundStats } from '@/lib/enrichment/types'
 import { getProvider, type SourceId } from './index'
+import { decryptToken, encryptToken } from './token-crypto'
 import type { SyncResult } from './types'
 
 /**
@@ -201,15 +202,40 @@ export async function syncProviderForUser(
   }
 
   // 2. Refresh tokens if expired or near-expiry.
+  //
+  // Token columns are AES-256-GCM encrypted on disk (lib/streaming/
+  // token-crypto.ts). decryptToken() transparently handles three
+  // cases:
+  //   1. null / empty       → returns null
+  //   2. v1 envelope        → returns decrypted plaintext (auth-tag
+  //                           verified; throws on tamper)
+  //   3. legacy plaintext   → returns the value as-is. The next
+  //      refresh below will write back encrypted, so the column
+  //      eventually becomes truthful. The backfill script
+  //      (scripts/encrypt-legacy-tokens.ts) is the proactive path.
   const provider = getProvider(sourceId)
-  let accessToken = connectionRow.access_token_encrypted ?? ''
+  let accessToken: string
+  let refreshTokenPlain: string | null
+  try {
+    accessToken = decryptToken(connectionRow.access_token_encrypted) ?? ''
+    refreshTokenPlain = decryptToken(connectionRow.refresh_token_encrypted)
+  } catch (err) {
+    // Tamper / malformed envelope / missing key. Surface as an error
+    // rather than running with an empty access token (which would
+    // produce confusing 401s downstream).
+    outcome.error = {
+      stage: 'token-decrypt',
+      message: err instanceof Error ? err.message : String(err),
+    }
+    return outcome
+  }
   const expiresAtMs = connectionRow.token_expires_at
     ? new Date(connectionRow.token_expires_at).getTime()
     : 0
   const nearExpiry = !expiresAtMs || expiresAtMs - Date.now() < REFRESH_BUFFER_MS
 
   if (nearExpiry) {
-    if (!connectionRow.refresh_token_encrypted) {
+    if (!refreshTokenPlain) {
       outcome.error = {
         stage: 'refresh',
         message: 'no refresh_token; reauth required',
@@ -226,19 +252,20 @@ export async function syncProviderForUser(
 
     try {
       const refreshed = await provider.refreshTokens({
-        refreshToken: connectionRow.refresh_token_encrypted,
+        refreshToken: refreshTokenPlain,
       })
       accessToken = refreshed.access_token
       outcome.refreshed = true
 
-      // Persist new tokens. Spotify often omits a new refresh_token —
-      // keep the old one in that case.
+      // Persist new tokens — encrypted at the app boundary. Spotify
+      // often omits a new refresh_token; keep the existing one in
+      // that case (it stays encrypted on disk; we don't touch it).
       const tokenUpdate: Record<string, unknown> = {
-        access_token_encrypted: refreshed.access_token,
+        access_token_encrypted: encryptToken(refreshed.access_token),
         token_expires_at: refreshed.expires_at,
       }
       if (refreshed.refresh_token) {
-        tokenUpdate.refresh_token_encrypted = refreshed.refresh_token
+        tokenUpdate.refresh_token_encrypted = encryptToken(refreshed.refresh_token)
       }
       if (refreshed.scopes.length > 0) {
         tokenUpdate.scopes = refreshed.scopes

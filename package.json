@@ -18,6 +18,9 @@
     "seed": "tsx scripts/seed-phase2.ts",
     "refresh:album-covers": "npx tsx scripts/refresh-album-covers.ts",
     "refresh:album-covers:write": "npx tsx scripts/refresh-album-covers.ts --write",
+    "tokens:encrypt-legacy": "npx tsx scripts/encrypt-legacy-tokens.ts",
+    "tokens:encrypt-legacy:write": "npx tsx scripts/encrypt-legacy-tokens.ts --write",
+    "test:token-crypto": "npx tsx scripts/test-token-crypto.ts",
     "guard:service-role": "node scripts/check-service-role-leak.mjs"
   },
   "dependencies": {
