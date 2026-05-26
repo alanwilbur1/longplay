@@ -23,6 +23,7 @@
     "test:token-crypto": "npx tsx scripts/test-token-crypto.ts",
     "test:sync-scheduler": "npx tsx scripts/test-sync-scheduler.ts",
     "test:listener-graph": "npx tsx scripts/test-listener-graph.ts",
+    "snapshot:migration-status": "npx tsx scripts/snapshot-migration-status.ts",
     "guard:service-role": "node scripts/check-service-role-leak.mjs"
   },
   "dependencies": {

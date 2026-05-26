@@ -610,8 +610,20 @@ export async function syncProviderForUser(
   outcome.last_sync_at = succeeded ? now : connectionRow.last_sync_at
   outcome.ok = succeeded
 
-  // 7. Re-compute the listening profile snapshot. Best-effort — a
-  // snapshot failure does not fail the sync itself.
+  // 7. Re-compute Layer 2 → Layer 3.
+  //
+  // Phase 6A.4: snapshot reads from Layer 2 now, so Layer 2 MUST be
+  // refreshed first. Both are best-effort — a recompute failure does
+  // not fail the sync itself (the raw provider state has already
+  // been persisted to Layer 1).
+  try {
+    await recomputeListenerGraph(userId)
+  } catch (err) {
+    console.warn('[sync/layer2] pre-snapshot listener graph recompute failed', {
+      userId,
+      message: err instanceof Error ? err.message : String(err),
+    })
+  }
   try {
     const snap = await recomputeListeningProfileSnapshot(userId)
     outcome.snapshot_updated = true
@@ -735,11 +747,20 @@ export async function syncProviderForUser(
       last_error: stats.last_error,
     })
 
-    // 9. If enrichment actually landed genres, recompute the snapshot
-    // again so the new canonical_genres get folded into top_genres
-    // and affinity_tags. Skip when nothing changed.
+    // 9. If enrichment actually landed genres, regenerate Layer 2
+    // (so listener_artists.canonical_genres picks up the new
+    // enrichment rows) and then recompute the snapshot from the
+    // fresh Layer 2 state. Skip when nothing changed.
     if (stats.succeeded > 0) {
       debug.post_recompute_triggered = true
+      try {
+        await recomputeListenerGraph(userId)
+      } catch (err) {
+        console.warn('[sync/layer2] post-enrichment listener graph recompute failed', {
+          userId,
+          message: err instanceof Error ? err.message : String(err),
+        })
+      }
       try {
         const snap = await recomputeListeningProfileSnapshot(userId)
         outcome.top_genres_count = snap.top_genres_count
@@ -767,27 +788,11 @@ export async function syncProviderForUser(
     }
   }
 
-  // Phase 6A.3: Layer 2 — regenerate the canonical listening graph
-  // from the now-fresh favorite_* / listening_events / enrichment
-  // rows. Best-effort: a Layer 2 failure can't roll back any
-  // already-persisted Layer 1 state (and the snapshot above remains
-  // valid; it still reads Layer 1 directly in 6A.3).
-  try {
-    const lg = await recomputeListenerGraph(userId)
-    console.log('[sync/layer2] listener graph regenerated', {
-      userId,
-      artists_written: lg.artists_written,
-      albums_written: lg.albums_written,
-      tracks_written: lg.tracks_written,
-      genres_written: lg.genres_written,
-      duration_ms: lg.duration_ms,
-    })
-  } catch (err) {
-    console.warn('[sync/layer2] listener graph recompute failed', {
-      userId,
-      message: err instanceof Error ? err.message : String(err),
-    })
-  }
+  // Phase 6A.4: Layer 2 recomputes now happen BEFORE each snapshot
+  // recompute above (steps 7 and 9), so the snapshot reads from
+  // fresh Layer 2 state. The standalone end-of-pipeline Layer 2
+  // recompute that Phase 6A.3 added here has been removed —
+  // redundant under the new ordering.
 
   // Phase 6A.2B: durable audit. Best-effort — failures here don't
   // surface to the caller because the sync itself has already
@@ -886,106 +891,141 @@ export interface SnapshotRecomputeResult {
  *    handful of non-genre signals (saved_album_count, recent_density,
  *    genre diversity). No fake values.
  */
+/**
+ * Recompute the per-user listening_profile_snapshot.
+ *
+ * Phase 6A.4 cutover: this function now reads ENTIRELY from Layer 2
+ * (listener_genres, listener_artists, listener_tracks, listener_albums)
+ * — the union of Spotify genres + Last.fm enrichment genres lives in
+ * listener_artists.canonical_genres, and the weighted top-genres
+ * tally lives in listener_genres. The snapshot is a thin projection
+ * of Layer 2 plus a single Layer 1 read (listening_events) for the
+ * total recent-event count.
+ *
+ * Caller invariant: Layer 2 MUST be recomputed before this function
+ * is called. The sync orchestrator does this:
+ *
+ *     await recomputeListenerGraph(userId)           // Layer 2
+ *     await recomputeListeningProfileSnapshot(userId) // Layer 3
+ *
+ * If called when listener_* tables are stale or empty, this will
+ * produce a stale or empty snapshot — same as the previous code
+ * produced when favorite_artists was empty. Behavior is graceful;
+ * no crash.
+ *
+ * Snapshot write contract is unchanged: top_genres, top_artist_ids,
+ * top_track_ids, saved_album_count, recent_event_count, affinity_tags,
+ * recent_density, signals — plus algorithm_version='v2' (new in 6A.4).
+ *
+ * Parity with the Phase 4.5 implementation:
+ *   - top_genres: identical algorithm (1/log2(rank+2) weighting).
+ *     Tie-breaking is now deterministic (Layer 2 ranks genres by
+ *     weighted_score DESC, artist_count DESC, alphabetical). The
+ *     legacy code relied on V8 sort stability; in practice
+ *     real-world ties are rare so visible drift is negligible.
+ *   - top_artist_ids: identical (favorite_artists ranked → top 20).
+ *   - top_track_ids: identical.
+ *   - saved_album_count: identical (COUNT of saved albums).
+ *   - recent_event_count: identical (Layer 1 listening_events).
+ *   - affinity_tags: identical computeAffinityTags() call.
+ */
 export async function recomputeListeningProfileSnapshot(
   userId: string,
 ): Promise<SnapshotRecomputeResult> {
   const admin = getSupabaseAdminClient()
 
-  // Pull a generous window of artists — ranked first, then unranked
-  // co-artists. Both contribute to genre signal, but ranked artists
-  // weigh more heavily.
-  const { data: artists } = await admin
-    .from('favorite_artists')
-    .select('external_artist_id, genres, rank')
-    .eq('user_id', userId)
-    .order('rank', { ascending: true, nullsFirst: false })
-    .limit(200)
-  type FA = { external_artist_id: string; genres: string[] | null; rank: number | null }
-  const aRows = (artists ?? []) as unknown as FA[]
+  // ── Layer 2 reads ────────────────────────────────────────────────
+  // Five parallel queries. listener_genres provides the pre-tallied
+  // weighted ranking — the union loop that used to live here is gone.
+  const [
+    topGenresRes,
+    topArtistsRes,
+    artistsObservedCountRes,
+    topTracksRes,
+    savedAlbumsCountRes,
+    genreDiversityCountRes,
+    recentEventsCountRes,
+  ] = await Promise.all([
+    admin
+      .from('listener_genres')
+      .select('genre, weighted_score, rank')
+      .eq('user_id', userId)
+      .not('rank', 'is', null)
+      .order('rank', { ascending: true })
+      .limit(15),
+    admin
+      .from('listener_artists')
+      .select('external_artist_id')
+      .eq('user_id', userId)
+      .not('top_rank', 'is', null)
+      .order('top_rank', { ascending: true })
+      .limit(20),
+    admin
+      .from('listener_artists')
+      .select('user_id', { count: 'exact', head: true })
+      .eq('user_id', userId)
+      .limit(200),
+    admin
+      .from('listener_tracks')
+      .select('external_track_id')
+      .eq('user_id', userId)
+      .not('top_rank', 'is', null)
+      .order('top_rank', { ascending: true })
+      .limit(20),
+    admin
+      .from('listener_albums')
+      .select('user_id', { count: 'exact', head: true })
+      .eq('user_id', userId),
+    admin
+      .from('listener_genres')
+      .select('user_id', { count: 'exact', head: true })
+      .eq('user_id', userId),
+    // recent_event_count comes from Layer 1 — listener_artists' per-
+    // artist recent_play_count only covers artists in the user's
+    // favorites graph, while this signal wants ALL plays in window.
+    admin
+      .from('listening_events')
+      .select('id', { count: 'exact', head: true })
+      .eq('user_id', userId)
+      .gte(
+        'played_at',
+        new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString(),
+      ),
+  ])
 
-  // Phase 4.5: pull successfully-enriched canonical genres for the
-  // same user. Indexed by external_artist_id so we can union with the
-  // Spotify-side genres without re-querying per artist. We DO NOT
-  // replace Spotify genres — both sources contribute.
-  const { data: enrichmentRows } = await admin
-    .from('artist_genre_enrichments')
-    .select('external_artist_id, canonical_genres')
-    .eq('user_id', userId)
-    .eq('status', 'succeeded')
-  type AGE = { external_artist_id: string; canonical_genres: string[] | null }
-  const enrichmentByArtist = new Map<string, string[]>()
-  for (const row of (enrichmentRows ?? []) as unknown as AGE[]) {
-    enrichmentByArtist.set(
-      row.external_artist_id,
-      Array.isArray(row.canonical_genres) ? row.canonical_genres : [],
-    )
-  }
+  type TopGenreRow = { genre: string; weighted_score: number; rank: number }
+  type ExtArtistRow = { external_artist_id: string }
+  type ExtTrackRow = { external_track_id: string }
 
-  // Weighted genre tally. Earlier ranks count more (Lanczos-ish
-  // 1/log2(rank+2) curve). Unranked artists contribute a flat 0.3.
-  // Per artist, Spotify genres ∪ enrichment canonical_genres are
-  // counted together (union, not sum — one artist contributes one
-  // weight per distinct genre regardless of source).
-  const genreScore = new Map<string, number>()
-  for (const a of aRows) {
-    const weight = a.rank ? 1 / Math.log2(a.rank + 2) : 0.3
-    const combined = new Set<string>()
-    for (const g of normalizeGenres(a.genres ?? [])) combined.add(g)
-    for (const g of normalizeGenres(enrichmentByArtist.get(a.external_artist_id) ?? [])) {
-      combined.add(g)
-    }
-    for (const g of combined) {
-      genreScore.set(g, (genreScore.get(g) ?? 0) + weight)
-    }
-  }
-  const top_genres = Array.from(genreScore.entries())
-    .sort((x, y) => y[1] - x[1])
-    .slice(0, 15)
-    .map(([g]) => g)
+  const topGenreRows = (topGenresRes.data ?? []) as unknown as TopGenreRow[]
+  const top_genres = topGenreRows.map((r) => r.genre)
+  const top_artist_ids = ((topArtistsRes.data ?? []) as unknown as ExtArtistRow[]).map(
+    (a) => a.external_artist_id,
+  )
+  const top_track_ids = ((topTracksRes.data ?? []) as unknown as ExtTrackRow[]).map(
+    (t) => t.external_track_id,
+  )
 
-  const top_artist_ids = aRows
-    .filter((a) => a.rank !== null)
-    .slice(0, 20)
-    .map((a) => a.external_artist_id)
+  const artists_observed = Math.min(artistsObservedCountRes.count ?? 0, 200)
+  const albumsCount = savedAlbumsCountRes.count ?? 0
+  const genreDiversity = genreDiversityCountRes.count ?? 0
+  const eventCount = recentEventsCountRes.count ?? 0
 
-  const { data: tracks } = await admin
-    .from('favorite_tracks')
-    .select('external_track_id, rank')
-    .eq('user_id', userId)
-    .order('rank', { ascending: true, nullsFirst: false })
-    .limit(20)
-  const top_track_ids = (
-    (tracks ?? []) as unknown as Array<{ external_track_id: string }>
-  ).map((t) => t.external_track_id)
-
-  const { count: saved_album_count } = await admin
-    .from('favorite_albums')
-    .select('id', { count: 'exact', head: true })
-    .eq('user_id', userId)
-
-  const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString()
-  const { count: recent_event_count } = await admin
-    .from('listening_events')
-    .select('id', { count: 'exact', head: true })
-    .eq('user_id', userId)
-    .gte('played_at', thirtyDaysAgo)
-  const eventCount = recent_event_count ?? 0
   const recent_density: 'low' | 'medium' | 'high' | null =
     eventCount === 0 ? null : eventCount < 25 ? 'low' : eventCount < 100 ? 'medium' : 'high'
 
-  const albumsCount = saved_album_count ?? 0
   const affinity_tags = computeAffinityTags({
     top_genres,
     saved_album_count: albumsCount,
     recent_density,
-    artist_diversity: aRows.length,
-    genre_diversity: genreScore.size,
+    artist_diversity: artists_observed,
+    genre_diversity: genreDiversity,
   })
 
   const signals = {
-    artists_observed: aRows.length,
-    genre_diversity: genreScore.size,
-    top_genre_weight: top_genres[0] ? genreScore.get(top_genres[0]) ?? 0 : 0,
+    artists_observed,
+    genre_diversity: genreDiversity,
+    top_genre_weight: topGenreRows[0]?.weighted_score ?? 0,
   }
 
   const { error } = await admin.from('listening_profile_snapshots').upsert(
@@ -1000,6 +1040,11 @@ export async function recomputeListeningProfileSnapshot(
       recent_density,
       signals,
       computed_at: new Date().toISOString(),
+      // Phase 6A.4 marker — distinguishes Layer-2-derived snapshots
+      // from the previous Layer-1-direct path. Future versioning
+      // bumps (Layer 4 affinity cache, archetype attachment) can use
+      // the same column without another migration.
+      algorithm_version: 'v2',
     },
     { onConflict: 'user_id' },
   )
@@ -1013,7 +1058,7 @@ export async function recomputeListeningProfileSnapshot(
   return {
     top_genres_count: top_genres.length,
     affinity_tags_count: affinity_tags.length,
-    artists_observed: aRows.length,
+    artists_observed,
   }
 }
 

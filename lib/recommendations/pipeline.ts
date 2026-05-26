@@ -79,16 +79,29 @@ export interface PipelineRanked {
 /**
  * Run the v2.1 pipeline for one user, end-to-end.
  *
- * Fetches:
+ * Fetches (Phase 6A.4 — Layer 2 cutover):
  *   1. user_profiles.preferences.calibrationAnswers
  *   2. listening_profile_snapshots.{top_genres, affinity_tags,
- *      top_artist_ids, recent_density}     ← canonical genres
- *   3. artist_genre_enrichments.canonical_genres (status=succeeded)
- *      ← enriched-only genres (anything in canonical is excluded)
- *   4. favorite_artists.{name, rank}        ← top artist names
- *   5. club_memberships                     ← joined room slugs
- *   6. rooms (visibility=public, weight desc, limit 50)
- *   7. cycles + albums                      ← currentAlbumArtist per room
+ *      top_artist_ids, recent_density}
+ *      ← top_genres is already the canonical (Spotify ∪ enrichment)
+ *        union — the Layer 2 substrate does the union upstream.
+ *   3. listener_genres (rank > 15 long-tail)
+ *      ← genres present in the user's data but not in top-15.
+ *        Scores at the lower W_ENRICHED_GENRE weight (see scorer).
+ *   4. listener_artists.display_name (top 20 by top_rank)
+ *      ← top artist names. Replaces the legacy favorite_artists
+ *        direct read.
+ *   6. club_memberships                     ← joined room slugs
+ *   7. rooms (visibility=public, weight desc, limit 50)
+ *   8. cycles + albums                      ← currentAlbumArtist per room
+ *
+ * Removed in 6A.4:
+ *   - artist_genre_enrichments direct read + canonical-vs-enriched
+ *     set difference (now precomputed in Layer 2)
+ *   - favorite_artists fallback (listener_artists is the new fallback;
+ *     listener_artists is always populated alongside favorite_artists
+ *     by the sync orchestrator, so any user with favorites has
+ *     listener_artists)
  *
  * Then scores every candidate and applies MMR diversification.
  */
@@ -109,6 +122,9 @@ export async function runRecommendationPipeline(
   const calibrationAnswers = preferences.calibrationAnswers ?? {}
 
   // ── 2. Snapshot (canonical genres + affinity tags + density) ───────
+  // top_genres is already the canonical Spotify ∪ enrichment union
+  // (Layer 2 owns the merge as of Phase 6A.4). The recommender no
+  // longer re-derives the union at request time.
   const { data: snapshot } = await supabase
     .from('listening_profile_snapshots')
     .select('top_genres, affinity_tags, top_artist_ids, recent_density')
@@ -127,55 +143,65 @@ export async function runRecommendationPipeline(
   const affinityTags = Array.isArray(snap?.affinity_tags) ? snap!.affinity_tags! : []
   const recentDensity = snap?.recent_density ?? null
 
-  // ── 3. Enriched genres (Last.fm) — anything in canonical is removed
-  //      so a genre present in both contributes only at canonical
-  //      strength. The scorer also enforces this, but doing it at the
-  //      input layer keeps the debug surface honest. ──────────────────
-  const { data: enrichmentRows } = await supabase
-    .from('artist_genre_enrichments')
-    .select('canonical_genres')
+  // ── 3. Long-tail genres (Layer 2 — listener_genres beyond top 15) ──
+  // These are genres present in the user's listening graph but that
+  // didn't make the snapshot's top_genres cut. They score at
+  // W_ENRICHED_GENRE strength (half of W_CANONICAL_GENRE) — the same
+  // role the old "enriched-only" set played, but now the source
+  // includes long-tail Spotify genres too, not just Last.fm.
+  const { data: longTailRows } = await supabase
+    .from('listener_genres')
+    .select('genre')
     .eq('user_id', userId)
-    .eq('status', 'succeeded')
-    .limit(200)
-  const enrichedSet = new Set<string>()
-  for (const row of (enrichmentRows ?? []) as Array<{
-    canonical_genres: string[] | null
-  }>) {
-    for (const g of row.canonical_genres ?? []) if (g) enrichedSet.add(g)
-  }
-  // Fallback: when no snapshot exists yet, use favorite_artists.genres
-  // as canonical and treat enrichments as additive.
+    .is('rank', null)
+    .limit(50)
+  const canonicalLower = new Set(canonicalGenres.map((g) => g.toLowerCase()))
+  const enrichedGenres = ((longTailRows ?? []) as Array<{ genre: string }>)
+    .map((r) => r.genre)
+    .filter((g): g is string => !!g)
+    .filter((g) => !canonicalLower.has(g.toLowerCase()))
+
+  // ── 4. Fallback: snapshot missing, read Layer 2 directly ───────────
+  // listener_artists.canonical_genres carries the union too. This
+  // path fires when the snapshot recompute failed but Layer 2
+  // succeeded — both run inside the same sync but as separate
+  // best-effort steps.
   if (canonicalGenres.length === 0) {
-    const { data: favArtists } = await supabase
-      .from('favorite_artists')
-      .select('genres')
+    const { data: layer2Artists } = await supabase
+      .from('listener_artists')
+      .select('canonical_genres')
       .eq('user_id', userId)
+      .order('top_rank', { ascending: true, nullsFirst: false })
       .limit(50)
     const seen = new Set<string>()
-    for (const row of (favArtists ?? []) as Array<{ genres: string[] | null }>) {
-      for (const g of row.genres ?? []) if (g) seen.add(g)
+    for (const row of (layer2Artists ?? []) as Array<{
+      canonical_genres: string[] | null
+    }>) {
+      for (const g of row.canonical_genres ?? []) if (g) seen.add(g)
     }
     canonicalGenres = Array.from(seen)
   }
-  const canonicalLower = new Set(canonicalGenres.map((g) => g.toLowerCase()))
-  const enrichedGenres = Array.from(enrichedSet).filter(
-    (g) => !canonicalLower.has(g.toLowerCase()),
-  )
 
-  // ── 4. Top artist names ────────────────────────────────────────────
+  // ── 5. Top artist names from Layer 2 ───────────────────────────────
+  // listener_artists.display_name is identical content to
+  // favorite_artists.name (the Layer 2 recompute copies it through)
+  // — but reading from Layer 2 keeps all artist-side reads on one
+  // table, ready for Layer 4 (room_affinity_scores) which will JOIN
+  // listener_artists.canonical_artist_key directly.
   const { data: topArtists } = await supabase
-    .from('favorite_artists')
-    .select('name, rank')
+    .from('listener_artists')
+    .select('display_name, top_rank')
     .eq('user_id', userId)
-    .order('rank', { ascending: true, nullsFirst: false })
+    .not('top_rank', 'is', null)
+    .order('top_rank', { ascending: true })
     .limit(20)
   const topArtistNames = (
-    (topArtists ?? []) as Array<{ name: string }>
+    (topArtists ?? []) as Array<{ display_name: string }>
   )
-    .map((a) => a.name)
+    .map((a) => a.display_name)
     .filter((n): n is string => !!n)
 
-  // ── 5. Joined rooms (exclude) ──────────────────────────────────────
+  // ── 6. Joined rooms (exclude) ──────────────────────────────────────
   const { data: memberships } = await supabase
     .from('club_memberships')
     .select('rooms(slug)')
@@ -191,7 +217,7 @@ export async function runRecommendationPipeline(
     })
     .filter((s): s is string => !!s)
 
-  // ── 6. Candidate rooms ─────────────────────────────────────────────
+  // ── 7. Candidate rooms ─────────────────────────────────────────────
   const { data: rooms } = await supabase
     .from('rooms')
     .select(
@@ -206,7 +232,7 @@ export async function runRecommendationPipeline(
   }
   const rawRooms = (rooms ?? []) as unknown as RawRoom[]
 
-  // ── 7. Cycle → album join for currentAlbumArtist + album tags ──────
+  // ── 8. Cycle → album join for currentAlbumArtist + album tags ──────
   // Two-step join: collect cycle IDs from rooms, then SELECT cycles
   // + albums in one nested query. Predictable and explicit.
   const cycleIds = rawRooms
