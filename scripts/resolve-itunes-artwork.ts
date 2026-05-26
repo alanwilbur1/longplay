@@ -958,8 +958,8 @@ const MANUAL_OVERRIDES: Record<string, ManualOverride> = {
   },
   // ── Elliott Smith ─────────────────────────────────────────────
   xo: {
-    searchTerm: 'Elliott Smith XO 1998',
-    reason: '2-char title — short-title exact-match required',
+    collectionId: 1474991926,
+    reason: 'CAA URL went 500 — direct Apple Music lookup',
   },
   // ── Jazz catalog (deeply reissued) ────────────────────────────
   'kind-of-blue': {
