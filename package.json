@@ -24,7 +24,9 @@
     "test:sync-scheduler": "npx tsx scripts/test-sync-scheduler.ts",
     "test:listener-graph": "npx tsx scripts/test-listener-graph.ts",
     "test:affinity-cache": "npx tsx scripts/test-affinity-cache.ts",
+    "test:identity": "npx tsx scripts/test-identity.ts",
     "snapshot:migration-status": "npx tsx scripts/snapshot-migration-status.ts",
+    "identity:status": "npx tsx scripts/identity-status.ts",
     "affinity:status": "npx tsx scripts/affinity-cache-status.ts",
     "affinity:invalidate": "npx tsx scripts/invalidate-room-affinities.ts",
     "guard:service-role": "node scripts/check-service-role-leak.mjs"

@@ -10,6 +10,7 @@ import { getProvider, type SourceId } from './index'
 import { decryptToken, encryptToken } from './token-crypto'
 import { recomputeListenerGraph } from './listener-graph'
 import { recomputeRoomAffinities } from '@/lib/recommendations/affinity-cache'
+import { recomputeListenerIdentity } from '@/lib/identity/recompute'
 import {
   classifySyncOutcome,
   computeNextSyncAfter,
@@ -647,6 +648,26 @@ export async function syncProviderForUser(
         message: err instanceof Error ? err.message : String(err),
       })
     }
+    // Phase 6A.6: Layer 5 listener identity (traits + archetypes).
+    // Reads Layer 1-4 + listening_events. Same best-effort posture
+    // — identity is interpretive and a failure here is non-blocking.
+    try {
+      const id = await recomputeListenerIdentity(userId)
+      console.log('[sync/layer5] listener identity recomputed', {
+        userId,
+        traits_written: id.traits_written,
+        archetypes_written: id.archetypes_written,
+        primary_archetype_key: id.primary_archetype_key,
+        primary_confidence: id.primary_confidence,
+        duration_ms: id.duration_ms,
+        algorithm_version: id.algorithm_version,
+      })
+    } catch (err) {
+      console.warn('[sync/layer5] listener identity recompute failed', {
+        userId,
+        message: err instanceof Error ? err.message : String(err),
+      })
+    }
   } catch (err) {
     if (process.env.NODE_ENV !== 'production') {
       console.warn('[sync] snapshot recompute failed', {
@@ -800,6 +821,25 @@ export async function syncProviderForUser(
           })
         } catch (err) {
           console.warn('[sync/layer4] post-enrichment room affinity recompute failed', {
+            userId,
+            message: err instanceof Error ? err.message : String(err),
+          })
+        }
+        // Phase 6A.6: identity also depends on Layer 2 canonical
+        // genres, which the post-enrichment regen just refreshed —
+        // re-derive so traits like genre_breadth / consistency
+        // reflect the new genre coverage.
+        try {
+          const id = await recomputeListenerIdentity(userId)
+          console.log('[sync/layer5] post-enrichment listener identity recomputed', {
+            userId,
+            traits_written: id.traits_written,
+            archetypes_written: id.archetypes_written,
+            primary_archetype_key: id.primary_archetype_key,
+            duration_ms: id.duration_ms,
+          })
+        } catch (err) {
+          console.warn('[sync/layer5] post-enrichment listener identity recompute failed', {
             userId,
             message: err instanceof Error ? err.message : String(err),
           })
