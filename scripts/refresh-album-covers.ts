@@ -258,28 +258,6 @@ async function main() {
     const target = targetForAlbum(album, now)
     const diff = diffAlbum(existing, target)
 
-    // ── TEMPORARY INSTRUMENTATION ───────────────────────────────────
-    // Logs raw DB vs catalog state for two slugs that the operator
-    // saw mismatched between this script's "unchanged" verdict and
-    // the /api/debug/room-source endpoint. Logs BEFORE the unchanged
-    // short-circuit so we see the comparison inputs regardless of
-    // which branch fires. Remove once the divergence is diagnosed.
-    if (slug === 'southeastern' || slug === 'illinois') {
-      console.log(`  [debug:${slug}]`)
-      console.log(`    db.id              ${existing.id ?? 'null'}`)
-      console.log(`    db.slug            ${JSON.stringify(existing.slug ?? null)}`)
-      console.log(`    db.cover_url       ${JSON.stringify(existing.cover_url ?? null)}`)
-      console.log(`    catalog.cover_url  ${JSON.stringify(target.cover_url)}`)
-      console.log(`    coverChanged       ${diff.coverChanged}`)
-      console.log(`    sourceChanged      ${diff.sourceChanged}`)
-      console.log(`    streamingChanged   ${diff.streamingChanged}`)
-      console.log(`    changeStrings      ${JSON.stringify(diff.changeStrings)}`)
-      console.log(`    wouldDowngrade     ${target.cover_url.length === 0 && (existing.cover_url ?? '').length > 0}`)
-      console.log(`    branchTaken        ${
-        diff.changeStrings.length === 0 ? 'unchanged-short-circuit' : 'update-branch'
-      }`)
-    }
-
     // Downgrade guard: refuse to overwrite a non-empty cover_url with
     // an empty one unless --allow-empty-cover.
     const wouldDowngrade =
