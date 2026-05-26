@@ -174,7 +174,7 @@ function artistMatches(
   return matched
 }
 
-interface ScoredCandidate {
+export interface ScoredCandidate {
   room: RoomForRecommendation
   score: number
   factors: ExplanationFactor[]
@@ -409,6 +409,10 @@ export interface RankedRoom {
  *
  *  Determinism: stable tie-break order ensures identical inputs
  *  produce identical outputs across deploys.
+ *
+ *  Phase 6A.5: the MMR loop is extracted as `rankByMMR` so the Layer 4
+ *  cache-hot serving path can apply it to cached scores without
+ *  re-running scoreRoom() on every candidate.
  */
 export function rankRooms(
   input: RecommendationInput,
@@ -423,9 +427,32 @@ export function rankRooms(
     .filter((r) => r.visibility === 'public')
     .map((room) => scoreRoom(room, input, scenarioTags, listenerEnergy))
 
+  return rankByMMR(scored, limit)
+}
+
+/**
+ * Phase 6A.5: apply the same MMR diversification + tie-breaking that
+ * rankRooms uses, but on a list of already-scored candidates (e.g.,
+ * pulled from the room_affinity_scores cache). Pure of any
+ * RecommendationInput dependency — the diversification only needs
+ * the rooms and their scores.
+ *
+ * The caller is responsible for excluding joined rooms and
+ * non-public rooms before passing scored candidates in; this
+ * function does not re-filter (the live path also filters before
+ * scoring, so this matches its contract).
+ */
+export function rankByMMR(
+  scored: ScoredCandidate[],
+  limit = 3,
+): RankedRoom[] {
+  // Defensive copy so callers can pass cached arrays without worrying
+  // about mutation. The sort + splice below mutate this working copy.
+  const working = scored.slice()
+
   // Sort by raw score for the diversity loop. Stable tie-break:
   // higher score → featured first → higher member_count → slug asc.
-  scored.sort((a, b) => {
+  working.sort((a, b) => {
     if (b.score !== a.score) return b.score - a.score
     if (a.room.featured !== b.room.featured) return a.room.featured ? -1 : 1
     if (b.room.member_count !== a.room.member_count) {
@@ -438,7 +465,7 @@ export function rankRooms(
   // remaining candidate's adjusted score against the current picks
   // and choose the maximum.
   const picks: RankedRoom[] = []
-  const remaining = scored.slice()
+  const remaining = working.slice()
   const pickedSignatures: Set<string>[] = []
 
   while (picks.length < limit && remaining.length > 0) {

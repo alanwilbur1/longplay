@@ -9,6 +9,7 @@ import type { EnrichmentRoundStats } from '@/lib/enrichment/types'
 import { getProvider, type SourceId } from './index'
 import { decryptToken, encryptToken } from './token-crypto'
 import { recomputeListenerGraph } from './listener-graph'
+import { recomputeRoomAffinities } from '@/lib/recommendations/affinity-cache'
 import {
   classifySyncOutcome,
   computeNextSyncAfter,
@@ -628,6 +629,24 @@ export async function syncProviderForUser(
     const snap = await recomputeListeningProfileSnapshot(userId)
     outcome.snapshot_updated = true
     outcome.top_genres_count = snap.top_genres_count
+    // Phase 6A.5: Layer 4 room affinity cache. Runs only when the
+    // snapshot succeeded — a stale snapshot would produce stale
+    // cached scores. Best-effort wrapped in its own try below.
+    try {
+      const aff = await recomputeRoomAffinities(userId)
+      console.log('[sync/layer4] room affinity cache regenerated', {
+        userId,
+        rooms_scored: aff.rooms_scored,
+        rows_written: aff.rows_written,
+        duration_ms: aff.duration_ms,
+        score_version: aff.score_version,
+      })
+    } catch (err) {
+      console.warn('[sync/layer4] room affinity recompute failed', {
+        userId,
+        message: err instanceof Error ? err.message : String(err),
+      })
+    }
   } catch (err) {
     if (process.env.NODE_ENV !== 'production') {
       console.warn('[sync] snapshot recompute failed', {
@@ -768,6 +787,23 @@ export async function syncProviderForUser(
           userId,
           top_genres_count: snap.top_genres_count,
         })
+        // Phase 6A.5: Layer 4 re-regen so cached scores reflect the
+        // post-enrichment snapshot. Same best-effort pattern as the
+        // pre-enrichment Layer 4 recompute above.
+        try {
+          const aff = await recomputeRoomAffinities(userId)
+          console.log('[sync/layer4] post-enrichment room affinity cache regenerated', {
+            userId,
+            rooms_scored: aff.rooms_scored,
+            rows_written: aff.rows_written,
+            duration_ms: aff.duration_ms,
+          })
+        } catch (err) {
+          console.warn('[sync/layer4] post-enrichment room affinity recompute failed', {
+            userId,
+            message: err instanceof Error ? err.message : String(err),
+          })
+        }
       } catch (err) {
         console.warn('[sync/enrichment] post-enrichment snapshot recompute failed', {
           message: err instanceof Error ? err.message : String(err),
