@@ -932,60 +932,57 @@ function CalibrationStep({
 // ============================================
 // REFLECTION - Observations Back to User
 // ============================================
-function ReflectionStep({ 
-  answers, 
-  onContinue 
-}: { 
+function ReflectionStep({
+  // Phase 6A.13: the prior implementation rendered three "We see
+  // something" lines as if they were derived from the listener's
+  // calibration answers — but they were identical hardcoded strings
+  // for every user. That broke the trust contract of the step. The
+  // observations were removed; the screen now sits as a quiet beat
+  // before identity hydration without pretending to have already
+  // analyzed anything. The `answers` prop is kept so a real
+  // observation generator can plug in here later without reshaping
+  // the wizard.
+  onContinue,
+}: {
   answers: Record<string, string[]>
-  onContinue: () => void 
+  onContinue: () => void
 }) {
   const [phase, setPhase] = useState(0)
-  
+
   useEffect(() => {
     const timers = [
-      setTimeout(() => setPhase(1), 800),
-      setTimeout(() => setPhase(2), 2200),
-      setTimeout(() => setPhase(3), 3800),
+      setTimeout(() => setPhase(1), 700),
+      setTimeout(() => setPhase(2), 1800),
     ]
     return () => timers.forEach(clearTimeout)
   }, [])
 
-  // Generate observations based on answers
-  const observations = [
-    "You appear drawn to atmosphere before immediacy.",
-    "Your listening patterns suggest emotional accumulation matters more than novelty.",
-    "You seem to value records that unfold slowly over time.",
-  ]
-
   return (
     <div className="flex-1 flex flex-col justify-center items-center px-8 py-16 text-center min-h-screen">
       <div className="max-w-lg">
-        <p className={cn(
-          "text-[10px] uppercase tracking-[0.4em] text-tobacco/60 mb-8 transition-all duration-1000",
-          phase >= 0 ? "opacity-100" : "opacity-0"
-        )}>
-          We see something
+        <p
+          className={cn(
+            'text-[10px] uppercase tracking-[0.4em] text-tobacco/60 mb-8 transition-all duration-1000',
+            phase >= 0 ? 'opacity-100' : 'opacity-0',
+          )}
+        >
+          A moment
         </p>
-        
-        <div className="space-y-6 mb-16">
-          {observations.map((observation, i) => (
-            <p 
-              key={i}
-              className={cn(
-                "font-serif text-lg text-cream/80 transition-all duration-1000",
-                phase >= i + 1 ? "opacity-100" : "opacity-0"
-              )}
-            >
-              {observation}
-            </p>
-          ))}
-        </div>
-        
+
+        <p
+          className={cn(
+            'font-serif text-lg text-cream/80 leading-relaxed mb-16 transition-all duration-1000',
+            phase >= 1 ? 'opacity-100' : 'opacity-0',
+          )}
+        >
+          Thank you. Let&apos;s see what your listening actually says.
+        </p>
+
         <button
           onClick={onContinue}
           className={cn(
-            "px-12 py-4 border border-cream/30 text-cream hover:bg-cream/5 transition-all duration-700",
-            phase >= 3 ? "opacity-100" : "opacity-0"
+            'px-12 py-4 border border-cream/30 text-cream hover:bg-cream/5 transition-all duration-700',
+            phase >= 2 ? 'opacity-100' : 'opacity-0',
           )}
         >
           Reveal my listening identity
@@ -998,54 +995,48 @@ function ReflectionStep({
 // ============================================
 // BUILDING - Cinematic Transition to Reveal
 // ============================================
+// Phase 6A.13: BuildingStep no longer narrates fake system internals.
+// The prior messages ("Tracing emotional patterns…", "Mapping
+// recurring sonic tendencies…") implied per-step computation, but
+// progress was a simple Math.random()-incremented number with no
+// underlying work. The step now sits quietly while identity loads on
+// the next route — one calm line, the existing concentric-circle
+// motion, and the subtle progress bar (still driven by simulateBuild
+// so the visual beat survives; only the misleading copy was cut).
 function BuildingStep({ progress }: { progress: number }) {
-  const messages = [
-    { threshold: 0, text: "Tracing emotional patterns..." },
-    { threshold: 25, text: "Mapping recurring sonic tendencies..." },
-    { threshold: 50, text: "Finding records that shaped you..." },
-    { threshold: 75, text: "Building your listening portrait..." },
-    { threshold: 95, text: "Almost there..." },
-  ]
-  
-  const currentMessage = messages.reduce((acc, msg) => 
-    progress >= msg.threshold ? msg : acc, messages[0]
-  )
-
   return (
     <div className="flex-1 flex flex-col justify-center items-center px-8 py-16 text-center min-h-screen">
       <div className="max-w-md">
-        {/* Ethereal loading visualization */}
         <div className="w-32 h-32 mx-auto mb-12 relative">
-          <div 
+          <div
             className="absolute inset-0 rounded-full border border-burgundy/40"
             style={{
-              transform: `scale(${0.8 + (progress / 500)})`,
-              opacity: 0.3 + (progress / 200),
+              transform: `scale(${0.8 + progress / 500})`,
+              opacity: 0.3 + progress / 200,
             }}
           />
-          <div 
+          <div
             className="absolute inset-4 rounded-full border border-tobacco/30"
             style={{
-              transform: `scale(${0.9 + (progress / 400)})`,
-              opacity: 0.4 + (progress / 300),
+              transform: `scale(${0.9 + progress / 400})`,
+              opacity: 0.4 + progress / 300,
             }}
           />
-          <div 
+          <div
             className="absolute inset-8 rounded-full bg-burgundy/20"
             style={{
-              transform: `scale(${0.5 + (progress / 200)})`,
-              opacity: 0.5 + (progress / 200),
+              transform: `scale(${0.5 + progress / 200})`,
+              opacity: 0.5 + progress / 200,
             }}
           />
         </div>
-        
-        <p className="font-serif text-xl text-cream/70 mb-4 transition-all duration-500">
-          {currentMessage.text}
+
+        <p className="font-serif text-xl text-cream/70 mb-4">
+          Listening to your listening.
         </p>
-        
-        {/* Subtle progress bar */}
+
         <div className="w-48 h-px bg-border/20 mx-auto overflow-hidden">
-          <div 
+          <div
             className="h-full bg-tobacco/60 transition-all duration-300"
             style={{ width: `${progress}%` }}
           />

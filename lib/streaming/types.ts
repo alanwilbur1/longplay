@@ -113,7 +113,15 @@ export interface SyncMeta {
   hydration_batches_attempted?: number
   hydration_batches_succeeded?: number
   /** Null when every hydration batch succeeded; otherwise a short
-   *  diagnostic like "401: The access token expired". */
+   *  diagnostic like "401: The access token expired".
+   *
+   *  Phase 6A.12: this is NO LONGER set for catalog restrictions
+   *  (Spotify 403 on /v1/artists endpoints). Those are now modeled
+   *  as `spotify_catalog_restricted=true` + a `hydration_status` of
+   *  'restricted', and the field is left null so the UI doesn't
+   *  show a red error for what is actually a known degraded state.
+   *  Real errors (token expiry, network blips, parse failures) still
+   *  set this. */
   hydration_error?: string | null
   /** Phase 6A.2B: the max(played_at) the provider's incremental
    *  recently-played fetch advanced to during this sync. The orchestrator
@@ -121,6 +129,22 @@ export interface SyncMeta {
    *  so the next run only fetches plays after this point. Null when no
    *  new events landed (cursor doesn't move backward). */
   recently_played_cursor?: string | null
+  /** Phase 6A.12 catalog restriction telemetry. See
+   *  lib/streaming/hydration-policy.ts for the classification rules. */
+  hydration_status?: 'ok' | 'restricted' | 'rate_limited' | 'disabled' | 'partial'
+  /** True when Spotify's /v1/artists endpoints (both batch and single-id)
+   *  returned 403. Genuine "we are not allowed to read this catalog"
+   *  state — sync continues via Last.fm enrichment. */
+  spotify_catalog_restricted?: boolean
+  /** True when the hydration call was not even issued because
+   *  SPOTIFY_CATALOG_HYDRATION_MODE=disabled. Different from
+   *  spotify_catalog_restricted=true — that's "we tried and were
+   *  blocked", this is "we never tried". */
+  spotify_artist_hydration_skipped?: boolean
+  /** The resolved hydration mode for this sync. Lets the audit log
+   *  show whether the operator had it set to enabled/auto/disabled
+   *  at the time of the run. */
+  spotify_hydration_mode?: 'enabled' | 'auto' | 'disabled'
 }
 
 /** What a provider returns from a full sync. */

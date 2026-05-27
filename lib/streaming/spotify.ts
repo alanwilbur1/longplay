@@ -7,6 +7,13 @@ import type {
   FavoriteTrack,
   SyncResult,
 } from './types'
+import {
+  classifyHydrationOutcome,
+  parseHydrationMode,
+  shouldAttemptHydration,
+  type HydrationMode,
+  type HydrationStatus,
+} from './hydration-policy'
 
 /**
  * Spotify provider implementation.
@@ -292,8 +299,17 @@ export const spotifyProvider: StreamingProvider = {
     // ── Batch hydrate via /v1/artists?ids=... ───────────────────────────
     // Up to 50 IDs per call. Failure is observable (see returned `meta`)
     // — we don't silently throw the result away anymore.
+    //
+    // Phase 6A.12: governed by SPOTIFY_CATALOG_HYDRATION_MODE.
+    //   enabled / auto  → attempt
+    //   disabled        → skip the network call entirely; rely on Last.fm
+    // 403 on the call is now classified as 'restricted' (not 'error') so
+    // it does not surface as a user-facing failure.
+    const hydrationMode = parseHydrationMode(
+      process.env.SPOTIFY_CATALOG_HYDRATION_MODE,
+    )
     const allIds = Array.from(seeds.keys())
-    const hydration = await hydrateSpotifyArtists(allIds, accessToken)
+    const hydration = await hydrateSpotifyArtists(allIds, accessToken, hydrationMode)
     const hydrated = hydration.map
 
     const artists: FavoriteArtist[] = Array.from(seeds.values()).map((seed) => {
@@ -340,6 +356,32 @@ export const spotifyProvider: StreamingProvider = {
       ? new Date(maxPlayedAtMs).toISOString()
       : null
 
+    // Phase 6A.12: catalog restriction is an internal degraded state,
+    // not a user-facing error. When the policy classifies the outcome
+    // as 'restricted' (or 'disabled'), suppress hydration_error so the
+    // UI stays calm — Last.fm enrichment will populate genres in the
+    // recompute step. Internal restriction signal lives on its own
+    // fields so operators retain full visibility via the audit log.
+    const hydrationStatus: HydrationStatus = classifyHydrationOutcome({
+      mode: hydrationMode,
+      skipped: hydration.diagnostics.skipped_reason !== null,
+      collected: allIds.length,
+      hydrated: hydrated.size,
+      rate_limited: hydration.diagnostics.rate_limited,
+      last_status: hydration.diagnostics.last_status,
+      probe_single_status: hydration.diagnostics.probe_single_status,
+      fully_recovered_via_fallback:
+        hydration.diagnostics.fallback_mode === 'batch_to_single' &&
+        hydrated.size >= allIds.length,
+    })
+    const isInternalDegradedState =
+      hydrationStatus === 'restricted' ||
+      hydrationStatus === 'disabled' ||
+      hydrationStatus === 'rate_limited'
+    const userFacingHydrationError = isInternalDegradedState
+      ? null
+      : hydration.lastError
+
     return {
       events,
       artists,
@@ -352,8 +394,13 @@ export const spotifyProvider: StreamingProvider = {
         artists_with_genres,
         hydration_batches_attempted: hydration.attempted,
         hydration_batches_succeeded: hydration.succeeded,
-        hydration_error: hydration.lastError,
+        hydration_error: userFacingHydrationError,
         recently_played_cursor,
+        hydration_status: hydrationStatus,
+        spotify_catalog_restricted: hydrationStatus === 'restricted',
+        spotify_artist_hydration_skipped:
+          hydration.diagnostics.skipped_reason !== null,
+        spotify_hydration_mode: hydrationMode,
       },
     }
   },
@@ -411,6 +458,11 @@ interface HydrationOutcome {
     rate_limited: boolean
     /** Spotify's Retry-After header value in seconds, when sent. */
     retry_after_seconds: number | null
+    /** Phase 6A.12: set to 'mode:disabled' when SPOTIFY_CATALOG_HYDRATION_MODE
+     *  caused us to skip the call. Null when we attempted (regardless of
+     *  outcome). Distinct from `rate_limited` (transient skip after
+     *  attempt) and `restricted` (attempted, got 403). */
+    skipped_reason: 'mode:disabled' | null
   }
 }
 
@@ -445,6 +497,7 @@ interface HydrationOutcome {
 async function hydrateSpotifyArtists(
   ids: string[],
   accessToken: string,
+  mode: HydrationMode = 'auto',
 ): Promise<HydrationOutcome> {
   // Spotify IDs are exactly 22 chars of base62. Anything else (local
   // files, malformed entries from old syncs, empty strings) gets
@@ -478,9 +531,22 @@ async function hydrateSpotifyArtists(
       fallback_singles_failed: 0,
       rate_limited: false,
       retry_after_seconds: null,
+      skipped_reason: null,
     },
   }
   if (filtered.length === 0) return out
+
+  // Phase 6A.12: operator-controlled opt-out. When SPOTIFY_CATALOG_HYDRATION_MODE
+  // is 'disabled', skip the network call entirely. The recommendation
+  // pipeline runs on /me/* (already fetched above) + Last.fm enrichment.
+  // Logged so the audit row shows the skip cause.
+  if (!shouldAttemptHydration(mode)) {
+    out.diagnostics.skipped_reason = 'mode:disabled'
+    console.log('[spotify/hydrate] skipped — mode=disabled', {
+      collected: filtered.length,
+    })
+    return out
+  }
 
   const REQUEST_HEADERS: HeadersInit = {
     Authorization: `Bearer ${accessToken}`,

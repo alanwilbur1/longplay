@@ -1,5 +1,6 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { getSupabaseAdminClient } from '@/lib/supabase/admin'
+import { upsertAndPrune } from '@/lib/db/upsert-and-prune'
 import {
   ARCHETYPE_CATALOG,
   rankArchetypes,
@@ -222,15 +223,17 @@ export async function recomputeListenerIdentity(
       weighted_score: roundForJson(g.weighted_score),
     }))
 
-  // ── Persist: delete-then-insert per user ────────────────────────
+  // ── Persist: UPSERT-and-prune per user (Phase 6A.14) ────────────
+  // Previously: delete-then-insert. Wiped traits + archetypes briefly
+  // every recompute, which the identity UI would render as "no
+  // archetype". UPSERT keeps the tables continuously populated; the
+  // prune step at the end drops trait rows or archetype rows that
+  // dropped out of this recompute (e.g. archetype that no longer
+  // clears the confidence threshold).
+  //
   // Service role bypasses RLS. The two tables have no client write
-  // grants. Operations run in parallel — they target independent
-  // tables so ordering doesn't matter.
-  await Promise.all([
-    admin.from('listener_identity_traits').delete().eq('user_id', userId),
-    admin.from('listener_archetype_snapshots').delete().eq('user_id', userId),
-  ])
-
+  // grants. Persist below uses upsertAndPrune; the call is moved
+  // AFTER the row payloads are built so the upsert is the only write.
   const computedAt = now.toISOString()
 
   // Traits — one row per trait_key, including 'unknown' traits so
@@ -264,27 +267,30 @@ export async function recomputeListenerIdentity(
     algorithm_version: IDENTITY_ALGORITHM_VERSION,
   }))
 
-  let traitsWritten = 0
-  if (traitRows.length > 0) {
-    const { error, count } = await admin
-      .from('listener_identity_traits')
-      .insert(traitRows, { count: 'exact' })
-    if (error) {
-      throw new Error(`[identity] traits insert failed: ${error.message}`)
-    }
-    traitsWritten = count ?? traitRows.length
-  }
-
-  let archetypesWritten = 0
-  if (archetypeRows.length > 0) {
-    const { error, count } = await admin
-      .from('listener_archetype_snapshots')
-      .insert(archetypeRows, { count: 'exact' })
-    if (error) {
-      throw new Error(`[identity] archetypes insert failed: ${error.message}`)
-    }
-    archetypesWritten = count ?? archetypeRows.length
-  }
+  // Run both upsert-and-prunes in parallel — they target independent
+  // tables. Each is atomic-safe on its own; the parallel scheduling
+  // just trims wall-clock time. A failure in either throws and the
+  // caller's existing try/catch handles it.
+  const [traitsResult, archetypesResult] = await Promise.all([
+    upsertAndPrune({
+      admin,
+      table: 'listener_identity_traits',
+      userId,
+      rows: traitRows,
+      keyCol: 'trait_key',
+      onConflict: 'user_id,trait_key',
+    }),
+    upsertAndPrune({
+      admin,
+      table: 'listener_archetype_snapshots',
+      userId,
+      rows: archetypeRows,
+      keyCol: 'archetype_key',
+      onConflict: 'user_id,archetype_key',
+    }),
+  ])
+  const traitsWritten = traitsResult.upserted
+  const archetypesWritten = archetypesResult.upserted
 
   return {
     user_id: userId,

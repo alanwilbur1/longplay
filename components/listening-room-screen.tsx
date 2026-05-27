@@ -25,69 +25,42 @@ const TRACKLIST = [
   { number: 9, title: "Re: Stacks", duration: "6:41" },
 ]
 
-// Sample annotations from members
-const ANNOTATIONS = [
-  {
-    id: 1,
-    timestamp: "2:47",
-    track: "Skinny Love",
-    trackNumber: 3,
-    content: "The voice doesn't just crack here—it shatters. Like he's been holding this for the entire song and finally lets go.",
-    author: "Elena",
-    emotion: "devastation",
-    isPrivate: false,
-  },
-  {
-    id: 2,
-    timestamp: "0:12",
-    track: "Flume",
-    trackNumber: 1,
-    content: "The opening ten seconds. Just the guitar and that first breath. You know immediately whether you're ready for this album or not.",
-    author: "Marcus",
-    emotion: "anticipation",
-    isPrivate: false,
-  },
-  {
-    id: 3,
-    timestamp: "4:18",
-    track: "Re: Stacks",
-    trackNumber: 9,
-    content: "This is not the sound of a new man—or a dead one. This is the sound of someone still here, barely.",
-    author: "Sofia",
-    emotion: "restraint",
-    isPrivate: false,
-  },
-  {
-    id: 4,
-    timestamp: "1:34",
-    track: "For Emma",
-    trackNumber: 8,
-    content: "The layered vocals feel like memory overlapping with the present. Past selves harmonizing with who you are now.",
-    author: "James",
-    emotion: "memory",
-    isPrivate: false,
-  },
-]
+// Phase 6A.13: hardcoded ANNOTATIONS, ROOM_ATMOSPHERE, and SAVED_MOMENTS
+// arrays were removed. They previously fabricated member names + invented
+// quotes + invented save counts, presenting them as emergent community
+// activity. Until those surfaces read from the real moments table, the
+// component renders honest empty states. Real values will hydrate the
+// same component shape once a presence / moments backend exists.
+type Annotation = {
+  id: number
+  timestamp: string
+  track: string
+  trackNumber: number
+  content: string
+  author: string
+  emotion: string | null
+  isPrivate: boolean
+}
+const ANNOTATIONS: Annotation[] = []
 
-// Emotional dimensions for this album
-const ROOM_ATMOSPHERE = {
-  dominantEmotions: ["Solitude", "Restraint", "Fragility"],
-  sonicTextures: ["Winter light", "Vocal harmonics", "Room ambience"],
-  recurringThemes: ["Isolation as healing", "The voice breaking through"],
-  annotationClusters: [
-    { track: "Skinny Love", count: 23, peak: "2:47" },
-    { track: "Re: Stacks", count: 18, peak: "4:18" },
-    { track: "Flume", count: 12, peak: "0:12" },
-  ],
+const ROOM_ATMOSPHERE: {
+  dominantEmotions: string[]
+  sonicTextures: string[]
+  recurringThemes: string[]
+  annotationClusters: Array<{ track: string; count: number; peak: string }>
+} = {
+  dominantEmotions: [],
+  sonicTextures: [],
+  recurringThemes: [],
+  annotationClusters: [],
 }
 
-// Saved moments
-const SAVED_MOMENTS = [
-  { timestamp: "2:47", track: "Skinny Love", note: "The break", savedBy: 23 },
-  { timestamp: "4:18", track: "Re: Stacks", note: "Still here", savedBy: 18 },
-  { timestamp: "0:00", track: "Flume", note: "First breath", savedBy: 15 },
-  { timestamp: "3:12", track: "For Emma", note: "Layered selves", savedBy: 11 },
-]
+const SAVED_MOMENTS: Array<{
+  timestamp: string
+  track: string
+  note: string
+  savedBy: number
+}> = []
 
 export function ListeningRoomScreen() {
   const router = useRouter()
@@ -254,59 +227,72 @@ export function ListeningRoomScreen() {
       {/* ============================================ */}
       {/* ROOM ATMOSPHERE - Ambient observation */}
       {/* ============================================ */}
-      <section className="px-6 py-12 md:px-12 lg:px-24 border-t border-border/10">
-        <div className="max-w-4xl mx-auto">
-          <p className="text-[10px] uppercase tracking-[0.3em] text-muted-foreground/60 mb-6">
-            The Room Tonight
-          </p>
-          
-          <div className="grid md:grid-cols-3 gap-8">
-            {/* Emotional texture */}
-            <div>
-              <p className="text-xs text-tobacco mb-3">Emotional Texture</p>
-              <div className="flex flex-wrap gap-2">
-                {ROOM_ATMOSPHERE.dominantEmotions.map((emotion) => (
-                  <span 
-                    key={emotion}
-                    className="text-sm text-cream/60 border-b border-cream/20 pb-0.5"
-                  >
-                    {emotion}
-                  </span>
-                ))}
-              </div>
-            </div>
-            
-            {/* Sonic observations */}
-            <div>
-              <p className="text-xs text-tobacco mb-3">Sonic Observations</p>
-              <div className="flex flex-wrap gap-2">
-                {ROOM_ATMOSPHERE.sonicTextures.map((texture) => (
-                  <span 
-                    key={texture}
-                    className="text-sm text-cream/60 border-b border-cream/20 pb-0.5"
-                  >
-                    {texture}
-                  </span>
-                ))}
-              </div>
-            </div>
-            
-            {/* Where annotations cluster */}
-            <div>
-              <p className="text-xs text-tobacco mb-3">Annotation Clusters</p>
-              <div className="space-y-1.5">
-                {ROOM_ATMOSPHERE.annotationClusters.slice(0, 3).map((cluster) => (
-                  <div key={cluster.track} className="flex items-center gap-2 text-sm">
-                    <span className="text-cream/60">{cluster.track}</span>
-                    <span className="text-muted-foreground/40">·</span>
-                    <span className="text-muted-foreground text-xs">{cluster.peak}</span>
+      {/* Phase 6A.13: "The Room Tonight" is a real-data surface. While
+          the underlying ROOM_ATMOSPHERE constant is empty (no real
+          moments backend yet), the section stays mounted but each
+          sub-column hides itself. Once real data flows in, the
+          rendering shape is unchanged — only the constant gets a
+          live source. */}
+      {(ROOM_ATMOSPHERE.dominantEmotions.length > 0 ||
+        ROOM_ATMOSPHERE.sonicTextures.length > 0 ||
+        ROOM_ATMOSPHERE.annotationClusters.length > 0) && (
+        <section className="px-6 py-12 md:px-12 lg:px-24 border-t border-border/10">
+          <div className="max-w-4xl mx-auto">
+            <p className="text-[10px] uppercase tracking-[0.3em] text-muted-foreground/60 mb-6">
+              The Room Tonight
+            </p>
+
+            <div className="grid md:grid-cols-3 gap-8">
+              {ROOM_ATMOSPHERE.dominantEmotions.length > 0 && (
+                <div>
+                  <p className="text-xs text-tobacco mb-3">Emotional Texture</p>
+                  <div className="flex flex-wrap gap-2">
+                    {ROOM_ATMOSPHERE.dominantEmotions.map((emotion) => (
+                      <span
+                        key={emotion}
+                        className="text-sm text-cream/60 border-b border-cream/20 pb-0.5"
+                      >
+                        {emotion}
+                      </span>
+                    ))}
                   </div>
-                ))}
-              </div>
+                </div>
+              )}
+
+              {ROOM_ATMOSPHERE.sonicTextures.length > 0 && (
+                <div>
+                  <p className="text-xs text-tobacco mb-3">Sonic Observations</p>
+                  <div className="flex flex-wrap gap-2">
+                    {ROOM_ATMOSPHERE.sonicTextures.map((texture) => (
+                      <span
+                        key={texture}
+                        className="text-sm text-cream/60 border-b border-cream/20 pb-0.5"
+                      >
+                        {texture}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {ROOM_ATMOSPHERE.annotationClusters.length > 0 && (
+                <div>
+                  <p className="text-xs text-tobacco mb-3">Annotation Clusters</p>
+                  <div className="space-y-1.5">
+                    {ROOM_ATMOSPHERE.annotationClusters.slice(0, 3).map((cluster) => (
+                      <div key={cluster.track} className="flex items-center gap-2 text-sm">
+                        <span className="text-cream/60">{cluster.track}</span>
+                        <span className="text-muted-foreground/40">·</span>
+                        <span className="text-muted-foreground text-xs">{cluster.peak}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
             </div>
           </div>
-        </div>
-      </section>
+        </section>
+      )}
 
       {/* ============================================ */}
       {/* TRACKLIST WITH MOMENTS */}
@@ -503,17 +489,22 @@ export function ListeningRoomScreen() {
           {/* ============================================ */}
           {/* ANNOTATIONS - The literary margin notes */}
           {/* ============================================ */}
-          <div>
-            <p className="text-[10px] uppercase tracking-[0.3em] text-muted-foreground/60 mb-8">
-              {isPrivatePhase ? 'Your Annotations' : 'From the Room'}
-            </p>
-            
-            <div className="space-y-8">
-              {ANNOTATIONS.filter(a => !isPrivatePhase || a.isPrivate).map((note) => (
-                <AnnotationCard key={note.id} annotation={note} showAuthor={!isPrivatePhase} />
-              ))}
+          {/* Phase 6A.13: hidden until real annotations exist. The
+              prior fake "From the Room" list with named members
+              ("Elena/Marcus/Sofia/James") was removed — empty rooms
+              should feel intentionally quiet, not pre-populated. */}
+          {ANNOTATIONS.filter(a => !isPrivatePhase || a.isPrivate).length > 0 && (
+            <div>
+              <p className="text-[10px] uppercase tracking-[0.3em] text-muted-foreground/60 mb-8">
+                {isPrivatePhase ? 'Your Annotations' : 'From the Room'}
+              </p>
+              <div className="space-y-8">
+                {ANNOTATIONS.filter(a => !isPrivatePhase || a.isPrivate).map((note) => (
+                  <AnnotationCard key={note.id} annotation={note} showAuthor={!isPrivatePhase} />
+                ))}
+              </div>
             </div>
-          </div>
+          )}
         </div>
       </section>
 
@@ -576,12 +567,12 @@ export function ListeningRoomScreen() {
                 But the cabin story, however true, has become a kind of filter that shapes how we hear. We listen for isolation. We listen for healing. We listen for the particular quality of winter light through old windows.
               </p>
               
+              {/* Phase 6A.13: removed fabricated "highlighted by 23
+                  members this week" attribution. The blockquote stands
+                  on its own editorial weight. */}
               <blockquote className="border-l-2 border-burgundy/40 pl-6 my-10">
                 <p className="font-serif text-2xl text-cream/90 italic leading-relaxed">
                   &ldquo;Come on skinny love, just last the year&rdquo;
-                </p>
-                <p className="text-sm text-tobacco/80 mt-3">
-                  — highlighted by 23 members this week
                 </p>
               </blockquote>
               

@@ -48,6 +48,17 @@ export interface ArchetypeDefinition {
   /** Trait predicates. ALL keys here must produce a non-null score
    *  for the user, or the archetype is ineligible. */
   predicates: Partial<Record<TraitKey, TraitPredicate>>
+  /** Phase 6A.14: stable tie-break priority. Lower numbers win when
+   *  two archetypes have identical (rounded) confidence. Acts as an
+   *  editorial preference layer ON TOP of the numeric score — when
+   *  the math can't decide, this fixed catalog ordering does.
+   *
+   *  Convention: archetypes that describe NARROWER patterns get
+   *  lower priority (win ties) than broader/default patterns. The
+   *  catalog is hand-curated below; renumbering does not require a
+   *  data migration — the field only affects the in-memory ranking
+   *  comparator. Default if unset = 1000 (broader pattern). */
+  priority?: number
 }
 
 /**
@@ -163,13 +174,31 @@ export function rankArchetypes(
   topN = 3,
   minConfidence = 0.4,
 ): MatchedArchetype[] {
+  // Phase 6A.14: stable resolution order to prevent false identity
+  // drift. The historical failure mode was
+  //   sync 1 → Archivist (primary)
+  //   sync 2 → Wanderer  (primary)   ← floating-point noise on equal confidence
+  //   sync 3 → Archivist (primary)
+  // without any meaningful taste change. The comparator now resolves
+  // ties through three layers:
+  //   1. confidence desc            (already rounded to 4 decimals at match time)
+  //   2. archetype.priority asc     (editorial preference; default 1000)
+  //   3. archetype.key alphabetical (final deterministic fallback)
+  // Layer 1 alone was the cause: in the original code, near-equal
+  // confidences with sub-noise differences cleared the strict !==
+  // check and flipped the order. Layers 2 + 3 now guarantee that two
+  // archetypes with the same rounded confidence always resolve to
+  // the same primary across recomputes.
+  const priorityByKey = new Map(catalog.map((a) => [a.key, a.priority ?? 1000]))
   const matches = catalog.map((a) => matchArchetype(a, traitScores))
   const eligible = matches
     .filter((m) => !m.ineligible)
     .filter((m) => m.confidence >= minConfidence)
   eligible.sort((a, b) => {
     if (b.confidence !== a.confidence) return b.confidence - a.confidence
-    // Deterministic tie-break: alphabetical by key.
+    const pa = priorityByKey.get(a.key) ?? 1000
+    const pb = priorityByKey.get(b.key) ?? 1000
+    if (pa !== pb) return pa - pb
     return a.key.localeCompare(b.key)
   })
   return eligible.slice(0, topN)
@@ -186,13 +215,44 @@ function round4(n: number): number {
 // real users with sufficient data will match at least one with
 // confidence ≥ 0.4. The soft-margin (0.5) means scores near a
 // boundary still register a partial match.
+//
+// `priority` is the editorial tie-break rank (Phase 6A.14). Lower
+// numbers win when two archetypes resolve to the same rounded
+// confidence on a recompute. Curated so NARROWER patterns (three
+// specific predicates) outrank BROADER patterns (two loose ones) on
+// ties — when the math is a coin flip, the more specific reading wins.
 
 export const ARCHETYPE_CATALOG: ArchetypeDefinition[] = [
+  {
+    key: 'midnight-archivist',
+    label: 'The Midnight Archivist',
+    description:
+      'Late-night listening biased toward less-popular artists and full albums. Long-tail at unsociable hours.',
+    priority: 100,
+    predicates: {
+      nocturnal_score: { min: 0.5, max: 1.0 },
+      obscurity_score: { min: 0.55, max: 1.0 },
+      album_focus_score: { min: 0.45, max: 1.0 },
+    },
+  },
+  {
+    key: 'obsessive-curator',
+    label: 'The Obsessive Curator',
+    description:
+      'Concentrates on a narrow genre with high depth. Knows the artists they care about thoroughly.',
+    priority: 200,
+    predicates: {
+      consistency_score: { min: 0.45, max: 1.0 },
+      album_focus_score: { min: 0.4, max: 1.0 },
+      exploratory_score: { min: 0.0, max: 0.5 },
+    },
+  },
   {
     key: 'deep-catalog-romantic',
     label: 'The Deep Catalog Romantic',
     description:
       'Saves whole albums; returns to a small set of artists over time. Not chasing the new; sits with the canon.',
+    priority: 300,
     predicates: {
       album_focus_score: { min: 0.55, max: 1.0 },
       recency_bias_score: { min: 0.0, max: 0.45 },
@@ -204,6 +264,7 @@ export const ARCHETYPE_CATALOG: ArchetypeDefinition[] = [
     label: 'The Nocturnal Explorer',
     description:
       'Listens after dark across many artists. The late hours are when the catalog opens up.',
+    priority: 400,
     predicates: {
       nocturnal_score: { min: 0.5, max: 1.0 },
       exploratory_score: { min: 0.35, max: 1.0 },
@@ -215,31 +276,10 @@ export const ARCHETYPE_CATALOG: ArchetypeDefinition[] = [
     label: 'The Genre Wanderer',
     description:
       'Listens across many genres at comparable depth. No single style dominates the library.',
+    priority: 600,
     predicates: {
       genre_breadth_score: { min: 0.6, max: 1.0 },
       consistency_score: { min: 0.0, max: 0.3 },
-    },
-  },
-  {
-    key: 'obsessive-curator',
-    label: 'The Obsessive Curator',
-    description:
-      'Concentrates on a narrow genre with high depth. Knows the artists they care about thoroughly.',
-    predicates: {
-      consistency_score: { min: 0.45, max: 1.0 },
-      album_focus_score: { min: 0.4, max: 1.0 },
-      exploratory_score: { min: 0.0, max: 0.5 },
-    },
-  },
-  {
-    key: 'midnight-archivist',
-    label: 'The Midnight Archivist',
-    description:
-      'Late-night listening biased toward less-popular artists and full albums. Long-tail at unsociable hours.',
-    predicates: {
-      nocturnal_score: { min: 0.5, max: 1.0 },
-      obscurity_score: { min: 0.55, max: 1.0 },
-      album_focus_score: { min: 0.45, max: 1.0 },
     },
   },
   {
@@ -247,6 +287,7 @@ export const ARCHETYPE_CATALOG: ArchetypeDefinition[] = [
     label: 'The Recency-Driven Listener',
     description:
       'Listens predominantly to what landed recently. The catalog turns over fast; new releases drive the rotation.',
+    priority: 700,
     predicates: {
       recency_bias_score: { min: 0.55, max: 1.0 },
       album_focus_score: { min: 0.0, max: 0.5 },
@@ -257,6 +298,7 @@ export const ARCHETYPE_CATALOG: ArchetypeDefinition[] = [
     label: 'The Album Loyalist',
     description:
       'Saves whole albums by a stable set of artists. Returns to known records rather than chasing breadth.',
+    priority: 500,
     predicates: {
       album_focus_score: { min: 0.6, max: 1.0 },
       consistency_score: { min: 0.3, max: 1.0 },

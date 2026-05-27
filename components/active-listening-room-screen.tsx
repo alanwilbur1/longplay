@@ -30,43 +30,10 @@ const SAMPLE_TRACKLIST = [
   { number: 8, title: "Track 8", duration: "5:21" },
 ]
 
-// Sample annotations for this room
-const SAMPLE_ANNOTATIONS = [
-  {
-    id: 1,
-    timestamp: "2:47",
-    track: "Track 3",
-    trackNumber: 3,
-    content: "There's something in the way this moment opens up—like a door you didn't know was there.",
-    author: "Elena",
-    emotion: "revelation",
-  },
-  {
-    id: 2,
-    timestamp: "0:30",
-    track: "Track 1",
-    trackNumber: 1,
-    content: "The first thirty seconds tell you everything you need to know about what's coming.",
-    author: "Marcus",
-    emotion: "anticipation",
-  },
-  {
-    id: 3,
-    timestamp: "4:18",
-    track: "Track 5",
-    trackNumber: 5,
-    content: "This is where the album stops asking and starts telling.",
-    author: "Sofia",
-    emotion: "intensity",
-  },
-]
-
-// Saved moments
-const SAMPLE_MOMENTS = [
-  { timestamp: "2:47", track: "Track 3", note: "The opening", savedBy: 23 },
-  { timestamp: "4:18", track: "Track 5", note: "The shift", savedBy: 18 },
-  { timestamp: "0:30", track: "Track 1", note: "First breath", savedBy: 15 },
-]
+// Phase 6A.13: SAMPLE_ANNOTATIONS and SAMPLE_MOMENTS removed. They
+// were rendered at 30% opacity when initialMoments was empty,
+// labeled "examples" but still creating the impression of prior
+// activity. Empty rooms now show an honest empty state.
 
 export function ActiveListeningRoomScreen({ room, initialMoments, initialPresenceSnapshot }: ActiveListeningRoomScreenProps) {
   const router = useRouter()
@@ -287,14 +254,18 @@ export function ActiveListeningRoomScreen({ room, initialMoments, initialPresenc
               </div>
             </div>
             
-            <div>
-              <p className="text-xs text-tobacco mb-3">Room Activity</p>
-              <div className="space-y-1.5">
-                {room.atmosphereNotes.slice(0, 2).map((note, i) => (
-                  <p key={i} className="text-sm text-cream/60">{note}</p>
-                ))}
+            {/* Phase 6A.13: "Room Activity" was rendering hardcoded
+                fictional notes. Hidden until real activity exists. */}
+            {room.atmosphereNotes.length > 0 && (
+              <div>
+                <p className="text-xs text-tobacco mb-3">Room Activity</p>
+                <div className="space-y-1.5">
+                  {room.atmosphereNotes.slice(0, 2).map((note, i) => (
+                    <p key={i} className="text-sm text-cream/60">{note}</p>
+                  ))}
+                </div>
               </div>
-            </div>
+            )}
           </div>
         </div>
       </section>
@@ -310,7 +281,10 @@ export function ActiveListeningRoomScreen({ room, initialMoments, initialPresenc
           
           <div className="space-y-1">
             {SAMPLE_TRACKLIST.map((track) => {
-              const moments = SAMPLE_MOMENTS.filter(m => m.track === track.title)
+              // Phase 6A.13: SAMPLE_MOMENTS removed. Per-track moment
+              // count is empty until real moments are queried per
+              // track for this room.
+              const moments: Array<{ timestamp: string; note: string; track: string }> = []
               const isSelected = selectedTrack === track.number
               
               return (
@@ -349,13 +323,12 @@ export function ActiveListeningRoomScreen({ room, initialMoments, initialPresenc
                   
                   {isSelected && (
                     <div className="mt-4 pl-10 space-y-3 animate-fade-in">
+                      {/* Phase 6A.13: per-moment count display
+                          ("X saved") removed — was fabricated. */}
                       {moments.map((moment, i) => (
                         <div key={i} className="flex items-center gap-3 text-sm">
                           <span className="text-tobacco font-mono">{moment.timestamp}</span>
                           <span className="text-cream/60">{moment.note}</span>
-                          <span className="text-muted-foreground/40 text-xs">
-                            {moment.savedBy} saved
-                          </span>
                         </div>
                       ))}
                       <button
@@ -392,10 +365,11 @@ export function ActiveListeningRoomScreen({ room, initialMoments, initialPresenc
             <MomentComposer albumId={room.currentAlbum.id} roomSlug={room.slug} />
           </div>
           
-          {/* Moments — real DB data when available; sample fallback when empty */}
+          {/* Phase 6A.13: real moments only. Empty state is a single
+              quiet line — no ghost annotations, no fake examples. */}
           <div>
             <p className="text-[10px] uppercase tracking-[0.3em] text-muted-foreground/60 mb-8">
-              {(initialMoments?.length ?? 0) > 0 ? 'Your Moments' : 'Sample Moments'}
+              Your Moments
             </p>
 
             {(initialMoments?.length ?? 0) > 0 ? (
@@ -426,31 +400,9 @@ export function ActiveListeningRoomScreen({ room, initialMoments, initialPresenc
                 ))}
               </div>
             ) : (
-              <div>
-                <p className="text-sm text-muted-foreground/30 italic mb-10">
-                  Nothing saved yet — these are examples of what your moments look like.
-                </p>
-                <div className="space-y-8 opacity-30 pointer-events-none select-none">
-                  {SAMPLE_ANNOTATIONS.map((note) => (
-                    <div key={note.id} className="group relative pl-8 border-l border-burgundy/20">
-                      <div className="absolute -left-1.5 top-0 w-3 h-3 rounded-full bg-burgundy/40" />
-                      <div className="flex items-center gap-3 mb-3">
-                        <span className="text-xs text-tobacco font-mono">
-                          {note.timestamp} · {note.track}
-                        </span>
-                        {note.emotion && (
-                          <span className="text-[10px] uppercase tracking-[0.15em] text-muted-foreground/40">
-                            {note.emotion}
-                          </span>
-                        )}
-                      </div>
-                      <p className="font-serif text-lg text-cream/80 leading-relaxed mb-3">
-                        {note.content}
-                      </p>
-                    </div>
-                  ))}
-                </div>
-              </div>
+              <p className="text-sm text-muted-foreground/40 italic">
+                Nothing saved yet.
+              </p>
             )}
 
             {markError && (

@@ -77,14 +77,48 @@ export interface SyncOutcome {
     enrichment_jobs_succeeded: number
     enrichment_jobs_failed: number
     enrichment_genres_added: number
+    /** Phase 6A.11: Layer 2-5 recompute counters. Written from each
+     *  recompute's return value at the call sites below. When step 9
+     *  re-runs after enrichment lands new genres, these are overwritten
+     *  with the post-enrichment values — so the audit row reflects the
+     *  final state of the listener_* / snapshot / affinity / identity
+     *  tables after this sync. Zero means "recompute did not run" or
+     *  "ran and produced empty output". The accompanying layer2_error
+     *  / Vercel logs tell the difference. */
+    listener_artists_written: number
+    listener_albums_written: number
+    listener_tracks_written: number
+    listener_genres_written: number
+    snapshot_recomputed: number
+    room_affinities_written: number
+    identity_traits_written: number
+    archetypes_written: number
+    /** Phase 6A.12 catalog-restriction counters. Booleans encoded as
+     *  0/1 so they're SQL-filterable in listening_sync_runs.counts. */
+    spotify_catalog_restricted: number
+    spotify_artist_hydration_skipped: number
+    lastfm_enrichment_used: number
   }
   refreshed: boolean
   last_sync_at: string | null
   snapshot_updated: boolean
   top_genres_count: number
   /** Null on full success. On hydration failure, a short safe string
-   *  like "401: The access token expired". Never contains tokens. */
+   *  like "401: The access token expired". Never contains tokens.
+   *  Phase 6A.12: catalog 403 no longer populates this — see
+   *  spotify_artist_hydration_status / spotify_catalog_restricted. */
   hydration_error: string | null
+  /** Phase 6A.12: classification of the Spotify /v1/artists hydration
+   *  attempt for this sync. See lib/streaming/hydration-policy.ts. */
+  spotify_artist_hydration_status:
+    | 'ok'
+    | 'restricted'
+    | 'rate_limited'
+    | 'disabled'
+    | 'partial'
+    | null
+  /** Phase 6A.12: which hydration mode was active at sync time. */
+  spotify_hydration_mode: 'enabled' | 'auto' | 'disabled' | null
   /** Phase 4.5: which external provider(s) the enrichment round
    *  contacted, comma-joined. Null when no enrichment ran. */
   enrichment_provider: string | null
@@ -159,12 +193,25 @@ function emptyOutcome(): SyncOutcome {
       enrichment_jobs_succeeded: 0,
       enrichment_jobs_failed: 0,
       enrichment_genres_added: 0,
+      listener_artists_written: 0,
+      listener_albums_written: 0,
+      listener_tracks_written: 0,
+      listener_genres_written: 0,
+      snapshot_recomputed: 0,
+      room_affinities_written: 0,
+      identity_traits_written: 0,
+      archetypes_written: 0,
+      spotify_catalog_restricted: 0,
+      spotify_artist_hydration_skipped: 0,
+      lastfm_enrichment_used: 0,
     },
     refreshed: false,
     last_sync_at: null,
     snapshot_updated: false,
     top_genres_count: 0,
     hydration_error: null,
+    spotify_artist_hydration_status: null,
+    spotify_hydration_mode: null,
     enrichment_provider: null,
     enrichment_state: null,
     enrichment_debug: null,
@@ -435,6 +482,19 @@ export async function syncProviderForUser(
       result.meta.hydration_batches_attempted ?? 0
     outcome.counts.hydration_batches_succeeded =
       result.meta.hydration_batches_succeeded ?? 0
+    // Phase 6A.12 catalog restriction signals — internal state, not
+    // user-facing failure. The provider already suppressed
+    // hydration_error for the restricted/disabled/rate_limited cases,
+    // so what lands here for `outcome.hydration_error` below is only
+    // ever a genuine error (e.g., 401 token expired, network blip,
+    // JSON parse failure).
+    outcome.counts.spotify_catalog_restricted =
+      result.meta.spotify_catalog_restricted ? 1 : 0
+    outcome.counts.spotify_artist_hydration_skipped =
+      result.meta.spotify_artist_hydration_skipped ? 1 : 0
+    outcome.spotify_artist_hydration_status =
+      result.meta.hydration_status ?? null
+    outcome.spotify_hydration_mode = result.meta.spotify_hydration_mode ?? null
     outcome.hydration_error = result.meta.hydration_error ?? null
   }
 
@@ -624,87 +684,151 @@ export async function syncProviderForUser(
   // 7. Re-compute Layer 2 → Layer 3.
   //
   // Phase 6A.4: snapshot reads from Layer 2 now, so Layer 2 MUST be
-  // refreshed first. Both are best-effort — a recompute failure does
-  // not fail the sync itself (the raw provider state has already
-  // been persisted to Layer 1).
+  // refreshed first. Each layer has its own try/catch so a Layer 2
+  // throw does NOT prevent Layer 3-5 from being attempted (snapshot,
+  // affinity, identity can each run against whatever state currently
+  // exists in their inputs).
+  //
+  // Layer 2 recompute is wrapped with explicit pre/post logs and a
+  // catch that captures the full error object — name, message, stack
+  // — into both Vercel logs AND outcome.layer2_error so the audit
+  // row carries the diagnosis durably.
+  console.log('[sync/layer2] pre recomputeListenerGraph', { userId })
   try {
-    await recomputeListenerGraph(userId)
+    const g = await recomputeListenerGraph(userId)
+    outcome.counts.listener_artists_written = g.artists_written
+    outcome.counts.listener_albums_written = g.albums_written
+    outcome.counts.listener_tracks_written = g.tracks_written
+    outcome.counts.listener_genres_written = g.genres_written
+    console.log('[sync/layer2] post recomputeListenerGraph', {
+      userId,
+      artists_written: g.artists_written,
+      albums_written: g.albums_written,
+      tracks_written: g.tracks_written,
+      genres_written: g.genres_written,
+      duration_ms: g.duration_ms,
+    })
   } catch (err) {
-    const message = err instanceof Error ? err.message : String(err)
-    outcome.layer2_error = message
+    // Defensive: counters already default to 0 in emptyOutcome, but
+    // re-assert here so a partial assignment (one of the four landed
+    // before a later throw) can't leave a misleading mix of values.
+    outcome.counts.listener_artists_written = 0
+    outcome.counts.listener_albums_written = 0
+    outcome.counts.listener_tracks_written = 0
+    outcome.counts.listener_genres_written = 0
+    const e = err as { name?: string; message?: string; stack?: string; cause?: unknown }
+    outcome.layer2_error = e?.message ? `${e.name ?? 'Error'}: ${e.message}` : String(err)
     console.warn('[sync/layer2] pre-snapshot listener graph recompute failed', {
       userId,
-      message,
+      name: e?.name,
+      message: e?.message,
+      stack: e?.stack,
+      cause: e?.cause,
+      raw: String(err),
     })
   }
+
+  console.log('[sync/layer3] pre recomputeListeningProfileSnapshot', { userId })
   try {
     const snap = await recomputeListeningProfileSnapshot(userId)
     outcome.snapshot_updated = true
     outcome.top_genres_count = snap.top_genres_count
-    // Phase 6A.5: Layer 4 room affinity cache. Runs only when the
-    // snapshot succeeded — a stale snapshot would produce stale
-    // cached scores. Best-effort wrapped in its own try below.
+    outcome.counts.snapshot_recomputed = 1
+    console.log('[sync/layer3] post recomputeListeningProfileSnapshot', {
+      userId,
+      top_genres_count: snap.top_genres_count,
+      affinity_tags_count: snap.affinity_tags_count,
+      artists_observed: snap.artists_observed,
+    })
+  } catch (err) {
+    outcome.counts.snapshot_recomputed = 0
+    const e = err as { name?: string; message?: string; stack?: string; cause?: unknown }
+    console.warn('[sync/layer3] snapshot recompute failed', {
+      userId,
+      name: e?.name,
+      message: e?.message,
+      stack: e?.stack,
+      cause: e?.cause,
+      raw: String(err),
+    })
+  }
+
+  // Phase 6A.5: Layer 4 room affinity cache. Independent try block
+  // — used to be nested inside the snapshot try, which meant a Layer 3
+  // throw would skip Layer 4 entirely. Lifted out so each runs on its
+  // own merits against whatever state is currently in the tables.
+  console.log('[sync/layer4] pre recomputeRoomAffinities', { userId })
+  try {
+    const aff = await recomputeRoomAffinities(userId)
+    outcome.counts.room_affinities_written = aff.rows_written
+    console.log('[sync/layer4] post recomputeRoomAffinities', {
+      userId,
+      rooms_scored: aff.rooms_scored,
+      rows_written: aff.rows_written,
+      duration_ms: aff.duration_ms,
+      score_version: aff.score_version,
+    })
+  } catch (err) {
+    outcome.counts.room_affinities_written = 0
+    const e = err as { name?: string; message?: string; stack?: string; cause?: unknown }
+    console.warn('[sync/layer4] room affinity recompute failed', {
+      userId,
+      name: e?.name,
+      message: e?.message,
+      stack: e?.stack,
+      cause: e?.cause,
+      raw: String(err),
+    })
+  }
+
+  // Phase 6A.6: Layer 5 listener identity. Same lift-out — used to be
+  // nested in the snapshot try. Now independent.
+  console.log('[sync/layer5] pre recomputeListenerIdentity', { userId })
+  try {
+    const id = await recomputeListenerIdentity(userId)
+    outcome.counts.identity_traits_written = id.traits_written
+    outcome.counts.archetypes_written = id.archetypes_written
+    console.log('[sync/layer5] post recomputeListenerIdentity', {
+      userId,
+      traits_written: id.traits_written,
+      archetypes_written: id.archetypes_written,
+      primary_archetype_key: id.primary_archetype_key,
+      primary_confidence: id.primary_confidence,
+      duration_ms: id.duration_ms,
+      algorithm_version: id.algorithm_version,
+    })
+    // Phase 6A.9: history append, only attempted when identity itself
+    // succeeded — appending against stale identity would be wrong.
     try {
-      const aff = await recomputeRoomAffinities(userId)
-      console.log('[sync/layer4] room affinity cache regenerated', {
-        userId,
-        rooms_scored: aff.rooms_scored,
-        rows_written: aff.rows_written,
-        duration_ms: aff.duration_ms,
-        score_version: aff.score_version,
-      })
-    } catch (err) {
-      console.warn('[sync/layer4] room affinity recompute failed', {
-        userId,
-        message: err instanceof Error ? err.message : String(err),
-      })
-    }
-    // Phase 6A.6: Layer 5 listener identity (traits + archetypes).
-    // Reads Layer 1-4 + listening_events. Same best-effort posture
-    // — identity is interpretive and a failure here is non-blocking.
-    try {
-      const id = await recomputeListenerIdentity(userId)
-      console.log('[sync/layer5] listener identity recomputed', {
-        userId,
-        traits_written: id.traits_written,
-        archetypes_written: id.archetypes_written,
-        primary_archetype_key: id.primary_archetype_key,
-        primary_confidence: id.primary_confidence,
-        duration_ms: id.duration_ms,
-        algorithm_version: id.algorithm_version,
-      })
-      // Phase 6A.9: append a history row when meaningful drift is
-      // detected, OR when ≥7 days have passed since the last row.
-      // Pure no-op on tiny-fluctuation recomputes — see
-      // lib/identity/drift.ts:shouldAppendHistory for the decision.
-      try {
-        const hist = await maybeAppendIdentityHistory(userId)
-        if (hist.appended) {
-          console.log('[sync/layer5-history] identity history appended', {
-            userId,
-            history_id: hist.history_id,
-            duration_ms: hist.duration_ms,
-          })
-        }
-      } catch (err) {
-        console.warn('[sync/layer5-history] history append failed', {
+      const hist = await maybeAppendIdentityHistory(userId)
+      if (hist.appended) {
+        console.log('[sync/layer5-history] identity history appended', {
           userId,
-          message: err instanceof Error ? err.message : String(err),
+          history_id: hist.history_id,
+          duration_ms: hist.duration_ms,
         })
       }
     } catch (err) {
-      console.warn('[sync/layer5] listener identity recompute failed', {
+      const e = err as { name?: string; message?: string; stack?: string }
+      console.warn('[sync/layer5-history] history append failed', {
         userId,
-        message: err instanceof Error ? err.message : String(err),
+        name: e?.name,
+        message: e?.message,
+        stack: e?.stack,
       })
     }
   } catch (err) {
-    if (process.env.NODE_ENV !== 'production') {
-      console.warn('[sync] snapshot recompute failed', {
-        userId,
-        message: err instanceof Error ? err.message : String(err),
-      })
-    }
+    outcome.counts.identity_traits_written = 0
+    outcome.counts.archetypes_written = 0
+    const e = err as { name?: string; message?: string; stack?: string; cause?: unknown }
+    console.warn('[sync/layer5] listener identity recompute failed', {
+      userId,
+      name: e?.name,
+      message: e?.message,
+      stack: e?.stack,
+      cause: e?.cause,
+      raw: String(err),
+    })
   }
 
   // 8. Phase 4.5: enqueue external genre enrichment for artists
@@ -799,6 +923,13 @@ export async function syncProviderForUser(
     outcome.counts.enrichment_jobs_succeeded = stats.succeeded
     outcome.counts.enrichment_jobs_failed = stats.failed
     outcome.counts.enrichment_genres_added = stats.canonical_genres_added
+    // Phase 6A.12: did Last.fm actually contribute any canonical genres
+    // on this sync? Set when the round produced at least one succeeded
+    // job AND added genres. The audit row can be filtered by this to
+    // confirm the fallback path is healthy when Spotify catalog is
+    // restricted.
+    outcome.counts.lastfm_enrichment_used =
+      stats.succeeded > 0 && stats.canonical_genres_added > 0 ? 1 : 0
     outcome.enrichment_provider =
       stats.providers_used.length > 0 ? stats.providers_used.join(',') : null
     outcome.enrichment_state = stats.rate_limited ? 'rate_limited' : null
@@ -823,65 +954,110 @@ export async function syncProviderForUser(
     // fresh Layer 2 state. Skip when nothing changed.
     if (stats.succeeded > 0) {
       debug.post_recompute_triggered = true
+
+      console.log('[sync/layer2-post] pre recomputeListenerGraph', {
+        userId,
+        enrichment_succeeded: stats.succeeded,
+      })
       try {
-        await recomputeListenerGraph(userId)
+        const g = await recomputeListenerGraph(userId)
+        outcome.counts.listener_artists_written = g.artists_written
+        outcome.counts.listener_albums_written = g.albums_written
+        outcome.counts.listener_tracks_written = g.tracks_written
+        outcome.counts.listener_genres_written = g.genres_written
         // A successful post-enrichment recompute clears any pre-enrichment
         // failure recorded in outcome.layer2_error — the graph is now fresh.
         outcome.layer2_error = null
-      } catch (err) {
-        const message = err instanceof Error ? err.message : String(err)
-        outcome.layer2_error = message
-        console.warn('[sync/layer2] post-enrichment listener graph recompute failed', {
+        console.log('[sync/layer2-post] post recomputeListenerGraph', {
           userId,
-          message,
+          artists_written: g.artists_written,
+          albums_written: g.albums_written,
+          tracks_written: g.tracks_written,
+          genres_written: g.genres_written,
+          duration_ms: g.duration_ms,
+        })
+      } catch (err) {
+        const e = err as { name?: string; message?: string; stack?: string; cause?: unknown }
+        outcome.layer2_error = e?.message ? `${e.name ?? 'Error'}: ${e.message}` : String(err)
+        console.warn('[sync/layer2-post] post-enrichment listener graph recompute failed', {
+          userId,
+          name: e?.name,
+          message: e?.message,
+          stack: e?.stack,
+          cause: e?.cause,
+          raw: String(err),
         })
       }
+
+      console.log('[sync/layer3-post] pre recomputeListeningProfileSnapshot', { userId })
       try {
         const snap = await recomputeListeningProfileSnapshot(userId)
         outcome.top_genres_count = snap.top_genres_count
-        console.log('[sync/enrichment] post-enrichment snapshot recomputed', {
+        outcome.counts.snapshot_recomputed = 1
+        console.log('[sync/layer3-post] post recomputeListeningProfileSnapshot', {
           userId,
           top_genres_count: snap.top_genres_count,
+          affinity_tags_count: snap.affinity_tags_count,
+          artists_observed: snap.artists_observed,
         })
-        // Phase 6A.5: Layer 4 re-regen so cached scores reflect the
-        // post-enrichment snapshot. Same best-effort pattern as the
-        // pre-enrichment Layer 4 recompute above.
-        try {
-          const aff = await recomputeRoomAffinities(userId)
-          console.log('[sync/layer4] post-enrichment room affinity cache regenerated', {
-            userId,
-            rooms_scored: aff.rooms_scored,
-            rows_written: aff.rows_written,
-            duration_ms: aff.duration_ms,
-          })
-        } catch (err) {
-          console.warn('[sync/layer4] post-enrichment room affinity recompute failed', {
-            userId,
-            message: err instanceof Error ? err.message : String(err),
-          })
-        }
-        // Phase 6A.6: identity also depends on Layer 2 canonical
-        // genres, which the post-enrichment regen just refreshed —
-        // re-derive so traits like genre_breadth / consistency
-        // reflect the new genre coverage.
-        try {
-          const id = await recomputeListenerIdentity(userId)
-          console.log('[sync/layer5] post-enrichment listener identity recomputed', {
-            userId,
-            traits_written: id.traits_written,
-            archetypes_written: id.archetypes_written,
-            primary_archetype_key: id.primary_archetype_key,
-            duration_ms: id.duration_ms,
-          })
-        } catch (err) {
-          console.warn('[sync/layer5] post-enrichment listener identity recompute failed', {
-            userId,
-            message: err instanceof Error ? err.message : String(err),
-          })
-        }
       } catch (err) {
-        console.warn('[sync/enrichment] post-enrichment snapshot recompute failed', {
-          message: err instanceof Error ? err.message : String(err),
+        const e = err as { name?: string; message?: string; stack?: string; cause?: unknown }
+        console.warn('[sync/layer3-post] post-enrichment snapshot recompute failed', {
+          userId,
+          name: e?.name,
+          message: e?.message,
+          stack: e?.stack,
+          cause: e?.cause,
+          raw: String(err),
+        })
+      }
+
+      // Layer 4 and Layer 5 lifted out of the snapshot try, same as
+      // the step-7 reshape above — a Layer 3 throw must not skip
+      // them.
+      console.log('[sync/layer4-post] pre recomputeRoomAffinities', { userId })
+      try {
+        const aff = await recomputeRoomAffinities(userId)
+        outcome.counts.room_affinities_written = aff.rows_written
+        console.log('[sync/layer4-post] post recomputeRoomAffinities', {
+          userId,
+          rooms_scored: aff.rooms_scored,
+          rows_written: aff.rows_written,
+          duration_ms: aff.duration_ms,
+        })
+      } catch (err) {
+        const e = err as { name?: string; message?: string; stack?: string; cause?: unknown }
+        console.warn('[sync/layer4-post] post-enrichment room affinity recompute failed', {
+          userId,
+          name: e?.name,
+          message: e?.message,
+          stack: e?.stack,
+          cause: e?.cause,
+          raw: String(err),
+        })
+      }
+
+      console.log('[sync/layer5-post] pre recomputeListenerIdentity', { userId })
+      try {
+        const id = await recomputeListenerIdentity(userId)
+        outcome.counts.identity_traits_written = id.traits_written
+        outcome.counts.archetypes_written = id.archetypes_written
+        console.log('[sync/layer5-post] post recomputeListenerIdentity', {
+          userId,
+          traits_written: id.traits_written,
+          archetypes_written: id.archetypes_written,
+          primary_archetype_key: id.primary_archetype_key,
+          duration_ms: id.duration_ms,
+        })
+      } catch (err) {
+        const e = err as { name?: string; message?: string; stack?: string; cause?: unknown }
+        console.warn('[sync/layer5-post] post-enrichment listener identity recompute failed', {
+          userId,
+          name: e?.name,
+          message: e?.message,
+          stack: e?.stack,
+          cause: e?.cause,
+          raw: String(err),
         })
       }
     }

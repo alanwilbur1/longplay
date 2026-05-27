@@ -190,8 +190,10 @@ function assembleRoom(
         hint: (p.hint as string) ?? '',
       })),
     streamingLinks,
-    memberCountLabel: (row.member_count_label as string) ?? '0 listeners',
-    atmosphereNotes: (row.atmosphere_notes as string[]) ?? [],
+    // Phase 6A.13: null when the DB row holds no real count. Renderers
+    // skip the surface entirely rather than fall back to a fake string.
+    memberCountLabel: (row.member_count_label as string | null) ?? null,
+    atmosphereNotes: (row.atmosphere_notes as string[] | null) ?? [],
     albumSample: albumSamples,
     pastCycles,
     emotionalTags: (row.emotional_tags as string[]) ?? [],
