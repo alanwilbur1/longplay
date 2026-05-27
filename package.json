@@ -29,6 +29,8 @@
     "test:recommendation-explanation": "npx tsx scripts/test-recommendation-explanation.ts",
     "test:identity-drift": "npx tsx scripts/test-identity-drift.ts",
     "test:compatibility": "npx tsx scripts/test-compatibility.ts",
+    "test:room-ecology": "npx tsx scripts/test-room-ecology.ts",
+    "room-ecology:status": "npx tsx scripts/room-ecology-status.ts",
     "identity-history:status": "npx tsx scripts/identity-history-status.ts",
     "compatibility:status": "npx tsx scripts/compatibility-status.ts",
     "snapshot:migration-status": "npx tsx scripts/snapshot-migration-status.ts",
