@@ -220,6 +220,15 @@ export interface SyncActionResult {
     enrichment_jobs_succeeded: number
     enrichment_jobs_failed: number
     enrichment_genres_added: number
+    /** Phase 6A.11 Layer 2-5 counters mirrored from SyncOutcome.counts. */
+    listener_artists_written: number
+    listener_albums_written: number
+    listener_tracks_written: number
+    listener_genres_written: number
+    snapshot_recomputed: number
+    room_affinities_written: number
+    identity_traits_written: number
+    archetypes_written: number
   }
   refreshed: boolean
   /** Whether listening_profile_snapshots recompute landed. */
@@ -285,6 +294,14 @@ function emptySyncCounts(): SyncActionResult['counts'] {
     enrichment_jobs_succeeded: 0,
     enrichment_jobs_failed: 0,
     enrichment_genres_added: 0,
+    listener_artists_written: 0,
+    listener_albums_written: 0,
+    listener_tracks_written: 0,
+    listener_genres_written: 0,
+    snapshot_recomputed: 0,
+    room_affinities_written: 0,
+    identity_traits_written: 0,
+    archetypes_written: 0,
   }
 }
 

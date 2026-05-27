@@ -77,6 +77,22 @@ export interface SyncOutcome {
     enrichment_jobs_succeeded: number
     enrichment_jobs_failed: number
     enrichment_genres_added: number
+    /** Phase 6A.11: Layer 2-5 recompute counters. Written from each
+     *  recompute's return value at the call sites below. When step 9
+     *  re-runs after enrichment lands new genres, these are overwritten
+     *  with the post-enrichment values — so the audit row reflects the
+     *  final state of the listener_* / snapshot / affinity / identity
+     *  tables after this sync. Zero means "recompute did not run" or
+     *  "ran and produced empty output". The accompanying layer2_error
+     *  / Vercel logs tell the difference. */
+    listener_artists_written: number
+    listener_albums_written: number
+    listener_tracks_written: number
+    listener_genres_written: number
+    snapshot_recomputed: number
+    room_affinities_written: number
+    identity_traits_written: number
+    archetypes_written: number
   }
   refreshed: boolean
   last_sync_at: string | null
@@ -159,6 +175,14 @@ function emptyOutcome(): SyncOutcome {
       enrichment_jobs_succeeded: 0,
       enrichment_jobs_failed: 0,
       enrichment_genres_added: 0,
+      listener_artists_written: 0,
+      listener_albums_written: 0,
+      listener_tracks_written: 0,
+      listener_genres_written: 0,
+      snapshot_recomputed: 0,
+      room_affinities_written: 0,
+      identity_traits_written: 0,
+      archetypes_written: 0,
     },
     refreshed: false,
     last_sync_at: null,
@@ -628,7 +652,11 @@ export async function syncProviderForUser(
   // not fail the sync itself (the raw provider state has already
   // been persisted to Layer 1).
   try {
-    await recomputeListenerGraph(userId)
+    const g = await recomputeListenerGraph(userId)
+    outcome.counts.listener_artists_written = g.artists_written
+    outcome.counts.listener_albums_written = g.albums_written
+    outcome.counts.listener_tracks_written = g.tracks_written
+    outcome.counts.listener_genres_written = g.genres_written
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err)
     outcome.layer2_error = message
@@ -641,11 +669,13 @@ export async function syncProviderForUser(
     const snap = await recomputeListeningProfileSnapshot(userId)
     outcome.snapshot_updated = true
     outcome.top_genres_count = snap.top_genres_count
+    outcome.counts.snapshot_recomputed = 1
     // Phase 6A.5: Layer 4 room affinity cache. Runs only when the
     // snapshot succeeded — a stale snapshot would produce stale
     // cached scores. Best-effort wrapped in its own try below.
     try {
       const aff = await recomputeRoomAffinities(userId)
+      outcome.counts.room_affinities_written = aff.rows_written
       console.log('[sync/layer4] room affinity cache regenerated', {
         userId,
         rooms_scored: aff.rooms_scored,
@@ -664,6 +694,8 @@ export async function syncProviderForUser(
     // — identity is interpretive and a failure here is non-blocking.
     try {
       const id = await recomputeListenerIdentity(userId)
+      outcome.counts.identity_traits_written = id.traits_written
+      outcome.counts.archetypes_written = id.archetypes_written
       console.log('[sync/layer5] listener identity recomputed', {
         userId,
         traits_written: id.traits_written,
@@ -824,7 +856,11 @@ export async function syncProviderForUser(
     if (stats.succeeded > 0) {
       debug.post_recompute_triggered = true
       try {
-        await recomputeListenerGraph(userId)
+        const g = await recomputeListenerGraph(userId)
+        outcome.counts.listener_artists_written = g.artists_written
+        outcome.counts.listener_albums_written = g.albums_written
+        outcome.counts.listener_tracks_written = g.tracks_written
+        outcome.counts.listener_genres_written = g.genres_written
         // A successful post-enrichment recompute clears any pre-enrichment
         // failure recorded in outcome.layer2_error — the graph is now fresh.
         outcome.layer2_error = null
@@ -839,6 +875,7 @@ export async function syncProviderForUser(
       try {
         const snap = await recomputeListeningProfileSnapshot(userId)
         outcome.top_genres_count = snap.top_genres_count
+        outcome.counts.snapshot_recomputed = 1
         console.log('[sync/enrichment] post-enrichment snapshot recomputed', {
           userId,
           top_genres_count: snap.top_genres_count,
@@ -848,6 +885,7 @@ export async function syncProviderForUser(
         // pre-enrichment Layer 4 recompute above.
         try {
           const aff = await recomputeRoomAffinities(userId)
+          outcome.counts.room_affinities_written = aff.rows_written
           console.log('[sync/layer4] post-enrichment room affinity cache regenerated', {
             userId,
             rooms_scored: aff.rooms_scored,
@@ -866,6 +904,8 @@ export async function syncProviderForUser(
         // reflect the new genre coverage.
         try {
           const id = await recomputeListenerIdentity(userId)
+          outcome.counts.identity_traits_written = id.traits_written
+          outcome.counts.archetypes_written = id.archetypes_written
           console.log('[sync/layer5] post-enrichment listener identity recomputed', {
             userId,
             traits_written: id.traits_written,
