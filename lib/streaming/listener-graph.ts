@@ -1,6 +1,7 @@
 import 'server-only'
 
 import { getSupabaseAdminClient } from '@/lib/supabase/admin'
+import { upsertAndPrune } from '@/lib/db/upsert-and-prune'
 import {
   canonicalAlbumKey,
   canonicalArtistKey,
@@ -347,58 +348,62 @@ export async function recomputeListenerGraph(
     computed_at: computedAt,
   }))
 
-  // ── Write: delete-then-insert per table for clean regeneration ──
+  // ── Write: UPSERT-and-prune per table (Phase 6A.14) ──────────────
+  // Previously: delete-then-insert. A crash between the delete and the
+  // chunked insert left the user's listener_* tables EMPTY until the
+  // next sync — and once ritual cycles read these tables continuously,
+  // an empty window means a room loses memory mid-cycle. We now upsert
+  // the new row set in chunks (so the table is continuously populated
+  // at count >= max(prev, new)) and then prune any rows whose natural
+  // key isn't in the new set (cleans up un-followed artists / removed
+  // saved albums). See lib/db/upsert-and-prune.ts for the invariants.
+  //
   // Service-role bypasses RLS; the four tables have no client write
-  // grants. We delete the user's existing rows first so stale entries
-  // from un-followed artists / removed saved albums don't linger.
-  // No transaction (supabase-js doesn't expose one); ordering doesn't
-  // matter because rows aren't joined cross-table.
-  await Promise.all([
-    admin.from('listener_artists').delete().eq('user_id', userId),
-    admin.from('listener_albums').delete().eq('user_id', userId),
-    admin.from('listener_tracks').delete().eq('user_id', userId),
-    admin.from('listener_genres').delete().eq('user_id', userId),
+  // grants. Operations run in parallel — they target independent
+  // tables so ordering doesn't matter.
+  const [
+    artistsResult,
+    albumsResult,
+    tracksResult,
+    genresResult,
+  ] = await Promise.all([
+    upsertAndPrune({
+      admin,
+      table: 'listener_artists',
+      userId,
+      rows: artistRowsOut,
+      keyCol: 'canonical_artist_key',
+      onConflict: 'user_id,canonical_artist_key',
+    }),
+    upsertAndPrune({
+      admin,
+      table: 'listener_albums',
+      userId,
+      rows: albumRowsOut,
+      keyCol: 'canonical_album_key',
+      onConflict: 'user_id,canonical_album_key',
+    }),
+    upsertAndPrune({
+      admin,
+      table: 'listener_tracks',
+      userId,
+      rows: trackRowsOut,
+      keyCol: 'canonical_track_key',
+      onConflict: 'user_id,canonical_track_key',
+    }),
+    upsertAndPrune({
+      admin,
+      table: 'listener_genres',
+      userId,
+      rows: genreRowsOut,
+      keyCol: 'genre',
+      onConflict: 'user_id,genre',
+    }),
   ])
-
-  // Insert in chunks to stay under PostgREST request size limits.
-  const insertChunked = async <T>(
-    table: 'listener_artists' | 'listener_albums' | 'listener_tracks' | 'listener_genres',
-    rows: T[],
-  ): Promise<number> => {
-    if (rows.length === 0) return 0
-    const CHUNK = 250
-    let total = 0
-    for (let i = 0; i < rows.length; i += CHUNK) {
-      const slice = rows.slice(i, i + CHUNK)
-      const { error, count } = await admin
-        .from(table)
-        .insert(slice, { count: 'exact' })
-      if (error) {
-        // Preserve the Postgres error code so the catch site (and the
-        // listening_sync_runs audit row via outcome.layer2_error) shows
-        // exactly which constraint/permission/column was the cause —
-        // 23502/23503/23505/42501/42703 each point at a different fix.
-        throw new Error(
-          `[listener-graph] insert ${table} failed:` +
-            ` code=${error.code ?? 'n/a'}` +
-            ` rows=${slice.length}` +
-            ` details=${error.details ?? 'n/a'}` +
-            ` hint=${error.hint ?? 'n/a'}` +
-            ` message=${error.message}`,
-        )
-      }
-      total += count ?? slice.length
-    }
-    return total
-  }
-
-  const [artistsWritten, albumsWritten, tracksWritten, genresWritten] =
-    await Promise.all([
-      insertChunked('listener_artists', artistRowsOut),
-      insertChunked('listener_albums', albumRowsOut),
-      insertChunked('listener_tracks', trackRowsOut),
-      insertChunked('listener_genres', genreRowsOut),
-    ])
+  const artistsWritten = artistsResult.upserted
+  const albumsWritten = albumsResult.upserted
+  const tracksWritten = tracksResult.upserted
+  const genresWritten = genresResult.upserted
 
   return {
     user_id: userId,

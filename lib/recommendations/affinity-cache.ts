@@ -1,5 +1,6 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { getSupabaseAdminClient } from '@/lib/supabase/admin'
+import { upsertAndPrune } from '@/lib/db/upsert-and-prune'
 
 // Note: not marked with `import 'server-only'` so that
 // scripts/test-affinity-cache.ts (which only consumes the pure
@@ -75,24 +76,21 @@ export async function recomputeRoomAffinities(
     source_snapshot_computed_at: sourceSnapshotComputedAt,
   }))
 
-  // Delete-then-insert per user. Pure regenerate semantics. Service
-  // role bypasses RLS; no client write grants exist on this table.
-  await admin.from('room_affinity_scores').delete().eq('user_id', userId)
-
-  let rowsWritten = 0
-  if (rows.length > 0) {
-    const CHUNK = 250
-    for (let i = 0; i < rows.length; i += CHUNK) {
-      const slice = rows.slice(i, i + CHUNK)
-      const { error, count } = await admin
-        .from('room_affinity_scores')
-        .insert(slice, { count: 'exact' })
-      if (error) {
-        throw new Error(`[affinity-cache] insert failed: ${error.message}`)
-      }
-      rowsWritten += count ?? slice.length
-    }
-  }
+  // Phase 6A.14: UPSERT-and-prune. The previous delete-then-insert
+  // briefly emptied room_affinity_scores mid-recompute, which Layer 4
+  // readers (and any future ritual cycle that reads room affinities
+  // continuously) would observe as "no rooms recommended". UPSERT keeps
+  // the table populated; the prune step at the end drops affinity rows
+  // for rooms that have since been removed from the catalog.
+  const pruneResult = await upsertAndPrune({
+    admin,
+    table: 'room_affinity_scores',
+    userId,
+    rows: rows as unknown as Array<Record<string, unknown>>,
+    keyCol: 'room_id',
+    onConflict: 'user_id,room_id',
+  })
+  const rowsWritten = pruneResult.upserted
 
   return {
     user_id: userId,

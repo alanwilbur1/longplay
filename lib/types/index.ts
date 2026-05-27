@@ -1,8 +1,31 @@
 /**
  * ============================================================
- * LONGPLAY CANONICAL PRODUCT ARCHITECTURE
+ * ⚠ DOCUMENTATION-ONLY MODULE — NOT IMPORTED BY PRODUCTION CODE
  * ============================================================
- * 
+ *
+ * Phase 6A.14 type-drift audit: nothing in /app, /components, or
+ * /lib references this file. The exports here are an architectural
+ * design document expressed as TypeScript, NOT the live type
+ * surface. Changes here do NOT affect any compiled output.
+ *
+ * The LIVE Room interface that the room screens consume lives in:
+ *   lib/rooms.ts          (Room, ARCHETYPES catalog)
+ *   lib/data/rooms.ts     (DB adapter — adapts the Room shape from
+ *                          rooms / cycles / albums Supabase tables)
+ *
+ * If you need to change a shape that the app actually uses, edit
+ * lib/rooms.ts and lib/data/rooms.ts. Editing this file changes
+ * nothing.
+ *
+ * Future cleanup option (deferred): collapse this file's stable
+ * design content into a single .md document under /docs, then
+ * delete this file. Out of scope for the durability hardening pass
+ * — too aggressive a move for one phase.
+ *
+ * ============================================================
+ * LONGPLAY CANONICAL PRODUCT ARCHITECTURE (design notes)
+ * ============================================================
+ *
  * LongPlay is NOT a streaming app.
  * LongPlay IS:
  * - a longitudinal listening identity platform

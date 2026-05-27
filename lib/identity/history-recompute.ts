@@ -204,6 +204,39 @@ export async function maybeAppendIdentityHistory(
   }
   const newId = ((insertRes ?? {}) as { id?: string }).id ?? null
 
+  // Phase 6A.14 retention. listener_identity_history is INSERT-only;
+  // without a cap, it grows unbounded as ritual cycles append over
+  // time. Trim to the most recent HISTORY_RETENTION_CAP rows per
+  // user after every successful append. CAP-based (not TTL) keeps
+  // continuity for sparse-history users. Best-effort — a trim
+  // failure here must never block the sync.
+  try {
+    // Cast through unknown because the typed Database surface in
+    // lib/supabase/types.ts predates this RPC (added in migration
+    // 0020 alongside this code). When db:types is next regenerated,
+    // the cast becomes unnecessary.
+    const { error: trimErr } = await (admin as unknown as {
+      rpc: (fn: string, args: Record<string, unknown>) => Promise<{
+        error: { code?: string; message: string } | null
+      }>
+    }).rpc(
+      'trim_listener_identity_history',
+      { p_user_id: userId, p_keep_count: HISTORY_RETENTION_CAP },
+    )
+    if (trimErr) {
+      console.warn('[identity-history] retention trim failed', {
+        userId,
+        code: trimErr.code,
+        message: trimErr.message,
+      })
+    }
+  } catch (err) {
+    console.warn('[identity-history] retention trim threw', {
+      userId,
+      message: err instanceof Error ? err.message : String(err),
+    })
+  }
+
   return {
     user_id: userId,
     appended: true,
@@ -212,6 +245,12 @@ export async function maybeAppendIdentityHistory(
     duration_ms: Date.now() - startedAt,
   }
 }
+
+/** Phase 6A.14: bounded history cap. ~4 years of weekly snapshots
+ *  at the current append cadence (≥7-day gaps + drift events).
+ *  Trimmed by the trim_listener_identity_history SQL function
+ *  after every successful insert. */
+const HISTORY_RETENTION_CAP = 200
 
 // ── Helpers ──────────────────────────────────────────────────────
 
