@@ -126,6 +126,13 @@ export interface SyncOutcome {
     }
     post_recompute_triggered: boolean
   } | null
+  /** Phase 6A.11 patch: captured message from recomputeListenerGraph
+   *  when it threw. Distinct from `error` because Layer 2 failure is
+   *  best-effort (sync's primary state stays durable). When set,
+   *  recordSyncRun surfaces it into listening_sync_runs.error_summary
+   *  so the operator can see which Postgres-level rejection knocked
+   *  out the listener_* tables without digging through Vercel logs. */
+  layer2_error: string | null
   error: { stage: string; message: string } | null
 }
 
@@ -161,6 +168,7 @@ function emptyOutcome(): SyncOutcome {
     enrichment_provider: null,
     enrichment_state: null,
     enrichment_debug: null,
+    layer2_error: null,
     error: null,
   }
 }
@@ -622,9 +630,11 @@ export async function syncProviderForUser(
   try {
     await recomputeListenerGraph(userId)
   } catch (err) {
+    const message = err instanceof Error ? err.message : String(err)
+    outcome.layer2_error = message
     console.warn('[sync/layer2] pre-snapshot listener graph recompute failed', {
       userId,
-      message: err instanceof Error ? err.message : String(err),
+      message,
     })
   }
   try {
@@ -815,10 +825,15 @@ export async function syncProviderForUser(
       debug.post_recompute_triggered = true
       try {
         await recomputeListenerGraph(userId)
+        // A successful post-enrichment recompute clears any pre-enrichment
+        // failure recorded in outcome.layer2_error — the graph is now fresh.
+        outcome.layer2_error = null
       } catch (err) {
+        const message = err instanceof Error ? err.message : String(err)
+        outcome.layer2_error = message
         console.warn('[sync/layer2] post-enrichment listener graph recompute failed', {
           userId,
-          message: err instanceof Error ? err.message : String(err),
+          message,
         })
       }
       try {
@@ -938,31 +953,42 @@ async function recordSyncRun(args: RecordSyncRunArgs): Promise<void> {
     enrichment_state: args.outcome.enrichment_state,
     refreshed: args.outcome.refreshed,
   })
-  const errorSummary = sanitizeErrorSummary(args.outcome.error?.message ?? null)
-  try {
-    await admin.from('listening_sync_runs').insert({
+  // Surface layer2 failures into the audit log when the sync itself
+  // reported no top-level error — otherwise empty listener_* tables
+  // are indistinguishable from "sync ran fine, just no data".
+  const summarySource =
+    args.outcome.error?.message ??
+    (args.outcome.layer2_error ? `[layer2] ${args.outcome.layer2_error}` : null)
+  const errorSummary = sanitizeErrorSummary(summarySource)
+  // supabase-js returns { error } for Postgres-level rejections; it
+  // does NOT throw. The previous try/catch only caught runtime errors
+  // and silently discarded constraint/RLS/missing-column failures —
+  // that's why listening_sync_runs was empty even with sync running.
+  const { error: runError } = await admin.from('listening_sync_runs').insert({
+    user_id: args.userId,
+    source_id: args.sourceId,
+    trigger: args.trigger,
+    status,
+    started_at: args.startedAt.toISOString(),
+    finished_at: finishedAt.toISOString(),
+    duration_ms: durationMs,
+    counts: args.outcome.counts,
+    refreshed_token: args.outcome.refreshed,
+    recently_played_cursor_before: args.cursorBefore,
+    recently_played_cursor_after:
+      args.cursorAfter && args.cursorAfter !== args.cursorBefore
+        ? args.cursorAfter
+        : null,
+    error_summary: errorSummary,
+  })
+  if (runError) {
+    console.warn('[sync] listening_sync_runs insert rejected', {
       user_id: args.userId,
       source_id: args.sourceId,
-      trigger: args.trigger,
-      status,
-      started_at: args.startedAt.toISOString(),
-      finished_at: finishedAt.toISOString(),
-      duration_ms: durationMs,
-      counts: args.outcome.counts,
-      refreshed_token: args.outcome.refreshed,
-      recently_played_cursor_before: args.cursorBefore,
-      recently_played_cursor_after:
-        args.cursorAfter && args.cursorAfter !== args.cursorBefore
-          ? args.cursorAfter
-          : null,
-      error_summary: errorSummary,
-    })
-  } catch (err) {
-    // Best-effort. Logs go to the platform log, not the DB.
-    console.warn('[sync] failed to record sync run', {
-      user_id: args.userId,
-      source_id: args.sourceId,
-      message: err instanceof Error ? err.message : String(err),
+      code: runError.code,
+      details: runError.details,
+      hint: runError.hint,
+      message: runError.message,
     })
   }
 }

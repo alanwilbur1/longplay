@@ -374,7 +374,18 @@ export async function recomputeListenerGraph(
         .from(table)
         .insert(slice, { count: 'exact' })
       if (error) {
-        throw new Error(`[listener-graph] insert ${table} failed: ${error.message}`)
+        // Preserve the Postgres error code so the catch site (and the
+        // listening_sync_runs audit row via outcome.layer2_error) shows
+        // exactly which constraint/permission/column was the cause —
+        // 23502/23503/23505/42501/42703 each point at a different fix.
+        throw new Error(
+          `[listener-graph] insert ${table} failed:` +
+            ` code=${error.code ?? 'n/a'}` +
+            ` rows=${slice.length}` +
+            ` details=${error.details ?? 'n/a'}` +
+            ` hint=${error.hint ?? 'n/a'}` +
+            ` message=${error.message}`,
+        )
       }
       total += count ?? slice.length
     }
