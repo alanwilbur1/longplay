@@ -23,6 +23,7 @@
     "test:token-crypto": "npx tsx scripts/test-token-crypto.ts",
     "test:sync-scheduler": "npx tsx scripts/test-sync-scheduler.ts",
     "test:listener-graph": "npx tsx scripts/test-listener-graph.ts",
+    "test:spotify-hydration-policy": "npx tsx scripts/test-spotify-hydration-policy.ts",
     "test:affinity-cache": "npx tsx scripts/test-affinity-cache.ts",
     "test:identity": "npx tsx scripts/test-identity.ts",
     "test:identity-presentation": "npx tsx scripts/test-identity-presentation.ts",

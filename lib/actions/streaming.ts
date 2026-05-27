@@ -229,6 +229,10 @@ export interface SyncActionResult {
     room_affinities_written: number
     identity_traits_written: number
     archetypes_written: number
+    /** Phase 6A.12 catalog-restriction counters. */
+    spotify_catalog_restricted: number
+    spotify_artist_hydration_skipped: number
+    lastfm_enrichment_used: number
   }
   refreshed: boolean
   /** Whether listening_profile_snapshots recompute landed. */
@@ -237,8 +241,20 @@ export interface SyncActionResult {
   top_genres_count: number
   /** Safe one-line hydration error, or null. Distinct from `error`
    *  because hydration can fail without failing the sync — the row
-   *  upserts still land. */
+   *  upserts still land. Phase 6A.12: catalog 403 no longer populates
+   *  this — see `spotify_artist_hydration_status` for the canonical
+   *  signal of restricted state. */
   hydration_error: string | null
+  /** Phase 6A.12: classification of Spotify /v1/artists hydration. */
+  spotify_artist_hydration_status:
+    | 'ok'
+    | 'restricted'
+    | 'rate_limited'
+    | 'disabled'
+    | 'partial'
+    | null
+  /** Phase 6A.12: which hydration mode was active for this sync. */
+  spotify_hydration_mode: 'enabled' | 'auto' | 'disabled' | null
   /** Phase 4.5 — provider(s) the enrichment round used. */
   enrichment_provider: string | null
   /** Phase 4.5 — 'rate_limited' when the round bailed early. */
@@ -302,6 +318,9 @@ function emptySyncCounts(): SyncActionResult['counts'] {
     room_affinities_written: 0,
     identity_traits_written: 0,
     archetypes_written: 0,
+    spotify_catalog_restricted: 0,
+    spotify_artist_hydration_skipped: 0,
+    lastfm_enrichment_used: 0,
   }
 }
 
@@ -355,6 +374,8 @@ export async function syncMyConnection(
       snapshot_updated: false,
       top_genres_count: 0,
       hydration_error: null,
+      spotify_artist_hydration_status: null,
+      spotify_hydration_mode: null,
       enrichment_provider: null,
       enrichment_state: null,
       enrichment_debug: null,
@@ -373,6 +394,8 @@ export async function syncMyConnection(
       snapshot_updated: false,
       top_genres_count: 0,
       hydration_error: null,
+      spotify_artist_hydration_status: null,
+      spotify_hydration_mode: null,
       enrichment_provider: null,
       enrichment_state: null,
       enrichment_debug: null,
@@ -409,6 +432,8 @@ export async function syncMyConnection(
     snapshot_updated: outcome.snapshot_updated,
     top_genres_count: outcome.top_genres_count,
     hydration_error: outcome.hydration_error,
+    spotify_artist_hydration_status: outcome.spotify_artist_hydration_status,
+    spotify_hydration_mode: outcome.spotify_hydration_mode,
     enrichment_provider: outcome.enrichment_provider,
     enrichment_state: outcome.enrichment_state,
     enrichment_debug: outcome.enrichment_debug,

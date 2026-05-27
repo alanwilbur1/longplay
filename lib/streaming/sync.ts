@@ -93,14 +93,32 @@ export interface SyncOutcome {
     room_affinities_written: number
     identity_traits_written: number
     archetypes_written: number
+    /** Phase 6A.12 catalog-restriction counters. Booleans encoded as
+     *  0/1 so they're SQL-filterable in listening_sync_runs.counts. */
+    spotify_catalog_restricted: number
+    spotify_artist_hydration_skipped: number
+    lastfm_enrichment_used: number
   }
   refreshed: boolean
   last_sync_at: string | null
   snapshot_updated: boolean
   top_genres_count: number
   /** Null on full success. On hydration failure, a short safe string
-   *  like "401: The access token expired". Never contains tokens. */
+   *  like "401: The access token expired". Never contains tokens.
+   *  Phase 6A.12: catalog 403 no longer populates this — see
+   *  spotify_artist_hydration_status / spotify_catalog_restricted. */
   hydration_error: string | null
+  /** Phase 6A.12: classification of the Spotify /v1/artists hydration
+   *  attempt for this sync. See lib/streaming/hydration-policy.ts. */
+  spotify_artist_hydration_status:
+    | 'ok'
+    | 'restricted'
+    | 'rate_limited'
+    | 'disabled'
+    | 'partial'
+    | null
+  /** Phase 6A.12: which hydration mode was active at sync time. */
+  spotify_hydration_mode: 'enabled' | 'auto' | 'disabled' | null
   /** Phase 4.5: which external provider(s) the enrichment round
    *  contacted, comma-joined. Null when no enrichment ran. */
   enrichment_provider: string | null
@@ -183,12 +201,17 @@ function emptyOutcome(): SyncOutcome {
       room_affinities_written: 0,
       identity_traits_written: 0,
       archetypes_written: 0,
+      spotify_catalog_restricted: 0,
+      spotify_artist_hydration_skipped: 0,
+      lastfm_enrichment_used: 0,
     },
     refreshed: false,
     last_sync_at: null,
     snapshot_updated: false,
     top_genres_count: 0,
     hydration_error: null,
+    spotify_artist_hydration_status: null,
+    spotify_hydration_mode: null,
     enrichment_provider: null,
     enrichment_state: null,
     enrichment_debug: null,
@@ -459,6 +482,19 @@ export async function syncProviderForUser(
       result.meta.hydration_batches_attempted ?? 0
     outcome.counts.hydration_batches_succeeded =
       result.meta.hydration_batches_succeeded ?? 0
+    // Phase 6A.12 catalog restriction signals — internal state, not
+    // user-facing failure. The provider already suppressed
+    // hydration_error for the restricted/disabled/rate_limited cases,
+    // so what lands here for `outcome.hydration_error` below is only
+    // ever a genuine error (e.g., 401 token expired, network blip,
+    // JSON parse failure).
+    outcome.counts.spotify_catalog_restricted =
+      result.meta.spotify_catalog_restricted ? 1 : 0
+    outcome.counts.spotify_artist_hydration_skipped =
+      result.meta.spotify_artist_hydration_skipped ? 1 : 0
+    outcome.spotify_artist_hydration_status =
+      result.meta.hydration_status ?? null
+    outcome.spotify_hydration_mode = result.meta.spotify_hydration_mode ?? null
     outcome.hydration_error = result.meta.hydration_error ?? null
   }
 
@@ -887,6 +923,13 @@ export async function syncProviderForUser(
     outcome.counts.enrichment_jobs_succeeded = stats.succeeded
     outcome.counts.enrichment_jobs_failed = stats.failed
     outcome.counts.enrichment_genres_added = stats.canonical_genres_added
+    // Phase 6A.12: did Last.fm actually contribute any canonical genres
+    // on this sync? Set when the round produced at least one succeeded
+    // job AND added genres. The audit row can be filtered by this to
+    // confirm the fallback path is healthy when Spotify catalog is
+    // restricted.
+    outcome.counts.lastfm_enrichment_used =
+      stats.succeeded > 0 && stats.canonical_genres_added > 0 ? 1 : 0
     outcome.enrichment_provider =
       stats.providers_used.length > 0 ? stats.providers_used.join(',') : null
     outcome.enrichment_state = stats.rate_limited ? 'rate_limited' : null
