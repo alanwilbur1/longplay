@@ -124,13 +124,20 @@ export function RoomDetailScreen({ room, initialIsJoined = false }: RoomDetailSc
               {room.description}
             </p>
             
-            {/* Atmosphere and stats */}
+            {/* Atmosphere and stats. Phase 6A.13: member count omitted
+                when not backed by a real count — render either the
+                count + atmosphere + curator, or atmosphere + curator,
+                with separators conditional on what's present. */}
             <div className="flex flex-wrap items-center gap-4 text-sm text-muted-foreground">
               <span className={room.aesthetics.primaryAccent}>
                 {room.atmosphere}
               </span>
-              <span className="w-1 h-1 rounded-full bg-muted-foreground/30" />
-              <span>{room.memberCountLabel}</span>
+              {room.memberCountLabel && (
+                <>
+                  <span className="w-1 h-1 rounded-full bg-muted-foreground/30" />
+                  <span>{room.memberCountLabel}</span>
+                </>
+              )}
               <span className="w-1 h-1 rounded-full bg-muted-foreground/30" />
               <span>Curated by {room.curator.name}</span>
             </div>
@@ -677,15 +684,19 @@ export function RoomDetailScreen({ room, initialIsJoined = false }: RoomDetailSc
                 </div>
               </div>
               
-              {/* Atmosphere notes */}
-              <div>
-                <p className="text-xs text-tobacco mb-3">This Room</p>
-                <div className="space-y-1.5">
-                  {room.atmosphereNotes.map((note, i) => (
-                    <p key={i} className="text-sm text-cream/60">{note}</p>
-                  ))}
+              {/* Atmosphere notes. Phase 6A.13: hide the whole section
+                  when there are no real notes — the prior strings were
+                  hardcoded fictional observations of activity. */}
+              {room.atmosphereNotes.length > 0 && (
+                <div>
+                  <p className="text-xs text-tobacco mb-3">This Room</p>
+                  <div className="space-y-1.5">
+                    {room.atmosphereNotes.map((note, i) => (
+                      <p key={i} className="text-sm text-cream/60">{note}</p>
+                    ))}
+                  </div>
                 </div>
-              </div>
+              )}
             </div>
           </div>
         </section>

@@ -372,8 +372,9 @@ export interface Room {
   // Current cycle
   currentCycleId?: string
   
-  // Stats (soft, not gamified)
-  memberCountLabel: string
+  // Stats (soft, not gamified). Phase 6A.13: nullable — fabricated
+  // values stripped; renderers skip surfaces when the field is empty.
+  memberCountLabel: string | null
   atmosphereNotes: string[]
   
   // Related rooms

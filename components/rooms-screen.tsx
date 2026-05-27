@@ -198,7 +198,9 @@ function EditorialRoomCard({ room, href }: { room: Room; href: string }) {
       
       <div className="flex items-center justify-between">
         <p className="text-xs text-tobacco truncate">{room.atmosphere}</p>
-        <p className="text-xs text-muted-foreground shrink-0">{room.memberCountLabel}</p>
+        {room.memberCountLabel && (
+          <p className="text-xs text-muted-foreground shrink-0">{room.memberCountLabel}</p>
+        )}
       </div>
     </Link>
   )
@@ -233,7 +235,9 @@ function GenreRoomCard({ room, href }: { room: Room; href: string }) {
         <p className="text-xs text-muted-foreground leading-relaxed mb-3 line-clamp-2">
           {room.tagline || room.atmosphere}
         </p>
-        <p className="text-[10px] text-tobacco">{room.memberCountLabel}</p>
+        {room.memberCountLabel && (
+          <p className="text-[10px] text-tobacco">{room.memberCountLabel}</p>
+        )}
       </div>
     </Link>
   )
@@ -256,7 +260,9 @@ function CreatorRoomCard({ room, href }: { room: Room; href: string }) {
           <span className="text-tobacco">{room.curator.name}</span> · {room.description}
         </p>
       </div>
-      <p className="text-xs text-muted-foreground shrink-0">{room.memberCountLabel}</p>
+      {room.memberCountLabel && (
+        <p className="text-xs text-muted-foreground shrink-0">{room.memberCountLabel}</p>
+      )}
     </Link>
   )
 }

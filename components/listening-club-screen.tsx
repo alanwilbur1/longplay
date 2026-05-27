@@ -98,35 +98,13 @@ export function ListeningClubScreen() {
         </div>
       </section>
 
-      {/* Member Reflections - Card Stack */}
-      <section className="px-6 py-12 md:px-12 lg:px-24 bg-navy/15">
-        <h2 className="text-xs uppercase tracking-[0.25em] text-muted-foreground mb-8">Member Reflections</h2>
-        
-        <div className="space-y-6">
-          <ReflectionCard
-            avatar="https://images.unsplash.com/photo-1494790108377-be9c29b29330?w=100"
-            name="Elena"
-            archetype="The Nocturnal Romantic"
-            reflection="The way 'Skinny Love' builds from whisper to something like desperation—I didn't notice it the first time. Now I can't unhear the crack in his voice at 2:47."
-            track="Skinny Love"
-            timestamp="2:47"
-          />
-          <ReflectionCard
-            avatar="https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?w=100"
-            name="Marcus"
-            archetype="The Cathedral Listener"
-            reflection="Re: Stacks feels like walking through an empty house you used to live in. The silence between the notes matters as much as the notes themselves."
-            track="Re: Stacks"
-          />
-          <ReflectionCard
-            avatar="https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=100"
-            name="Sofia"
-            archetype="The Velvet Dissenter"
-            reflection="I resisted this album for years. But sitting with it this week—really sitting with it—I understand now. Some music requires winter."
-            track="Flume"
-          />
-        </div>
-      </section>
+      {/* Phase 6A.13: Member Reflections section removed. Previously
+          rendered three hardcoded ReflectionCards with Unsplash stock
+          avatars and invented quotes attributed to fake members
+          ("Elena/Marcus/Sofia"). Until reflections come from the real
+          moments table, the section is hidden — authentic sparsity
+          over fake richness. The ReflectionCard component is preserved
+          below so a future real-data rendering can reuse it. */}
 
       {/* Upcoming - Horizontal Scroll */}
       <section className="px-6 py-12 md:px-12 lg:px-24">

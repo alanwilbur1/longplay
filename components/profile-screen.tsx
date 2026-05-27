@@ -24,7 +24,23 @@ import { SyncConnectionButton } from '@/components/sync-connection-button'
  * If there is no session, this screen renders a signed-out state —
  * never a demo identity. localStorage no longer participates in identity
  * decisions.
+ *
+ * Phase 6A.13: Debug surfaces (auth panel + connection row state) are
+ * now gated behind isProfileDebugEnabled() — same posture as the sync
+ * button. Production users never see raw UUIDs, internal table state,
+ * or Postgres error codes. Operators can flip on with ?debug=profile,
+ * NEXT_PUBLIC_SHOW_PROFILE_DEBUG=1, or any non-prod NODE_ENV.
  */
+
+function isProfileDebugEnabled(): boolean {
+  if (process.env.NODE_ENV !== 'production') return true
+  if (process.env.NEXT_PUBLIC_SHOW_PROFILE_DEBUG === '1') return true
+  if (typeof window !== 'undefined') {
+    const params = new URLSearchParams(window.location.search)
+    if (params.get('debug') === 'profile') return true
+  }
+  return false
+}
 
 interface DbProfile {
   id: string
@@ -61,6 +77,12 @@ export function ProfileScreen() {
   const pathname = usePathname()
   const { user, isAuthenticated, isLoading: authLoading } = useAuth()
   const [joinedRooms, setJoinedRooms] = useState<JoinedRoomEntry[]>([])
+  // Phase 6A.13: client-only flag; evaluated after mount so SSR
+  // doesn't accidentally render the debug panel for the first paint.
+  const [showDebug, setShowDebug] = useState(false)
+  useEffect(() => {
+    setShowDebug(isProfileDebugEnabled())
+  }, [])
 
   const [supabaseStatus, setSupabaseStatus] = useState<{
     authenticated: boolean
@@ -516,43 +538,43 @@ export function ProfileScreen() {
                   )}
                 </div>
 
-                {/* Visible debug strip (always rendered — not gated by
-                    DEV_MODE — so the user can confirm the source of truth
-                    on the deployed preview).
-                    Two lines per provider:
-                      source:<db-row|none|loading|error>  row_id:<…>
-                      status:<…>  last_sync_at:<…>  queried_as:<uid>
-                      [error line shown only on read error] */}
-                <div className="px-4 py-1 text-[10px] font-mono text-muted-foreground/40 leading-tight">
-                  <div>
-                    source:
-                    {connectionsLoading
-                      ? 'loading'
-                      : connectionsError
-                        ? 'error'
-                        : conn
-                          ? 'db-row'
-                          : 'none'}
-                    {'  '}
-                    row_id:{conn ? `${conn.id.slice(0, 8)}…` : '—'}
-                    {'  '}
-                    status:{conn ? conn.status : '—'}
-                    {'  '}
-                    last_sync_at:{conn ? String(conn.last_sync_at ?? 'null') : '—'}
-                  </div>
-                  <div>
-                    queried_as:
-                    {connectionsQueriedAs
-                      ? `${connectionsQueriedAs.slice(0, 8)}…`
-                      : '—'}
-                  </div>
-                  {connectionsError && (
-                    <div className="text-burgundy/60">
-                      read_error: code={String(connectionsError.code ?? 'null')}{' '}
-                      msg={connectionsError.message.slice(0, 80)}
+                {/* Phase 6A.13: connection diagnostics moved behind the
+                    profile debug surface. Production users see only the
+                    Connect / Sync now / Disconnect controls — no raw row
+                    ids, status enums, or Postgres error codes. Flip on
+                    with ?debug=profile or NEXT_PUBLIC_SHOW_PROFILE_DEBUG=1. */}
+                {showDebug && (
+                  <div className="px-4 py-1 text-[10px] font-mono text-muted-foreground/40 leading-tight">
+                    <div>
+                      source:
+                      {connectionsLoading
+                        ? 'loading'
+                        : connectionsError
+                          ? 'error'
+                          : conn
+                            ? 'db-row'
+                            : 'none'}
+                      {'  '}
+                      row_id:{conn ? `${conn.id.slice(0, 8)}…` : '—'}
+                      {'  '}
+                      status:{conn ? conn.status : '—'}
+                      {'  '}
+                      last_sync_at:{conn ? String(conn.last_sync_at ?? 'null') : '—'}
                     </div>
-                  )}
-                </div>
+                    <div>
+                      queried_as:
+                      {connectionsQueriedAs
+                        ? `${connectionsQueriedAs.slice(0, 8)}…`
+                        : '—'}
+                    </div>
+                    {connectionsError && (
+                      <div className="text-burgundy/60">
+                        read_error: code={String(connectionsError.code ?? 'null')}{' '}
+                        msg={connectionsError.message.slice(0, 80)}
+                      </div>
+                    )}
+                  </div>
+                )}
               </div>
             )
           })}
@@ -649,68 +671,70 @@ export function ProfileScreen() {
         </button>
       </section>
 
-      {/* ── Auth & Debug Panel ────────────────────────────────────────────── */}
-      <section className="px-6 py-6 md:px-12 lg:px-24 border-t-2 border-dashed border-tobacco/20 bg-card/5">
-        <p className="text-[10px] uppercase tracking-[0.3em] text-tobacco/60 mb-5">
-          Auth Debug Panel
-        </p>
+      {/* Phase 6A.13: Auth debug panel — operator-only. Previously
+          rendered to all users in production, exposing UUIDs, email,
+          and internal onboarding flags. Now gated behind
+          isProfileDebugEnabled() with the same posture as the sync
+          button debug surface. */}
+      {showDebug && (
+        <section className="px-6 py-6 md:px-12 lg:px-24 border-t-2 border-dashed border-tobacco/20 bg-card/5">
+          <p className="text-[10px] uppercase tracking-[0.3em] text-tobacco/60 mb-5">
+            Auth Debug Panel
+          </p>
 
-        <div className="space-y-3 mb-6 font-mono text-xs">
-          <DebugRow label="current route">
-            <span className="text-cream text-right break-all">{pathname}</span>
-          </DebugRow>
+          <div className="space-y-3 mb-6 font-mono text-xs">
+            <DebugRow label="current route">
+              <span className="text-cream text-right break-all">{pathname}</span>
+            </DebugRow>
 
-          <DebugRow label="supabase session">
-            {authLoading ? (
-              <span className="text-tobacco/50">loading…</span>
-            ) : isAuthenticated && user ? (
-              <span className="text-olive text-right break-all">{user.email}</span>
-            ) : (
-              <span className="text-red-400/70">not signed in</span>
-            )}
-          </DebugRow>
+            <DebugRow label="supabase session">
+              {authLoading ? (
+                <span className="text-tobacco/50">loading…</span>
+              ) : isAuthenticated && user ? (
+                <span className="text-olive text-right break-all">{user.email}</span>
+              ) : (
+                <span className="text-red-400/70">not signed in</span>
+              )}
+            </DebugRow>
 
-          <DebugRow label="auth user id">
-            {authLoading ? (
-              <span className="text-tobacco/50">loading…</span>
-            ) : isAuthenticated && user ? (
-              <span className="text-cream/60 text-right break-all text-[10px]">{user.id}</span>
-            ) : (
-              <span className="text-muted-foreground/40">—</span>
-            )}
-          </DebugRow>
+            <DebugRow label="auth user id">
+              {authLoading ? (
+                <span className="text-tobacco/50">loading…</span>
+              ) : isAuthenticated && user ? (
+                <span className="text-cream/60 text-right break-all text-[10px]">{user.id}</span>
+              ) : (
+                <span className="text-muted-foreground/40">—</span>
+              )}
+            </DebugRow>
 
-          <DebugRow label="hydrated profile id">
-            {isHydrating ? (
-              <span className="text-tobacco/50">loading…</span>
-            ) : dbProfile ? (
-              <span className="text-olive text-right break-all text-[10px]">{dbProfile.id}</span>
-            ) : isAuthenticated ? (
-              <span className="text-red-400/70 text-right break-all text-[10px]">
-                {profileError ? `error: ${profileError.slice(0, 50)}` : 'not found in db'}
-              </span>
-            ) : (
-              <span className="text-muted-foreground/40">—</span>
-            )}
-          </DebugRow>
+            <DebugRow label="hydrated profile id">
+              {isHydrating ? (
+                <span className="text-tobacco/50">loading…</span>
+              ) : dbProfile ? (
+                <span className="text-olive text-right break-all text-[10px]">{dbProfile.id}</span>
+              ) : isAuthenticated ? (
+                <span className="text-red-400/70 text-right break-all text-[10px]">
+                  {profileError ? `error: ${profileError.slice(0, 50)}` : 'not found in db'}
+                </span>
+              ) : (
+                <span className="text-muted-foreground/40">—</span>
+              )}
+            </DebugRow>
 
-          <DebugRow label="supabase db">
-            {supabaseStatus === null ? (
-              <span className="text-tobacco/50">loading…</span>
-            ) : !supabaseStatus.authenticated ? (
-              <span className="text-muted-foreground/50">not authenticated</span>
-            ) : supabaseStatus.onboardingCompleted ? (
-              <span className="text-olive">onboarding_completed = true</span>
-            ) : (
-              <span className="text-red-400/70">onboarding_completed = false</span>
-            )}
-          </DebugRow>
-        </div>
-
-        <p className="text-[10px] text-muted-foreground/30 mt-4">
-          This panel is visible in all environments for testing. Remove before launch.
-        </p>
-      </section>
+            <DebugRow label="supabase db">
+              {supabaseStatus === null ? (
+                <span className="text-tobacco/50">loading…</span>
+              ) : !supabaseStatus.authenticated ? (
+                <span className="text-muted-foreground/50">not authenticated</span>
+              ) : supabaseStatus.onboardingCompleted ? (
+                <span className="text-olive">onboarding_completed = true</span>
+              ) : (
+                <span className="text-red-400/70">onboarding_completed = false</span>
+              )}
+            </DebugRow>
+          </div>
+        </section>
+      )}
     </div>
   )
 }

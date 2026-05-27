@@ -160,8 +160,14 @@ export interface Room {
     tidal?: string
   }
   
-  // Social proof (ambient, not gamified)
-  memberCountLabel: string
+  // Social proof (ambient, not gamified).
+  // Phase 6A.13: both fields nullable / optional-list — fabricated
+  // values were stripped from the static catalog. Renderers must
+  // skip these sections when the field is empty/null. Real values
+  // will flow in once room_ecology_snapshots and a real presence
+  // table back them; until then, authentic sparsity wins over
+  // fabricated counts/activity.
+  memberCountLabel: string | null
   atmosphereNotes: string[]
   
   // Album samples for preview
@@ -294,12 +300,8 @@ const NOCTURNAL_ROOM: Room = {
     tidal: 'https://tidal.com/browse/album/1440830798',
   },
   
-  memberCountLabel: '847 listeners',
-  atmosphereNotes: [
-    'Most active after 11pm',
-    'Annotations tend toward reflection',
-    'Quietest room in LongPlay',
-  ],
+  memberCountLabel: null,
+  atmosphereNotes: [],
   
   albumSample: [safeAlbum(ALBUMS.forEmma), safeAlbum(ALBUMS.pinkMoon), safeAlbum(ALBUMS.carrieAndLowell)],
   
@@ -425,12 +427,8 @@ const ANALOG_FUTURES: Room = {
     appleMusic: 'https://music.apple.com/album/vespertine/1440831496',
   },
   
-  memberCountLabel: '623 listeners',
-  atmosphereNotes: [
-    'Texture-focused discussions',
-    'Producers and sonic explorers',
-    'Late afternoon listening',
-  ],
+  memberCountLabel: null,
+  atmosphereNotes: [],
   
   albumSample: [safeAlbum(ALBUMS.vespertine), safeAlbum(ALBUMS.ageOf), safeAlbum(ALBUMS.homogenic)],
   
@@ -548,12 +546,8 @@ const CATHEDRAL_HOUR: Room = {
     appleMusic: 'https://music.apple.com/album/spirit-of-eden/724466069',
   },
   
-  memberCountLabel: '512 listeners',
-  atmosphereNotes: [
-    'Longest average listening sessions',
-    'Ambient and sacred focus',
-    'Early morning activity',
-  ],
+  memberCountLabel: null,
+  atmosphereNotes: [],
   
   albumSample: [safeAlbum(ALBUMS.musicForAirports), safeAlbum(ALBUMS.disintegrationLoops), safeAlbum(ALBUMS.spiritOfEden)],
   
@@ -679,12 +673,8 @@ const BEAUTIFUL_DAMAGE: Room = {
     appleMusic: 'https://music.apple.com/album/punisher/1508306286',
   },
   
-  memberCountLabel: '734 listeners',
-  atmosphereNotes: [
-    'Most emotional annotations',
-    'Late night crying sessions (their words)',
-    'Strong sense of community',
-  ],
+  memberCountLabel: null,
+  atmosphereNotes: [],
   
   albumSample: [safeAlbum(ALBUMS.punisher), safeAlbum(ALBUMS.funeral), safeAlbum(ALBUMS.blue)],
   
@@ -807,8 +797,8 @@ const RECORDS_FOR_RAIN: Room = {
     spotify: 'https://open.spotify.com/album/1vz94WpXDVYIEGja8cjFNa',
   },
   
-  memberCountLabel: '678 listeners',
-  atmosphereNotes: ['Most active on overcast days', 'Afternoon listeners'],
+  memberCountLabel: null,
+  atmosphereNotes: [],
   
   albumSample: [safeAlbum(ALBUMS.blue), safeAlbum(ALBUMS.pinkMoon)],
   
@@ -900,8 +890,8 @@ const WARM_STATIC: Room = {
     { question: 'What gives this album its warmth?', hint: 'Production choices, performance choices, something else?' },
   ],
   streamingLinks: { spotify: 'https://open.spotify.com/album/5vkqYmiPBYLaalcmjujWxK' },
-  memberCountLabel: '534 listeners',
-  atmosphereNotes: ['Texture obsessives', 'Evening listening'],
+  memberCountLabel: null,
+  atmosphereNotes: [],
   albumSample: [safeAlbum(ALBUMS.inRainbows), safeAlbum(ALBUMS.forEmma)],
   pastCycles: [],
   emotionalTags: ['Nostalgia', 'Warmth', 'Imperfection', 'Memory'],
@@ -965,8 +955,8 @@ const SPIRITUAL_JAZZ: Room = {
     { question: 'Where does space become the star?', hint: 'Find the silence between notes.' },
   ],
   streamingLinks: { spotify: 'https://open.spotify.com/album/1weenld61qoidwYuZ1GESA' },
-  memberCountLabel: '456 listeners',
-  atmosphereNotes: ['Morning listeners', 'Meditation energy'],
+  memberCountLabel: null,
+  atmosphereNotes: [],
   albumSample: [safeAlbum(ALBUMS.kindOfBlue)],
   pastCycles: [],
   emotionalTags: ['Transcendence', 'Devotion', 'Space', 'Spirit'],
@@ -1033,8 +1023,8 @@ const CRITERION_LISTENING: Room = {
     { question: 'What film does this music create?', hint: 'Close your eyes and see.' },
   ],
   streamingLinks: {},
-  memberCountLabel: '1,243 listeners',
-  atmosphereNotes: ['Film lovers', 'Soundtrack obsessives'],
+  memberCountLabel: null,
+  atmosphereNotes: [],
   albumSample: [safeAlbum(ALBUMS.disintegrationLoops)],
   pastCycles: [],
   emotionalTags: ['Cinematic', 'Visual', 'Atmospheric'],
@@ -1098,8 +1088,8 @@ const PITCHFORK_DEEP_CUTS: Room = {
     { question: 'What did critics miss?', hint: 'Find what the reviews couldn\'t hear.' },
   ],
   streamingLinks: {},
-  memberCountLabel: '2,341 listeners',
-  atmosphereNotes: ['Critics welcome', 'Discovery-focused'],
+  memberCountLabel: null,
+  atmosphereNotes: [],
   albumSample: [safeAlbum(ALBUMS.illinois)],
   pastCycles: [],
   emotionalTags: ['Critical', 'Discovery', 'Reconsideration'],
@@ -1172,8 +1162,8 @@ const HIP_HOP_HOURS: Room = {
     { question: 'Where does the sequencing matter most?', hint: 'Find the moment one track changes the meaning of the next.' },
   ],
   streamingLinks: {},
-  memberCountLabel: 'New room — early listeners welcome',
-  atmosphereNotes: ['Headphone-focused', 'Slow, intentional listening'],
+  memberCountLabel: null,
+  atmosphereNotes: [],
   albumSample: [safeAlbum(ALBUMS.toPimpAButterfly)],
   pastCycles: [],
   emotionalTags: ['Narrative', 'Confessional', 'Cinematic'],
@@ -1238,8 +1228,8 @@ const SOUTHERN_LISTENING: Room = {
     { question: 'Where does the place become a character?', hint: 'Listen for the geography in the lyric.' },
   ],
   streamingLinks: {},
-  memberCountLabel: 'New room — early listeners welcome',
-  atmosphereNotes: ['Songwriter-focused', 'Slow listening'],
+  memberCountLabel: null,
+  atmosphereNotes: [],
   albumSample: [safeAlbum(ALBUMS.southeastern)],
   pastCycles: [],
   emotionalTags: ['Warmth', 'Plainspeech', 'Reflection'],
@@ -1304,8 +1294,8 @@ const SOUL_QUARTERS: Room = {
     { question: 'Where does the interlude do the heaviest lifting?', hint: 'Sometimes the spoken passages are the spine.' },
   ],
   streamingLinks: {},
-  memberCountLabel: 'New room — early listeners welcome',
-  atmosphereNotes: ['Headphone listening', 'Sunday-evening room'],
+  memberCountLabel: null,
+  atmosphereNotes: [],
   albumSample: [safeAlbum(ALBUMS.aSeatAtTheTable)],
   pastCycles: [],
   emotionalTags: ['Warmth', 'Interiority', 'Communal'],
