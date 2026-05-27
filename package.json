@@ -40,7 +40,8 @@
     "identity:status": "npx tsx scripts/identity-status.ts",
     "affinity:status": "npx tsx scripts/affinity-cache-status.ts",
     "affinity:invalidate": "npx tsx scripts/invalidate-room-affinities.ts",
-    "guard:service-role": "node scripts/check-service-role-leak.mjs"
+    "guard:service-role": "node scripts/check-service-role-leak.mjs",
+    "guard:migration-policy": "node scripts/check-migration-policy.mjs"
   },
   "dependencies": {
     "@hookform/resolvers": "^3.9.1",
