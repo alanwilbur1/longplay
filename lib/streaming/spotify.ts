@@ -427,11 +427,18 @@ interface HydrationOutcome {
  * (22-char [A-Za-z0-9]); we hard-filter to that shape before joining
  * so a single local-file pseudo-id can't poison a whole batch.
  *
- * Headers: we now explicitly send User-Agent + Accept. Spotify's
- * Cloudflare layer has been observed to 403 catalog endpoints
- * (/v1/artists, /v1/albums, /v1/tracks) when the request comes in
- * with the default undici / node fetch User-Agent, while still
- * letting /me/* through. Doesn't cost anything to be explicit.
+ * Headers: Authorization + Accept only. A custom User-Agent
+ * (`LongPlay/1.0 (+https://longplay.app)`) was added in an earlier
+ * phase to work around a Cloudflare rule that 403'd catalog
+ * endpoints under undici's default User-Agent. As of the Phase 6A
+ * production validation, Spotify's edge now does the opposite: it
+ * 403s catalog endpoints when the request carries a bot-format UA
+ * (`Name/1.0 (+url)` matches CF's bot fingerprint), while still
+ * permitting the same call under undici's default. Removing the
+ * explicit UA puts hydration on the same call posture as the
+ * `/me/*` requests via spotifyJson(), which work in production.
+ * The original workaround comment is preserved here as the rationale
+ * for why we don't reintroduce it.
  *
  * Does NOT throw — every batch failure is captured into the outcome.
  */
@@ -478,7 +485,6 @@ async function hydrateSpotifyArtists(
   const REQUEST_HEADERS: HeadersInit = {
     Authorization: `Bearer ${accessToken}`,
     Accept: 'application/json',
-    'User-Agent': 'LongPlay/1.0 (+https://longplay.app)',
   }
 
   for (let i = 0; i < filtered.length; i += 50) {
