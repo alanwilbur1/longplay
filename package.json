@@ -27,6 +27,8 @@
     "test:identity": "npx tsx scripts/test-identity.ts",
     "test:identity-presentation": "npx tsx scripts/test-identity-presentation.ts",
     "test:recommendation-explanation": "npx tsx scripts/test-recommendation-explanation.ts",
+    "test:identity-drift": "npx tsx scripts/test-identity-drift.ts",
+    "identity-history:status": "npx tsx scripts/identity-history-status.ts",
     "snapshot:migration-status": "npx tsx scripts/snapshot-migration-status.ts",
     "identity:status": "npx tsx scripts/identity-status.ts",
     "affinity:status": "npx tsx scripts/affinity-cache-status.ts",

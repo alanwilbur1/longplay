@@ -11,6 +11,7 @@ import { decryptToken, encryptToken } from './token-crypto'
 import { recomputeListenerGraph } from './listener-graph'
 import { recomputeRoomAffinities } from '@/lib/recommendations/affinity-cache'
 import { recomputeListenerIdentity } from '@/lib/identity/recompute'
+import { maybeAppendIdentityHistory } from '@/lib/identity/history-recompute'
 import {
   classifySyncOutcome,
   computeNextSyncAfter,
@@ -662,6 +663,25 @@ export async function syncProviderForUser(
         duration_ms: id.duration_ms,
         algorithm_version: id.algorithm_version,
       })
+      // Phase 6A.9: append a history row when meaningful drift is
+      // detected, OR when ≥7 days have passed since the last row.
+      // Pure no-op on tiny-fluctuation recomputes — see
+      // lib/identity/drift.ts:shouldAppendHistory for the decision.
+      try {
+        const hist = await maybeAppendIdentityHistory(userId)
+        if (hist.appended) {
+          console.log('[sync/layer5-history] identity history appended', {
+            userId,
+            history_id: hist.history_id,
+            duration_ms: hist.duration_ms,
+          })
+        }
+      } catch (err) {
+        console.warn('[sync/layer5-history] history append failed', {
+          userId,
+          message: err instanceof Error ? err.message : String(err),
+        })
+      }
     } catch (err) {
       console.warn('[sync/layer5] listener identity recompute failed', {
         userId,

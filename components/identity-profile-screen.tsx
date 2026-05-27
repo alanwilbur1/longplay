@@ -16,6 +16,7 @@ import {
   relativeTimeAgo,
 } from '@/lib/identity/presentation'
 import { ARCHETYPE_CATALOG } from '@/lib/identity/archetypes'
+import { IdentityHistoryTimeline } from '@/components/identity-history-timeline'
 import type { TraitBand, TraitKey } from '@/lib/identity/traits'
 
 /**
@@ -212,6 +213,10 @@ function IdentityReadyState({
       )}
       {alternates.length > 0 && <Alternates alternates={alternates} />}
       <TraitGallery traits={traits} />
+      {/* Phase 6A.9: listening evolution timeline. Renders its own
+          "forming" state on single-entry timelines; returns null
+          entirely when the user has no history rows yet. */}
+      <IdentityHistoryTimeline />
       <FreshnessFooter
         computedAt={computed_at}
         algorithmVersion={algorithm_version}
