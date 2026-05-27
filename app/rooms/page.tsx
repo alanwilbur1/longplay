@@ -7,6 +7,7 @@ import { getMyMemberships } from '@/lib/actions/membership'
 import { getRecommendedRooms } from '@/lib/recommendations'
 import { EDITORIAL_ROOMS, GENRE_ROOMS, CREATOR_ROOMS } from '@/lib/rooms'
 import type { Room } from '@/lib/rooms'
+import { RecommendationFactorChips } from '@/components/recommendation-factor-chips'
 
 export const metadata = {
   title: 'Listening Rooms | LongPlay',
@@ -82,6 +83,10 @@ export default async function RoomsPage() {
                     {rec.room.description}
                   </p>
                   <p className="text-xs text-tobacco/80 italic">{rec.explanation}</p>
+                  {/* Phase 6A.8: factor chips below the explanation
+                      sentence. Comes from the same factor_breakdown
+                      that lives on room_affinity_scores. */}
+                  <RecommendationFactorChips factors={rec.factors} />
                 </Link>
               ))}
             </div>

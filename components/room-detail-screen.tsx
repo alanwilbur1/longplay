@@ -8,6 +8,7 @@ import { AlbumCover } from '@/components/album-cover'
 import { type Room, getRelatedRooms, getRoomSeasonalMood, getRoomBySlug } from '@/lib/rooms'
 import { joinRoom, leaveRoom } from '@/lib/actions/membership'
 import { useAuth } from '@/components/auth-provider'
+import { WhyThisRoom } from '@/components/why-this-room'
 
 const DEV_MODE = process.env.NODE_ENV === 'development'
 
@@ -132,6 +133,24 @@ export function RoomDetailScreen({ room, initialIsJoined = false }: RoomDetailSc
               <span className="w-1 h-1 rounded-full bg-muted-foreground/30" />
               <span>Curated by {room.curator.name}</span>
             </div>
+          </div>
+        </section>
+
+        {/* ============================================ */}
+        {/* WHY THIS ROOM — Phase 6A.8 */}
+        {/* ============================================ */}
+        {/* Renders the user's room_affinity_scores envelope. Returns */}
+        {/* null when there's no affinity for this listener (e.g. */}
+        {/* signed-out browsing, listener with no sync yet) so the */}
+        {/* section disappears cleanly rather than showing a fallback. */}
+        <section
+          className={cn(
+            'px-6 py-8 md:px-12 lg:px-24 border-t',
+            room.aesthetics.borderTint,
+          )}
+        >
+          <div className="max-w-3xl">
+            <WhyThisRoom roomSlug={room.slug} variant="section" />
           </div>
         </section>
 
