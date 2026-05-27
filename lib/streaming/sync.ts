@@ -7,6 +7,17 @@ import {
 } from '@/lib/enrichment'
 import type { EnrichmentRoundStats } from '@/lib/enrichment/types'
 import { getProvider, type SourceId } from './index'
+import { decryptToken, encryptToken } from './token-crypto'
+import { recomputeListenerGraph } from './listener-graph'
+import { recomputeRoomAffinities } from '@/lib/recommendations/affinity-cache'
+import { recomputeListenerIdentity } from '@/lib/identity/recompute'
+import { maybeAppendIdentityHistory } from '@/lib/identity/history-recompute'
+import {
+  classifySyncOutcome,
+  computeNextSyncAfter,
+  sanitizeErrorSummary,
+  type SyncRunStatus,
+} from './scheduler-logic'
 import type { SyncResult } from './types'
 
 /**
@@ -115,6 +126,13 @@ export interface SyncOutcome {
     }
     post_recompute_triggered: boolean
   } | null
+  /** Phase 6A.11 patch: captured message from recomputeListenerGraph
+   *  when it threw. Distinct from `error` because Layer 2 failure is
+   *  best-effort (sync's primary state stays durable). When set,
+   *  recordSyncRun surfaces it into listening_sync_runs.error_summary
+   *  so the operator can see which Postgres-level rejection knocked
+   *  out the listener_* tables without digging through Vercel logs. */
+  layer2_error: string | null
   error: { stage: string; message: string } | null
 }
 
@@ -150,26 +168,45 @@ function emptyOutcome(): SyncOutcome {
     enrichment_provider: null,
     enrichment_state: null,
     enrichment_debug: null,
+    layer2_error: null,
     error: null,
   }
 }
 
+export interface SyncOptions {
+  /** Where the sync was triggered from. Recorded on listening_sync_runs
+   *  for audit. Defaults to 'manual' for backward compatibility — callers
+   *  in the OAuth callback and the cron scheduler set this explicitly. */
+  trigger?: 'cron' | 'oauth' | 'manual'
+}
+
 /**
  * Sync one provider for one user. Idempotent — safe to retry.
+ *
+ * Phase 6A.2B: this function is now also called by the cron scheduler
+ * (lib/streaming/scheduler.ts). It persists:
+ *   - listening_connections.recently_played_cursor (incremental window
+ *     for the next call)
+ *   - listening_connections.consecutive_failures + next_sync_after
+ *     (exponential backoff for the scheduler)
+ *   - listening_sync_runs row per attempt (audit; safe error only)
  */
 export async function syncProviderForUser(
   userId: string,
   sourceId: SourceId,
+  options: SyncOptions = {},
 ): Promise<SyncOutcome> {
   const outcome = emptyOutcome()
   const admin = getSupabaseAdminClient()
+  const trigger: 'cron' | 'oauth' | 'manual' = options.trigger ?? 'manual'
+  const startedAt = new Date()
 
   // 1. Fetch the connection (admin client bypasses RLS so we can read
   // the encrypted token columns).
   const { data: conn, error: connError } = await admin
     .from('listening_connections')
     .select(
-      'id, user_id, source_id, status, scopes, access_token_encrypted, refresh_token_encrypted, token_expires_at, last_sync_at',
+      'id, user_id, source_id, status, scopes, access_token_encrypted, refresh_token_encrypted, token_expires_at, last_sync_at, recently_played_cursor, consecutive_failures',
     )
     .eq('user_id', userId)
     .eq('source_id', sourceId)
@@ -180,6 +217,18 @@ export async function syncProviderForUser(
       stage: 'load-connection',
       message: connError?.message ?? 'no connection row',
     }
+    // No connection row to update; still record the attempt so an
+    // audit can see "user X tried to sync but had no connection row".
+    await recordSyncRun({
+      userId,
+      sourceId,
+      trigger,
+      startedAt,
+      outcome,
+      cursorBefore: null,
+      cursorAfter: null,
+      consecutiveFailuresAfter: null,
+    })
     return outcome
   }
   const connectionRow = conn as unknown as {
@@ -190,55 +239,110 @@ export async function syncProviderForUser(
     refresh_token_encrypted: string | null
     token_expires_at: string | null
     last_sync_at: string | null
+    recently_played_cursor: string | null
+    consecutive_failures: number | null
   }
+  const cursorBefore = connectionRow.recently_played_cursor
+  const prevFailures = connectionRow.consecutive_failures ?? 0
 
   if (connectionRow.status !== 'active') {
     outcome.error = {
       stage: 'connection-status',
       message: `status=${connectionRow.status} — not syncing`,
     }
+    await recordSyncRun({
+      userId,
+      sourceId,
+      trigger,
+      startedAt,
+      outcome,
+      cursorBefore,
+      cursorAfter: cursorBefore,
+      consecutiveFailuresAfter: prevFailures,
+      connectionId: connectionRow.id,
+    })
     return outcome
   }
 
   // 2. Refresh tokens if expired or near-expiry.
+  //
+  // Token columns are AES-256-GCM encrypted on disk (lib/streaming/
+  // token-crypto.ts). decryptToken() transparently handles three
+  // cases:
+  //   1. null / empty       → returns null
+  //   2. v1 envelope        → returns decrypted plaintext (auth-tag
+  //                           verified; throws on tamper)
+  //   3. legacy plaintext   → returns the value as-is. The next
+  //      refresh below will write back encrypted, so the column
+  //      eventually becomes truthful. The backfill script
+  //      (scripts/encrypt-legacy-tokens.ts) is the proactive path.
   const provider = getProvider(sourceId)
-  let accessToken = connectionRow.access_token_encrypted ?? ''
+  let accessToken: string
+  let refreshTokenPlain: string | null
+  try {
+    accessToken = decryptToken(connectionRow.access_token_encrypted) ?? ''
+    refreshTokenPlain = decryptToken(connectionRow.refresh_token_encrypted)
+  } catch (err) {
+    // Tamper / malformed envelope / missing key. Surface as an error
+    // rather than running with an empty access token (which would
+    // produce confusing 401s downstream).
+    outcome.error = {
+      stage: 'token-decrypt',
+      message: err instanceof Error ? err.message : String(err),
+    }
+    return outcome
+  }
   const expiresAtMs = connectionRow.token_expires_at
     ? new Date(connectionRow.token_expires_at).getTime()
     : 0
   const nearExpiry = !expiresAtMs || expiresAtMs - Date.now() < REFRESH_BUFFER_MS
 
   if (nearExpiry) {
-    if (!connectionRow.refresh_token_encrypted) {
+    if (!refreshTokenPlain) {
       outcome.error = {
         stage: 'refresh',
         message: 'no refresh_token; reauth required',
       }
+      const failuresAfter = prevFailures + 1
       await admin
         .from('listening_connections')
         .update({
           status: 'reauth_required',
           last_error: outcome.error.message,
+          consecutive_failures: failuresAfter,
+          next_sync_after: computeNextSyncAfter(failuresAfter).toISOString(),
         })
         .eq('id', connectionRow.id)
+      await recordSyncRun({
+        userId,
+        sourceId,
+        trigger,
+        startedAt,
+        outcome,
+        cursorBefore,
+        cursorAfter: cursorBefore,
+        consecutiveFailuresAfter: failuresAfter,
+        connectionId: connectionRow.id,
+      })
       return outcome
     }
 
     try {
       const refreshed = await provider.refreshTokens({
-        refreshToken: connectionRow.refresh_token_encrypted,
+        refreshToken: refreshTokenPlain,
       })
       accessToken = refreshed.access_token
       outcome.refreshed = true
 
-      // Persist new tokens. Spotify often omits a new refresh_token —
-      // keep the old one in that case.
+      // Persist new tokens — encrypted at the app boundary. Spotify
+      // often omits a new refresh_token; keep the existing one in
+      // that case (it stays encrypted on disk; we don't touch it).
       const tokenUpdate: Record<string, unknown> = {
-        access_token_encrypted: refreshed.access_token,
+        access_token_encrypted: encryptToken(refreshed.access_token),
         token_expires_at: refreshed.expires_at,
       }
       if (refreshed.refresh_token) {
-        tokenUpdate.refresh_token_encrypted = refreshed.refresh_token
+        tokenUpdate.refresh_token_encrypted = encryptToken(refreshed.refresh_token)
       }
       if (refreshed.scopes.length > 0) {
         tokenUpdate.scopes = refreshed.scopes
@@ -259,30 +363,65 @@ export async function syncProviderForUser(
         stage: 'refresh',
         message: err instanceof Error ? err.message : String(err),
       }
+      const failuresAfter = prevFailures + 1
       await admin
         .from('listening_connections')
         .update({
           status: 'reauth_required',
           last_error: outcome.error.message,
+          consecutive_failures: failuresAfter,
+          next_sync_after: computeNextSyncAfter(failuresAfter).toISOString(),
         })
         .eq('id', connectionRow.id)
+      await recordSyncRun({
+        userId,
+        sourceId,
+        trigger,
+        startedAt,
+        outcome,
+        cursorBefore,
+        cursorAfter: cursorBefore,
+        consecutiveFailuresAfter: failuresAfter,
+        connectionId: connectionRow.id,
+      })
       return outcome
     }
   }
 
-  // 3. Call provider sync.
+  // 3. Call provider sync. Pass the recently-played cursor so the
+  // provider only fetches plays we haven't seen.
   let result: SyncResult
   try {
-    result = await provider.sync({ accessToken })
+    result = await provider.sync({
+      accessToken,
+      recentlyPlayedAfter: cursorBefore,
+    })
   } catch (err) {
     outcome.error = {
       stage: 'sync',
       message: err instanceof Error ? err.message : String(err),
     }
+    const failuresAfter = prevFailures + 1
     await admin
       .from('listening_connections')
-      .update({ status: 'error', last_error: outcome.error.message })
+      .update({
+        status: 'error',
+        last_error: outcome.error.message,
+        consecutive_failures: failuresAfter,
+        next_sync_after: computeNextSyncAfter(failuresAfter).toISOString(),
+      })
       .eq('id', connectionRow.id)
+    await recordSyncRun({
+      userId,
+      sourceId,
+      trigger,
+      startedAt,
+      outcome,
+      cursorBefore,
+      cursorAfter: cursorBefore,
+      consecutiveFailuresAfter: failuresAfter,
+      connectionId: connectionRow.id,
+    })
     return outcome
   }
 
@@ -454,27 +593,111 @@ export async function syncProviderForUser(
   }
 
   // 6. Update connection last_sync_at + clear last_error (if anything
-  // upstream succeeded).
+  // upstream succeeded), advance the recently_played_cursor, and
+  // either clear consecutive_failures (success) or back off via
+  // computeNextSyncAfter (failure).
   const succeeded = outcome.error === null
   const now = new Date().toISOString()
+  const cursorAfter = result.meta?.recently_played_cursor ?? cursorBefore
+  const failuresAfter = succeeded ? 0 : prevFailures + 1
+  const connectionUpdate: Record<string, unknown> = {
+    last_sync_at: now,
+    status: succeeded ? 'active' : 'error',
+    last_error: succeeded ? null : outcome.error?.message,
+    consecutive_failures: failuresAfter,
+    next_sync_after: computeNextSyncAfter(failuresAfter).toISOString(),
+  }
+  // Only persist a new cursor when the provider actually reported one
+  // — otherwise the existing value stays. computeNextCursor never
+  // moves backward, so this is safe.
+  if (cursorAfter && cursorAfter !== cursorBefore) {
+    connectionUpdate.recently_played_cursor = cursorAfter
+  }
   await admin
     .from('listening_connections')
-    .update({
-      last_sync_at: now,
-      status: succeeded ? 'active' : 'error',
-      last_error: succeeded ? null : outcome.error?.message,
-    })
+    .update(connectionUpdate)
     .eq('id', connectionRow.id)
 
   outcome.last_sync_at = succeeded ? now : connectionRow.last_sync_at
   outcome.ok = succeeded
 
-  // 7. Re-compute the listening profile snapshot. Best-effort — a
-  // snapshot failure does not fail the sync itself.
+  // 7. Re-compute Layer 2 → Layer 3.
+  //
+  // Phase 6A.4: snapshot reads from Layer 2 now, so Layer 2 MUST be
+  // refreshed first. Both are best-effort — a recompute failure does
+  // not fail the sync itself (the raw provider state has already
+  // been persisted to Layer 1).
+  try {
+    await recomputeListenerGraph(userId)
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err)
+    outcome.layer2_error = message
+    console.warn('[sync/layer2] pre-snapshot listener graph recompute failed', {
+      userId,
+      message,
+    })
+  }
   try {
     const snap = await recomputeListeningProfileSnapshot(userId)
     outcome.snapshot_updated = true
     outcome.top_genres_count = snap.top_genres_count
+    // Phase 6A.5: Layer 4 room affinity cache. Runs only when the
+    // snapshot succeeded — a stale snapshot would produce stale
+    // cached scores. Best-effort wrapped in its own try below.
+    try {
+      const aff = await recomputeRoomAffinities(userId)
+      console.log('[sync/layer4] room affinity cache regenerated', {
+        userId,
+        rooms_scored: aff.rooms_scored,
+        rows_written: aff.rows_written,
+        duration_ms: aff.duration_ms,
+        score_version: aff.score_version,
+      })
+    } catch (err) {
+      console.warn('[sync/layer4] room affinity recompute failed', {
+        userId,
+        message: err instanceof Error ? err.message : String(err),
+      })
+    }
+    // Phase 6A.6: Layer 5 listener identity (traits + archetypes).
+    // Reads Layer 1-4 + listening_events. Same best-effort posture
+    // — identity is interpretive and a failure here is non-blocking.
+    try {
+      const id = await recomputeListenerIdentity(userId)
+      console.log('[sync/layer5] listener identity recomputed', {
+        userId,
+        traits_written: id.traits_written,
+        archetypes_written: id.archetypes_written,
+        primary_archetype_key: id.primary_archetype_key,
+        primary_confidence: id.primary_confidence,
+        duration_ms: id.duration_ms,
+        algorithm_version: id.algorithm_version,
+      })
+      // Phase 6A.9: append a history row when meaningful drift is
+      // detected, OR when ≥7 days have passed since the last row.
+      // Pure no-op on tiny-fluctuation recomputes — see
+      // lib/identity/drift.ts:shouldAppendHistory for the decision.
+      try {
+        const hist = await maybeAppendIdentityHistory(userId)
+        if (hist.appended) {
+          console.log('[sync/layer5-history] identity history appended', {
+            userId,
+            history_id: hist.history_id,
+            duration_ms: hist.duration_ms,
+          })
+        }
+      } catch (err) {
+        console.warn('[sync/layer5-history] history append failed', {
+          userId,
+          message: err instanceof Error ? err.message : String(err),
+        })
+      }
+    } catch (err) {
+      console.warn('[sync/layer5] listener identity recompute failed', {
+        userId,
+        message: err instanceof Error ? err.message : String(err),
+      })
+    }
   } catch (err) {
     if (process.env.NODE_ENV !== 'production') {
       console.warn('[sync] snapshot recompute failed', {
@@ -594,11 +817,25 @@ export async function syncProviderForUser(
       last_error: stats.last_error,
     })
 
-    // 9. If enrichment actually landed genres, recompute the snapshot
-    // again so the new canonical_genres get folded into top_genres
-    // and affinity_tags. Skip when nothing changed.
+    // 9. If enrichment actually landed genres, regenerate Layer 2
+    // (so listener_artists.canonical_genres picks up the new
+    // enrichment rows) and then recompute the snapshot from the
+    // fresh Layer 2 state. Skip when nothing changed.
     if (stats.succeeded > 0) {
       debug.post_recompute_triggered = true
+      try {
+        await recomputeListenerGraph(userId)
+        // A successful post-enrichment recompute clears any pre-enrichment
+        // failure recorded in outcome.layer2_error — the graph is now fresh.
+        outcome.layer2_error = null
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err)
+        outcome.layer2_error = message
+        console.warn('[sync/layer2] post-enrichment listener graph recompute failed', {
+          userId,
+          message,
+        })
+      }
       try {
         const snap = await recomputeListeningProfileSnapshot(userId)
         outcome.top_genres_count = snap.top_genres_count
@@ -606,6 +843,42 @@ export async function syncProviderForUser(
           userId,
           top_genres_count: snap.top_genres_count,
         })
+        // Phase 6A.5: Layer 4 re-regen so cached scores reflect the
+        // post-enrichment snapshot. Same best-effort pattern as the
+        // pre-enrichment Layer 4 recompute above.
+        try {
+          const aff = await recomputeRoomAffinities(userId)
+          console.log('[sync/layer4] post-enrichment room affinity cache regenerated', {
+            userId,
+            rooms_scored: aff.rooms_scored,
+            rows_written: aff.rows_written,
+            duration_ms: aff.duration_ms,
+          })
+        } catch (err) {
+          console.warn('[sync/layer4] post-enrichment room affinity recompute failed', {
+            userId,
+            message: err instanceof Error ? err.message : String(err),
+          })
+        }
+        // Phase 6A.6: identity also depends on Layer 2 canonical
+        // genres, which the post-enrichment regen just refreshed —
+        // re-derive so traits like genre_breadth / consistency
+        // reflect the new genre coverage.
+        try {
+          const id = await recomputeListenerIdentity(userId)
+          console.log('[sync/layer5] post-enrichment listener identity recomputed', {
+            userId,
+            traits_written: id.traits_written,
+            archetypes_written: id.archetypes_written,
+            primary_archetype_key: id.primary_archetype_key,
+            duration_ms: id.duration_ms,
+          })
+        } catch (err) {
+          console.warn('[sync/layer5] post-enrichment listener identity recompute failed', {
+            userId,
+            message: err instanceof Error ? err.message : String(err),
+          })
+        }
       } catch (err) {
         console.warn('[sync/enrichment] post-enrichment snapshot recompute failed', {
           message: err instanceof Error ? err.message : String(err),
@@ -626,7 +899,98 @@ export async function syncProviderForUser(
     }
   }
 
+  // Phase 6A.4: Layer 2 recomputes now happen BEFORE each snapshot
+  // recompute above (steps 7 and 9), so the snapshot reads from
+  // fresh Layer 2 state. The standalone end-of-pipeline Layer 2
+  // recompute that Phase 6A.3 added here has been removed —
+  // redundant under the new ordering.
+
+  // Phase 6A.2B: durable audit. Best-effort — failures here don't
+  // surface to the caller because the sync itself has already
+  // completed and persisted its data.
+  await recordSyncRun({
+    userId,
+    sourceId,
+    trigger,
+    startedAt,
+    outcome,
+    cursorBefore,
+    cursorAfter,
+    consecutiveFailuresAfter: failuresAfter,
+    connectionId: connectionRow.id,
+  })
+
   return outcome
+}
+
+// ── Run-log helper (Phase 6A.2B) ───────────────────────────────────
+//
+// Inserts one row into listening_sync_runs per sync attempt, even on
+// early failure (load-connection, refresh, sync-exception). Wrapped
+// in try/catch so a DB outage on the audit table never poisons the
+// sync's own state. Never logs tokens.
+
+interface RecordSyncRunArgs {
+  userId: string
+  sourceId: SourceId
+  trigger: 'cron' | 'oauth' | 'manual'
+  startedAt: Date
+  outcome: SyncOutcome
+  cursorBefore: string | null
+  cursorAfter: string | null
+  consecutiveFailuresAfter: number | null
+  connectionId?: string
+}
+
+async function recordSyncRun(args: RecordSyncRunArgs): Promise<void> {
+  const admin = getSupabaseAdminClient()
+  const finishedAt = new Date()
+  const durationMs = finishedAt.getTime() - args.startedAt.getTime()
+  const status: SyncRunStatus = classifySyncOutcome({
+    ok: args.outcome.ok,
+    error: args.outcome.error,
+    hydration_error: args.outcome.hydration_error,
+    enrichment_state: args.outcome.enrichment_state,
+    refreshed: args.outcome.refreshed,
+  })
+  // Surface layer2 failures into the audit log when the sync itself
+  // reported no top-level error — otherwise empty listener_* tables
+  // are indistinguishable from "sync ran fine, just no data".
+  const summarySource =
+    args.outcome.error?.message ??
+    (args.outcome.layer2_error ? `[layer2] ${args.outcome.layer2_error}` : null)
+  const errorSummary = sanitizeErrorSummary(summarySource)
+  // supabase-js returns { error } for Postgres-level rejections; it
+  // does NOT throw. The previous try/catch only caught runtime errors
+  // and silently discarded constraint/RLS/missing-column failures —
+  // that's why listening_sync_runs was empty even with sync running.
+  const { error: runError } = await admin.from('listening_sync_runs').insert({
+    user_id: args.userId,
+    source_id: args.sourceId,
+    trigger: args.trigger,
+    status,
+    started_at: args.startedAt.toISOString(),
+    finished_at: finishedAt.toISOString(),
+    duration_ms: durationMs,
+    counts: args.outcome.counts,
+    refreshed_token: args.outcome.refreshed,
+    recently_played_cursor_before: args.cursorBefore,
+    recently_played_cursor_after:
+      args.cursorAfter && args.cursorAfter !== args.cursorBefore
+        ? args.cursorAfter
+        : null,
+    error_summary: errorSummary,
+  })
+  if (runError) {
+    console.warn('[sync] listening_sync_runs insert rejected', {
+      user_id: args.userId,
+      source_id: args.sourceId,
+      code: runError.code,
+      details: runError.details,
+      hint: runError.hint,
+      message: runError.message,
+    })
+  }
 }
 
 export interface SnapshotRecomputeResult {
@@ -649,106 +1013,141 @@ export interface SnapshotRecomputeResult {
  *    handful of non-genre signals (saved_album_count, recent_density,
  *    genre diversity). No fake values.
  */
+/**
+ * Recompute the per-user listening_profile_snapshot.
+ *
+ * Phase 6A.4 cutover: this function now reads ENTIRELY from Layer 2
+ * (listener_genres, listener_artists, listener_tracks, listener_albums)
+ * — the union of Spotify genres + Last.fm enrichment genres lives in
+ * listener_artists.canonical_genres, and the weighted top-genres
+ * tally lives in listener_genres. The snapshot is a thin projection
+ * of Layer 2 plus a single Layer 1 read (listening_events) for the
+ * total recent-event count.
+ *
+ * Caller invariant: Layer 2 MUST be recomputed before this function
+ * is called. The sync orchestrator does this:
+ *
+ *     await recomputeListenerGraph(userId)           // Layer 2
+ *     await recomputeListeningProfileSnapshot(userId) // Layer 3
+ *
+ * If called when listener_* tables are stale or empty, this will
+ * produce a stale or empty snapshot — same as the previous code
+ * produced when favorite_artists was empty. Behavior is graceful;
+ * no crash.
+ *
+ * Snapshot write contract is unchanged: top_genres, top_artist_ids,
+ * top_track_ids, saved_album_count, recent_event_count, affinity_tags,
+ * recent_density, signals — plus algorithm_version='v2' (new in 6A.4).
+ *
+ * Parity with the Phase 4.5 implementation:
+ *   - top_genres: identical algorithm (1/log2(rank+2) weighting).
+ *     Tie-breaking is now deterministic (Layer 2 ranks genres by
+ *     weighted_score DESC, artist_count DESC, alphabetical). The
+ *     legacy code relied on V8 sort stability; in practice
+ *     real-world ties are rare so visible drift is negligible.
+ *   - top_artist_ids: identical (favorite_artists ranked → top 20).
+ *   - top_track_ids: identical.
+ *   - saved_album_count: identical (COUNT of saved albums).
+ *   - recent_event_count: identical (Layer 1 listening_events).
+ *   - affinity_tags: identical computeAffinityTags() call.
+ */
 export async function recomputeListeningProfileSnapshot(
   userId: string,
 ): Promise<SnapshotRecomputeResult> {
   const admin = getSupabaseAdminClient()
 
-  // Pull a generous window of artists — ranked first, then unranked
-  // co-artists. Both contribute to genre signal, but ranked artists
-  // weigh more heavily.
-  const { data: artists } = await admin
-    .from('favorite_artists')
-    .select('external_artist_id, genres, rank')
-    .eq('user_id', userId)
-    .order('rank', { ascending: true, nullsFirst: false })
-    .limit(200)
-  type FA = { external_artist_id: string; genres: string[] | null; rank: number | null }
-  const aRows = (artists ?? []) as unknown as FA[]
+  // ── Layer 2 reads ────────────────────────────────────────────────
+  // Five parallel queries. listener_genres provides the pre-tallied
+  // weighted ranking — the union loop that used to live here is gone.
+  const [
+    topGenresRes,
+    topArtistsRes,
+    artistsObservedCountRes,
+    topTracksRes,
+    savedAlbumsCountRes,
+    genreDiversityCountRes,
+    recentEventsCountRes,
+  ] = await Promise.all([
+    admin
+      .from('listener_genres')
+      .select('genre, weighted_score, rank')
+      .eq('user_id', userId)
+      .not('rank', 'is', null)
+      .order('rank', { ascending: true })
+      .limit(15),
+    admin
+      .from('listener_artists')
+      .select('external_artist_id')
+      .eq('user_id', userId)
+      .not('top_rank', 'is', null)
+      .order('top_rank', { ascending: true })
+      .limit(20),
+    admin
+      .from('listener_artists')
+      .select('user_id', { count: 'exact', head: true })
+      .eq('user_id', userId)
+      .limit(200),
+    admin
+      .from('listener_tracks')
+      .select('external_track_id')
+      .eq('user_id', userId)
+      .not('top_rank', 'is', null)
+      .order('top_rank', { ascending: true })
+      .limit(20),
+    admin
+      .from('listener_albums')
+      .select('user_id', { count: 'exact', head: true })
+      .eq('user_id', userId),
+    admin
+      .from('listener_genres')
+      .select('user_id', { count: 'exact', head: true })
+      .eq('user_id', userId),
+    // recent_event_count comes from Layer 1 — listener_artists' per-
+    // artist recent_play_count only covers artists in the user's
+    // favorites graph, while this signal wants ALL plays in window.
+    admin
+      .from('listening_events')
+      .select('id', { count: 'exact', head: true })
+      .eq('user_id', userId)
+      .gte(
+        'played_at',
+        new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString(),
+      ),
+  ])
 
-  // Phase 4.5: pull successfully-enriched canonical genres for the
-  // same user. Indexed by external_artist_id so we can union with the
-  // Spotify-side genres without re-querying per artist. We DO NOT
-  // replace Spotify genres — both sources contribute.
-  const { data: enrichmentRows } = await admin
-    .from('artist_genre_enrichments')
-    .select('external_artist_id, canonical_genres')
-    .eq('user_id', userId)
-    .eq('status', 'succeeded')
-  type AGE = { external_artist_id: string; canonical_genres: string[] | null }
-  const enrichmentByArtist = new Map<string, string[]>()
-  for (const row of (enrichmentRows ?? []) as unknown as AGE[]) {
-    enrichmentByArtist.set(
-      row.external_artist_id,
-      Array.isArray(row.canonical_genres) ? row.canonical_genres : [],
-    )
-  }
+  type TopGenreRow = { genre: string; weighted_score: number; rank: number }
+  type ExtArtistRow = { external_artist_id: string }
+  type ExtTrackRow = { external_track_id: string }
 
-  // Weighted genre tally. Earlier ranks count more (Lanczos-ish
-  // 1/log2(rank+2) curve). Unranked artists contribute a flat 0.3.
-  // Per artist, Spotify genres ∪ enrichment canonical_genres are
-  // counted together (union, not sum — one artist contributes one
-  // weight per distinct genre regardless of source).
-  const genreScore = new Map<string, number>()
-  for (const a of aRows) {
-    const weight = a.rank ? 1 / Math.log2(a.rank + 2) : 0.3
-    const combined = new Set<string>()
-    for (const g of normalizeGenres(a.genres ?? [])) combined.add(g)
-    for (const g of normalizeGenres(enrichmentByArtist.get(a.external_artist_id) ?? [])) {
-      combined.add(g)
-    }
-    for (const g of combined) {
-      genreScore.set(g, (genreScore.get(g) ?? 0) + weight)
-    }
-  }
-  const top_genres = Array.from(genreScore.entries())
-    .sort((x, y) => y[1] - x[1])
-    .slice(0, 15)
-    .map(([g]) => g)
+  const topGenreRows = (topGenresRes.data ?? []) as unknown as TopGenreRow[]
+  const top_genres = topGenreRows.map((r) => r.genre)
+  const top_artist_ids = ((topArtistsRes.data ?? []) as unknown as ExtArtistRow[]).map(
+    (a) => a.external_artist_id,
+  )
+  const top_track_ids = ((topTracksRes.data ?? []) as unknown as ExtTrackRow[]).map(
+    (t) => t.external_track_id,
+  )
 
-  const top_artist_ids = aRows
-    .filter((a) => a.rank !== null)
-    .slice(0, 20)
-    .map((a) => a.external_artist_id)
+  const artists_observed = Math.min(artistsObservedCountRes.count ?? 0, 200)
+  const albumsCount = savedAlbumsCountRes.count ?? 0
+  const genreDiversity = genreDiversityCountRes.count ?? 0
+  const eventCount = recentEventsCountRes.count ?? 0
 
-  const { data: tracks } = await admin
-    .from('favorite_tracks')
-    .select('external_track_id, rank')
-    .eq('user_id', userId)
-    .order('rank', { ascending: true, nullsFirst: false })
-    .limit(20)
-  const top_track_ids = (
-    (tracks ?? []) as unknown as Array<{ external_track_id: string }>
-  ).map((t) => t.external_track_id)
-
-  const { count: saved_album_count } = await admin
-    .from('favorite_albums')
-    .select('id', { count: 'exact', head: true })
-    .eq('user_id', userId)
-
-  const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString()
-  const { count: recent_event_count } = await admin
-    .from('listening_events')
-    .select('id', { count: 'exact', head: true })
-    .eq('user_id', userId)
-    .gte('played_at', thirtyDaysAgo)
-  const eventCount = recent_event_count ?? 0
   const recent_density: 'low' | 'medium' | 'high' | null =
     eventCount === 0 ? null : eventCount < 25 ? 'low' : eventCount < 100 ? 'medium' : 'high'
 
-  const albumsCount = saved_album_count ?? 0
   const affinity_tags = computeAffinityTags({
     top_genres,
     saved_album_count: albumsCount,
     recent_density,
-    artist_diversity: aRows.length,
-    genre_diversity: genreScore.size,
+    artist_diversity: artists_observed,
+    genre_diversity: genreDiversity,
   })
 
   const signals = {
-    artists_observed: aRows.length,
-    genre_diversity: genreScore.size,
-    top_genre_weight: top_genres[0] ? genreScore.get(top_genres[0]) ?? 0 : 0,
+    artists_observed,
+    genre_diversity: genreDiversity,
+    top_genre_weight: topGenreRows[0]?.weighted_score ?? 0,
   }
 
   const { error } = await admin.from('listening_profile_snapshots').upsert(
@@ -763,6 +1162,11 @@ export async function recomputeListeningProfileSnapshot(
       recent_density,
       signals,
       computed_at: new Date().toISOString(),
+      // Phase 6A.4 marker — distinguishes Layer-2-derived snapshots
+      // from the previous Layer-1-direct path. Future versioning
+      // bumps (Layer 4 affinity cache, archetype attachment) can use
+      // the same column without another migration.
+      algorithm_version: 'v2',
     },
     { onConflict: 'user_id' },
   )
@@ -776,7 +1180,7 @@ export async function recomputeListeningProfileSnapshot(
   return {
     top_genres_count: top_genres.length,
     affinity_tags_count: affinity_tags.length,
-    artists_observed: aRows.length,
+    artists_observed,
   }
 }
 

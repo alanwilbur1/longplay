@@ -5,25 +5,35 @@
  * server action (lib/recommendations/index.ts) and the auth-gated
  * debug route (app/api/debug/recommendations/route.ts).
  *
+ * Phase 6A.5: serving path reads from the Layer 4 room_affinity_scores
+ * cache when available, falls back to live scoring when the cache is
+ * cold or stale. The diagnostic shape is unchanged — `cache_source`
+ * marks which path produced this response.
+ *
+ * Input assembly is shared with lib/recommendations/affinity-cache.ts
+ * via lib/recommendations/inputs.ts so both paths agree on the
+ * RecommendationInput shape exactly.
+ *
  * NOT a 'use server' file. The server action wraps this and strips
  * to the public RecommendedRoom[] shape; the debug route returns
- * the full RecommendationPipelineDiagnostic so we can inspect every
- * stage of scoring + diversification.
- *
- * Schema reads only — no writes, no migrations required. Joins
- * rooms → cycles → albums in a second query so each room can carry
- * its current cycle's featured artist for the artist-match factor.
+ * the full RecommendationPipelineDiagnostic.
  */
 
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { explainFactors } from './explainer'
 import {
-  rankRooms,
+  rankByMMR,
   scenarioTagsFromAnswers,
   listenerEnergyFromAnswers,
   scoreAllCandidates,
   SCORE_VERSION,
+  type ScoredCandidate,
 } from './scorer'
+import { assembleRecommendationInputs } from './inputs'
+import {
+  joinCachedScoresToRooms,
+  readCachedRoomAffinities,
+} from './affinity-cache'
 import type {
   ExplanationFactor,
   RoomForRecommendation,
@@ -32,6 +42,13 @@ import type {
 export interface RecommendationPipelineDiagnostic {
   score_version: typeof SCORE_VERSION
   user_id: string
+  /** Phase 6A.5: which path served this response.
+   *  - 'layer4'    Layer 4 cache was hot; scores pulled from
+   *                room_affinity_scores. MMR + filtering applied
+   *                at request time.
+   *  - 'live'      Cache was cold/stale; full live scoring ran.
+   *                Matches pre-6A.5 behavior exactly. */
+  cache_source: 'layer4' | 'live'
   inputs: {
     calibration_answers: Record<string, string[]>
     canonical_genres: string[]
@@ -48,8 +65,7 @@ export interface RecommendationPipelineDiagnostic {
   /** Rooms after joined-room exclusion + public-visibility filter. */
   candidates_after_filter: number
   /** Every candidate's pre-diversity score + factors (for QA). Sorted
-   *  by score descending. Limited to top 25 in the response payload
-   *  to keep things readable; full count available via candidates_after_filter. */
+   *  by score descending. Limited to top 25 in the response payload. */
   scored: Array<{
     room: { id: string; slug: string; name: string }
     score: number
@@ -79,244 +95,108 @@ export interface PipelineRanked {
 /**
  * Run the v2.1 pipeline for one user, end-to-end.
  *
- * Fetches:
- *   1. user_profiles.preferences.calibrationAnswers
- *   2. listening_profile_snapshots.{top_genres, affinity_tags,
- *      top_artist_ids, recent_density}     ← canonical genres
- *   3. artist_genre_enrichments.canonical_genres (status=succeeded)
- *      ← enriched-only genres (anything in canonical is excluded)
- *   4. favorite_artists.{name, rank}        ← top artist names
- *   5. club_memberships                     ← joined room slugs
- *   6. rooms (visibility=public, weight desc, limit 50)
- *   7. cycles + albums                      ← currentAlbumArtist per room
+ * Reads (Phase 6A.5):
+ *   1. RecommendationInput (calibration, snapshot, long-tail genres,
+ *      top artists, joined rooms, candidates+cycles) via the shared
+ *      lib/recommendations/inputs.ts assembler.
+ *   2. room_affinity_scores (Layer 4 cache) — if version + snapshot
+ *      match, scores come from the cache and MMR runs over cached
+ *      values. Otherwise the live scoreAllCandidates path runs.
  *
- * Then scores every candidate and applies MMR diversification.
+ * Live-scoring fallback fires when:
+ *   - User has no cached rows (new user, never synced)
+ *   - Any cached row has a different score_version (formula change)
+ *   - Any cached row's source_snapshot_computed_at differs from the
+ *     current snapshot.computed_at (snapshot moved after cache write)
+ *   - One or more current candidates have no cached row (room added
+ *     since the cache was built; falling back is safer than serving
+ *     stale top-N missing that room)
+ *
+ * Score outputs and diagnostic shape are identical between the two
+ * paths — cache_source is the only field that distinguishes them.
  */
 export async function runRecommendationPipeline(
   supabase: SupabaseClient,
   userId: string,
   limit: number,
 ): Promise<RecommendationPipelineDiagnostic> {
-  // ── 1. Calibration answers ──────────────────────────────────────────
-  const { data: profile } = await supabase
-    .from('user_profiles')
-    .select('preferences')
-    .eq('id', userId)
-    .maybeSingle()
-  const preferences = (profile?.preferences ?? {}) as {
-    calibrationAnswers?: Record<string, string[]>
-  }
-  const calibrationAnswers = preferences.calibrationAnswers ?? {}
-
-  // ── 2. Snapshot (canonical genres + affinity tags + density) ───────
-  const { data: snapshot } = await supabase
-    .from('listening_profile_snapshots')
-    .select('top_genres, affinity_tags, top_artist_ids, recent_density')
-    .eq('user_id', userId)
-    .maybeSingle()
-
-  type Snapshot = {
-    top_genres?: string[] | null
-    affinity_tags?: string[] | null
-    top_artist_ids?: string[] | null
-    recent_density?: 'low' | 'medium' | 'high' | null
-  }
-  const snap = (snapshot ?? null) as Snapshot | null
-
-  let canonicalGenres = Array.isArray(snap?.top_genres) ? snap!.top_genres! : []
-  const affinityTags = Array.isArray(snap?.affinity_tags) ? snap!.affinity_tags! : []
-  const recentDensity = snap?.recent_density ?? null
-
-  // ── 3. Enriched genres (Last.fm) — anything in canonical is removed
-  //      so a genre present in both contributes only at canonical
-  //      strength. The scorer also enforces this, but doing it at the
-  //      input layer keeps the debug surface honest. ──────────────────
-  const { data: enrichmentRows } = await supabase
-    .from('artist_genre_enrichments')
-    .select('canonical_genres')
-    .eq('user_id', userId)
-    .eq('status', 'succeeded')
-    .limit(200)
-  const enrichedSet = new Set<string>()
-  for (const row of (enrichmentRows ?? []) as Array<{
-    canonical_genres: string[] | null
-  }>) {
-    for (const g of row.canonical_genres ?? []) if (g) enrichedSet.add(g)
-  }
-  // Fallback: when no snapshot exists yet, use favorite_artists.genres
-  // as canonical and treat enrichments as additive.
-  if (canonicalGenres.length === 0) {
-    const { data: favArtists } = await supabase
-      .from('favorite_artists')
-      .select('genres')
-      .eq('user_id', userId)
-      .limit(50)
-    const seen = new Set<string>()
-    for (const row of (favArtists ?? []) as Array<{ genres: string[] | null }>) {
-      for (const g of row.genres ?? []) if (g) seen.add(g)
-    }
-    canonicalGenres = Array.from(seen)
-  }
-  const canonicalLower = new Set(canonicalGenres.map((g) => g.toLowerCase()))
-  const enrichedGenres = Array.from(enrichedSet).filter(
-    (g) => !canonicalLower.has(g.toLowerCase()),
+  // Step 1: shared input assembly. excludeJoinedRooms=true so the
+  // scorer / MMR get the live joined-room filter regardless of which
+  // path serves.
+  const { input, sourceSnapshotComputedAt } = await assembleRecommendationInputs(
+    supabase,
+    userId,
+    { excludeJoinedRooms: true },
   )
 
-  // ── 4. Top artist names ────────────────────────────────────────────
-  const { data: topArtists } = await supabase
-    .from('favorite_artists')
-    .select('name, rank')
-    .eq('user_id', userId)
-    .order('rank', { ascending: true, nullsFirst: false })
-    .limit(20)
-  const topArtistNames = (
-    (topArtists ?? []) as Array<{ name: string }>
+  const scenarioTags = scenarioTagsFromAnswers(input.calibrationAnswers)
+  const listenerEnergy = listenerEnergyFromAnswers(input.calibrationAnswers)
+
+  // Step 2: Layer 4 cache read. Returns null when the cache is cold
+  // or stale. See affinity-cache.ts:readCachedRoomAffinities for the
+  // staleness rules.
+  const cached = await readCachedRoomAffinities(
+    supabase,
+    userId,
+    sourceSnapshotComputedAt,
   )
-    .map((a) => a.name)
-    .filter((n): n is string => !!n)
 
-  // ── 5. Joined rooms (exclude) ──────────────────────────────────────
-  const { data: memberships } = await supabase
-    .from('club_memberships')
-    .select('rooms(slug)')
-    .eq('user_id', userId)
-    .eq('status', 'active')
-  const joinedRoomSlugs = ((memberships ?? []) as unknown as Array<{
-    rooms?: { slug?: string } | { slug?: string }[]
-  }>)
-    .map((m) => {
-      const r = m.rooms
-      const slugFromObj = Array.isArray(r) ? r[0]?.slug : r?.slug
-      return slugFromObj ?? null
-    })
-    .filter((s): s is string => !!s)
+  // Visibility filter is shared by both paths (cache and live).
+  // joinedRoomSlugs / visibility filtering happens here at request
+  // time even on the cache-hot path, because the cache scores ALL
+  // rooms (membership-agnostic) per Phase 6A.5 design.
+  const joinedSet = new Set(input.joinedRoomSlugs)
+  const filteredCandidates = input.candidates
+    .filter((r) => !joinedSet.has(r.slug))
+    .filter((r) => r.visibility === 'public')
 
-  // ── 6. Candidate rooms ─────────────────────────────────────────────
-  const { data: rooms } = await supabase
-    .from('rooms')
-    .select(
-      'id, slug, name, description, tagline, type, visibility, genres, moods, energy_level, cadence, featured, cover_art, recommendation_weight, member_count, current_cycle_id',
-    )
-    .eq('visibility', 'public')
-    .order('recommendation_weight', { ascending: false })
-    .limit(50)
+  let cacheSource: 'layer4' | 'live'
+  let allScored: ScoredCandidate[]
 
-  type RawRoom = Record<string, unknown> & {
-    current_cycle_id?: string | null
-  }
-  const rawRooms = (rooms ?? []) as unknown as RawRoom[]
-
-  // ── 7. Cycle → album join for currentAlbumArtist + album tags ──────
-  // Two-step join: collect cycle IDs from rooms, then SELECT cycles
-  // + albums in one nested query. Predictable and explicit.
-  const cycleIds = rawRooms
-    .map((r) => r.current_cycle_id)
-    .filter((id): id is string => typeof id === 'string' && id.length > 0)
-
-  const cycleAlbumMap = new Map<
-    string,
-    { artist: string | null; emotional_tags: string[]; sonic_tags: string[] }
-  >()
-  if (cycleIds.length > 0) {
-    // Two-step join. We use the unhinted nested-select form
-    // (`albums(...)` without a `!fk_name` directive) because `cycles`
-    // has exactly one FK to `albums` (cycles.album_id), so PostgREST
-    // unambiguously resolves it without needing the constraint name.
-    // The hinted form is brittle: if the Postgres constraint name
-    // ever changed (e.g. a migration rename), the join would silently
-    // return nulls and artist-match would never fire.
-    const { data: cycleRows } = await supabase
-      .from('cycles')
-      .select('id, album_id, albums(artist, emotional_tags, sonic_tags)')
-      .in('id', cycleIds)
-    const cycles = (cycleRows ?? []) as unknown as Array<{
-      id: string
-      albums?:
-        | { artist?: string | null; emotional_tags?: string[]; sonic_tags?: string[] }
-        | { artist?: string | null; emotional_tags?: string[]; sonic_tags?: string[] }[]
-        | null
-    }>
-    for (const c of cycles) {
-      const a = Array.isArray(c.albums) ? c.albums[0] : c.albums
-      if (!a) continue
-      cycleAlbumMap.set(c.id, {
-        artist: a.artist ?? null,
-        emotional_tags: Array.isArray(a.emotional_tags) ? a.emotional_tags : [],
-        sonic_tags: Array.isArray(a.sonic_tags) ? a.sonic_tags : [],
-      })
+  if (cached) {
+    // Cache-hot path. Match cached scores to current candidates by
+    // room_id. If any current candidate is missing from the cache
+    // (room added since recompute / weight ranking shifted), fall
+    // back — better to live-score than to serve an incomplete top-N.
+    const cachedScored = joinCachedScoresToRooms(cached, filteredCandidates)
+    const allCandidatesCached =
+      cachedScored.length === filteredCandidates.length
+    if (allCandidatesCached) {
+      cacheSource = 'layer4'
+      allScored = cachedScored
+    } else {
+      cacheSource = 'live'
+      allScored = scoreAllCandidates(input)
     }
+  } else {
+    cacheSource = 'live'
+    allScored = scoreAllCandidates(input)
   }
 
-  const candidates: RoomForRecommendation[] = rawRooms.map((row) => {
-    const cycleId =
-      typeof row.current_cycle_id === 'string' ? row.current_cycle_id : null
-    const album = cycleId ? cycleAlbumMap.get(cycleId) : undefined
-    return {
-      id: String(row.id),
-      slug: String(row.slug),
-      name: String(row.name),
-      description: String(row.description ?? ''),
-      tagline: (row.tagline as string | null) ?? null,
-      type: String(row.type ?? ''),
-      visibility: String(row.visibility ?? ''),
-      genres: (row.genres as string[] | null) ?? [],
-      moods: (row.moods as string[] | null) ?? [],
-      energy_level:
-        (row.energy_level as 'low' | 'medium' | 'high' | null) ?? null,
-      cadence:
-        (row.cadence as
-          | 'weekly'
-          | 'biweekly'
-          | 'monthly'
-          | 'seasonal'
-          | 'ongoing'
-          | null) ?? null,
-      featured: Boolean(row.featured),
-      cover_art: (row.cover_art as string | null) ?? null,
-      recommendation_weight: Number(row.recommendation_weight ?? 50),
-      member_count: Number(row.member_count ?? 0),
-      currentAlbumArtist: album?.artist ?? null,
-      currentAlbumEmotionalTags: album?.emotional_tags ?? [],
-      currentAlbumSonicTags: album?.sonic_tags ?? [],
-    }
-  })
-
-  // ── Score + rank ────────────────────────────────────────────────────
-  const input = {
-    calibrationAnswers,
-    canonicalGenres,
-    enrichedGenres,
-    affinityTags,
-    topArtistNames,
-    recentDensity,
-    joinedRoomSlugs,
-    candidates,
-  }
-
-  const scenarioTags = scenarioTagsFromAnswers(calibrationAnswers)
-  const listenerEnergy = listenerEnergyFromAnswers(calibrationAnswers)
-
-  // Pre-sort + pre-MMR scoring snapshot for diagnostics.
-  const allScored = scoreAllCandidates(input)
+  // Pre-MMR scored view for the diagnostic (top 25 by raw score).
   const sortedScored = [...allScored].sort((a, b) => b.score - a.score)
 
-  const ranked = rankRooms(input, limit)
+  // MMR diversification. rankByMMR is shape-compatible with either
+  // path's allScored — extracted in Phase 6A.5 so cached scores
+  // flow through the same diversification as live ones.
+  const ranked = rankByMMR(allScored, limit)
 
   return {
     score_version: SCORE_VERSION,
     user_id: userId,
+    cache_source: cacheSource,
     inputs: {
-      calibration_answers: calibrationAnswers,
-      canonical_genres: canonicalGenres,
-      enriched_genres: enrichedGenres,
-      affinity_tags: affinityTags,
-      top_artist_names: topArtistNames,
-      recent_density: recentDensity,
+      calibration_answers: input.calibrationAnswers,
+      canonical_genres: input.canonicalGenres,
+      enriched_genres: input.enrichedGenres,
+      affinity_tags: input.affinityTags,
+      top_artist_names: input.topArtistNames,
+      recent_density: input.recentDensity,
       scenario_tags: scenarioTags,
       listener_energy: listenerEnergy,
-      joined_room_slugs: joinedRoomSlugs,
+      joined_room_slugs: input.joinedRoomSlugs,
     },
-    candidates_seen: rawRooms.length,
+    candidates_seen: input.candidates.length,
     candidates_after_filter: allScored.length,
     scored: sortedScored.slice(0, 25).map((s) => ({
       room: { id: s.room.id, slug: s.room.slug, name: s.room.name },
@@ -333,3 +213,4 @@ export async function runRecommendationPipeline(
     })),
   }
 }
+

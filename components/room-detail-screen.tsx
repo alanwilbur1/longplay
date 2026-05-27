@@ -8,6 +8,8 @@ import { AlbumCover } from '@/components/album-cover'
 import { type Room, getRelatedRooms, getRoomSeasonalMood, getRoomBySlug } from '@/lib/rooms'
 import { joinRoom, leaveRoom } from '@/lib/actions/membership'
 import { useAuth } from '@/components/auth-provider'
+import { WhyThisRoom } from '@/components/why-this-room'
+import { RoomEcologySection } from '@/components/room-ecology-section'
 
 const DEV_MODE = process.env.NODE_ENV === 'development'
 
@@ -134,6 +136,32 @@ export function RoomDetailScreen({ room, initialIsJoined = false }: RoomDetailSc
             </div>
           </div>
         </section>
+
+        {/* ============================================ */}
+        {/* WHY THIS ROOM — Phase 6A.8 */}
+        {/* ============================================ */}
+        {/* Renders the user's room_affinity_scores envelope. Returns */}
+        {/* null when there's no affinity for this listener (e.g. */}
+        {/* signed-out browsing, listener with no sync yet) so the */}
+        {/* section disappears cleanly rather than showing a fallback. */}
+        <section
+          className={cn(
+            'px-6 py-8 md:px-12 lg:px-24 border-t',
+            room.aesthetics.borderTint,
+          )}
+        >
+          <div className="max-w-3xl">
+            <WhyThisRoom roomSlug={room.slug} variant="section" />
+          </div>
+        </section>
+
+        {/* ============================================ */}
+        {/* ROOM ECOLOGY — Phase 6A.11 */}
+        {/* ============================================ */}
+        {/* Renders the room's current ecology snapshot + top */}
+        {/* adjacent rooms. Hides cleanly when no snapshot exists yet */}
+        {/* (forming state) or active_listener_count < threshold. */}
+        <RoomEcologySection roomSlug={room.slug} />
 
         {/* ============================================ */}
         {/* ROOM MANIFESTO — The Philosophy */}

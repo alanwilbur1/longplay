@@ -115,6 +115,12 @@ export interface SyncMeta {
   /** Null when every hydration batch succeeded; otherwise a short
    *  diagnostic like "401: The access token expired". */
   hydration_error?: string | null
+  /** Phase 6A.2B: the max(played_at) the provider's incremental
+   *  recently-played fetch advanced to during this sync. The orchestrator
+   *  persists this back to listening_connections.recently_played_cursor
+   *  so the next run only fetches plays after this point. Null when no
+   *  new events landed (cursor doesn't move backward). */
+  recently_played_cursor?: string | null
 }
 
 /** What a provider returns from a full sync. */

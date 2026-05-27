@@ -48,6 +48,16 @@ export interface StreamingProvider {
    *
    * Implementations should be defensive: missing capabilities return
    * empty arrays for that data type rather than throwing.
+   *
+   * Phase 6A.2B: `recentlyPlayedAfter` is an ISO timestamp. When set,
+   * implementations should fetch ONLY events with `played_at > cursor`
+   * (incremental). When null/undefined, fetch the most recent window
+   * (typically capped by the provider; for Spotify, 50 items).
+   * Implementations report the new cursor via SyncResult.meta.
+   * recently_played_cursor; the orchestrator persists it.
    */
-  sync(params: { accessToken: string }): Promise<SyncResult>
+  sync(params: {
+    accessToken: string
+    recentlyPlayedAfter?: string | null
+  }): Promise<SyncResult>
 }

@@ -2,6 +2,7 @@ import { NextResponse, type NextRequest } from 'next/server'
 import { getSupabaseAdminClient } from '@/lib/supabase/admin'
 import { getProvider, isSourceId, type SourceId } from '@/lib/streaming'
 import { syncProviderForUser } from '@/lib/streaming/sync'
+import { encryptToken } from '@/lib/streaming/token-crypto'
 import { consumeOauthStateCookie } from '@/lib/actions/streaming'
 
 /**
@@ -101,7 +102,31 @@ export async function GET(
 
   // Persist via admin (service role) — listening_connections has no
   // client INSERT/UPDATE grant by design (rows hold OAuth tokens).
+  // Token columns are AES-256-GCM encrypted at the app boundary; see
+  // lib/streaming/token-crypto.ts. Encrypt failures (missing key,
+  // wrong key length) throw — we catch into connection_error so the
+  // listener gets a redirect with a diagnosable reason rather than a
+  // 500.
   const admin = getSupabaseAdminClient()
+  let accessTokenEncrypted: string
+  let refreshTokenEncrypted: string | null
+  try {
+    accessTokenEncrypted = encryptToken(tokens.access_token)
+    refreshTokenEncrypted = tokens.refresh_token
+      ? encryptToken(tokens.refresh_token)
+      : null
+  } catch (err) {
+    if (process.env.NODE_ENV !== 'production') {
+      console.error('[oauth-callback] token encryption failed', {
+        source,
+        message: err instanceof Error ? err.message : String(err),
+      })
+    }
+    return redirectBack(request, cookieState.returnTo, {
+      connection_error: 'encryption_unavailable',
+    })
+  }
+
   const { error: upsertError } = await admin
     .from('listening_connections')
     .upsert(
@@ -111,8 +136,8 @@ export async function GET(
         external_account_id: tokens.external_account_id,
         display_name: tokens.display_name,
         scopes: tokens.scopes,
-        access_token_encrypted: tokens.access_token,
-        refresh_token_encrypted: tokens.refresh_token,
+        access_token_encrypted: accessTokenEncrypted,
+        refresh_token_encrypted: refreshTokenEncrypted,
         token_expires_at: tokens.expires_at,
         status: 'active',
         connected_at: new Date().toISOString(),
@@ -139,7 +164,9 @@ export async function GET(
   // well under any reasonable timeout. Errors here never block the
   // redirect — the listener can hit "Sync now" from /profile.
   try {
-    await syncProviderForUser(cookieState.userId, source as SourceId)
+    await syncProviderForUser(cookieState.userId, source as SourceId, {
+      trigger: 'oauth',
+    })
   } catch (err) {
     if (process.env.NODE_ENV !== 'production') {
       console.warn('[oauth-callback] initial sync failed', {

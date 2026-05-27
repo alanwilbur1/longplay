@@ -16,6 +16,11 @@ import { saveOnboardingCompletion, getOnboardingStatus } from '@/lib/actions/onb
 import { initiateConnection, listMyConnections } from '@/lib/actions/streaming'
 import { getRecommendedRooms, type RecommendedRoom } from '@/lib/recommendations'
 import { joinRoom } from '@/lib/actions/membership'
+import {
+  readMyListenerIdentity,
+  type IdentityEnvelope,
+} from '@/lib/actions/identity'
+import { TRAIT_DISPLAY } from '@/lib/identity/presentation'
 
 /**
  * LongPlay Onboarding - Initiation Into a Listening Culture
@@ -358,8 +363,12 @@ export function OnboardingScreen() {
     }
 
     // Primary: server action (cookie-bound; uses upsert internally).
+    // Note: no `archetype` field is written here. The user's real
+    // archetype is derived from Layer 5 (listener_archetype_snapshots)
+    // after sync — driven by listening behavior, not by the onboarding
+    // step. Phase 6A.7 removed the previous hardcoded "Midnight
+    // Archivist" string that was written here.
     const saveResult = await saveOnboardingCompletion({
-      archetype: 'The Midnight Archivist',
       connectedServices,
       calibrationAnswers,
     })
@@ -1047,73 +1056,95 @@ function BuildingStep({ progress }: { progress: number }) {
 }
 
 // ============================================
-// ARCHETYPE REVEAL - The Dramatic Moment
+// ARCHETYPE REVEAL — Phase 6A.7
 // ============================================
+//
+// Reads the user's real archetype from Layer 5 via the cookie-bound
+// readMyListenerIdentity server action. If identity is ready,
+// renders the primary archetype + grounded description from the
+// catalog. If identity is still forming (typical here — onboarding
+// often runs before the first sync completes), renders an honest
+// "still forming" state and lets the user proceed.
+//
+// Demolition note: previous version hardcoded "The Midnight
+// Archivist" with flowery copy and three sample albums chosen at
+// random (not the user's). All of that fabricated identity. Phase
+// 6A.7 contract: reveal real identity, fall back honestly when
+// it isn't ready yet.
 function ArchetypeRevealStep({ onContinue }: { onContinue: () => void }) {
   const [revealed, setRevealed] = useState(false)
-  
+  const [envelope, setEnvelope] = useState<IdentityEnvelope | null>(null)
+
   useEffect(() => {
     const timer = setTimeout(() => setRevealed(true), 600)
-    return () => clearTimeout(timer)
+    let cancelled = false
+    readMyListenerIdentity()
+      .then((env) => {
+        if (!cancelled) setEnvelope(env)
+      })
+      .catch(() => {
+        // Treat fetch failures as "forming" — never fabricate identity
+        // because of a transient read error.
+        if (!cancelled) {
+          setEnvelope({
+            state: 'forming',
+            has_connection: false,
+            has_partial_traits: false,
+          })
+        }
+      })
+    return () => {
+      clearTimeout(timer)
+      cancelled = true
+    }
   }, [])
+
+  const isReady = envelope?.state === 'ready'
+  const primary = isReady ? envelope.primary : null
+  const description =
+    primary && ONBOARDING_ARCHETYPE_DESCRIPTIONS[primary.archetype_key]
+      ? ONBOARDING_ARCHETYPE_DESCRIPTIONS[primary.archetype_key]
+      : null
 
   return (
     <div className="flex-1 flex flex-col justify-center items-center px-8 py-16 text-center min-h-screen">
-      <div className={cn(
-        "max-w-lg transition-all duration-1500",
-        revealed ? "opacity-100" : "opacity-0"
-      )}>
+      <div
+        className={cn(
+          'max-w-lg transition-all duration-1500',
+          revealed ? 'opacity-100' : 'opacity-0',
+        )}
+      >
         <p className="text-[10px] uppercase tracking-[0.5em] text-tobacco mb-8 animate-fade-in">
           Your listening archetype
         </p>
-        
-        <h2 
+
+        <h2
           className="font-serif text-4xl md:text-5xl lg:text-6xl text-cream mb-8 leading-tight animate-fade-in-slow"
           style={{ animationDelay: '300ms' }}
         >
-          The Midnight Archivist
+          {primary ? primary.archetype_label : 'Still listening…'}
         </h2>
-        
-        <div 
+
+        <div
           className="w-24 h-px bg-gradient-to-r from-transparent via-burgundy/50 to-transparent mx-auto mb-8 animate-fade-in"
           style={{ animationDelay: '600ms' }}
         />
-        
-        <p 
-          className="text-lg text-muted-foreground leading-relaxed mb-12 animate-fade-in-slow"
+
+        <p
+          className="text-lg text-muted-foreground leading-relaxed mb-12 animate-fade-in-slow max-w-md mx-auto"
           style={{ animationDelay: '800ms' }}
         >
-          You listen like someone cataloging emotions for future reference. 
-          Your taste gravitates toward records that reward repeated attention, 
-          music that reveals new layers with each encounter.
+          {primary && description
+            ? description
+            : envelope?.state === 'forming'
+              ? 'Your first sync is still being processed. Your archetype will appear on your identity page once enough listening data has landed.'
+              : 'Reading your listening graph.'}
         </p>
-        
-        {/* Sample albums */}
-        <div 
-          className="flex justify-center gap-4 mb-12 animate-fade-in"
-          style={{ animationDelay: '1200ms' }}
-        >
-          {[ALBUMS.forEmma, ALBUMS.pinkMoon, ALBUMS.blue].map((album, i) => (
-            <div 
-              key={album.id} 
-              className="w-20 h-20 overflow-hidden border border-border/20"
-              style={{ animationDelay: `${1400 + (i * 150)}ms` }}
-            >
-              <AlbumCover
-                src={album.cover}
-                alt={album.title}
-                title={album.title}
-                artist={album.artist}
-                className="w-full h-full"
-              />
-            </div>
-          ))}
-        </div>
-        
+
         <button
           onClick={onContinue}
           className="px-12 py-4 border border-cream/30 text-cream hover:bg-cream/5 transition-all duration-700 animate-fade-in"
-          style={{ animationDelay: '1600ms' }}
+          style={{ animationDelay: '1200ms' }}
         >
           See my full portrait
         </button>
@@ -1123,61 +1154,112 @@ function ArchetypeRevealStep({ onContinue }: { onContinue: () => void }) {
 }
 
 // ============================================
-// PORTRAIT REVEAL - Editorial Taste Portrait
+// PORTRAIT REVEAL — Phase 6A.7
 // ============================================
+//
+// Reads the user's trait bands from Layer 5 and shows them with the
+// same restrained band-bar treatment used by IdentityProfileScreen.
+// Replaces previous flowery "you treat melancholy as comfort" copy
+// and hardcoded sonic tendency tags ("Atmosphere", "Melancholy",
+// etc.) with real trait labels + grounded one-liners pulled from
+// the static TRAIT_DISPLAY catalog.
+//
+// If identity is forming, falls back to an honest "your portrait is
+// still forming" message rather than fabricating tendencies.
 function PortraitRevealStep({ onContinue }: { onContinue: () => void }) {
+  const [envelope, setEnvelope] = useState<IdentityEnvelope | null>(null)
+
+  useEffect(() => {
+    let cancelled = false
+    readMyListenerIdentity()
+      .then((env) => {
+        if (!cancelled) setEnvelope(env)
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setEnvelope({
+            state: 'forming',
+            has_connection: false,
+            has_partial_traits: false,
+          })
+        }
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  const traits = envelope?.state === 'ready' ? envelope.traits : []
+  // Only render known + non-unknown traits in the reveal — onboarding
+  // shouldn't show "unknown" placeholders, that's the IdentityProfile
+  // gallery's job.
+  const renderable = traits.filter(
+    (t) => TRAIT_DISPLAY[t.trait_key] && t.trait_band !== 'unknown',
+  )
+
   return (
     <div className="flex-1 flex flex-col px-8 py-16 overflow-y-auto">
       <div className="animate-fade-in max-w-2xl mx-auto w-full">
         <p className="text-[10px] uppercase tracking-[0.4em] text-tobacco mb-4 text-center">
-          Your Taste Portrait
+          Your taste portrait
         </p>
-        
+
         <h2 className="font-serif text-2xl md:text-3xl text-cream mb-8 text-center">
-          What Your Listening Reveals
+          {renderable.length > 0
+            ? 'What your listening reveals so far'
+            : 'Your portrait is still forming'}
         </h2>
-        
+
         <div className="w-16 h-px bg-gradient-to-r from-transparent via-tobacco/30 to-transparent mx-auto mb-10" />
-        
-        {/* Editorial portrait */}
-        <div className="space-y-6 mb-12">
-          <p className="text-muted-foreground leading-relaxed text-lg">
-            You are drawn less to genre than to <span className="text-cream">emotional architecture</span>. 
-            Across ambient music, post-rock, jazz, and alternative records, you consistently 
-            favor <span className="text-cream">atmosphere, restraint, and emotional accumulation</span> over immediacy.
-          </p>
-          
-          <p className="text-muted-foreground leading-relaxed">
-            Your listening reveals someone who treats melancholy as a form of comfort rather than 
-            something to resolve. You trust <span className="text-cream">atmosphere before confession</span>, 
-            preferring records that create space rather than fill it.
-          </p>
-          
-          <p className="text-muted-foreground leading-relaxed">
-            The records that stay with you tend to share a quality of 
-            <span className="text-cream"> nocturnal introspection</span> — music that sounds best after midnight, 
-            in solitude, when emotional precision matters more than entertainment.
-          </p>
-        </div>
-        
-        {/* Sonic tendencies */}
-        <div className="border-t border-border/20 pt-8 mb-12">
-          <p className="text-[10px] uppercase tracking-[0.3em] text-muted-foreground mb-6">
-            Emotional & Sonic Tendencies
-          </p>
-          
-          <div className="flex flex-wrap gap-3">
-            {['Atmosphere', 'Melancholy', 'Restraint', 'Texture', 'Nocturnal', 'Intimacy'].map((tag) => (
-              <span 
-                key={tag}
-                className="px-4 py-2 border border-burgundy/30 text-cream/80 text-sm"
-              >
-                {tag}
-              </span>
-            ))}
+
+        {renderable.length > 0 ? (
+          <div className="space-y-6 mb-12">
+            {renderable.map((t) => {
+              const display = TRAIT_DISPLAY[t.trait_key]
+              const copy = display.bandCopy[t.trait_band]
+              return (
+                <div
+                  key={t.trait_key}
+                  className="flex flex-col md:flex-row md:items-baseline md:gap-8 border-b border-border/10 pb-5 last:border-0"
+                >
+                  <div className="md:w-40 shrink-0 mb-2 md:mb-0">
+                    <p className="text-sm text-cream uppercase tracking-[0.15em]">
+                      {display.label}
+                    </p>
+                    <div className="mt-3 flex items-center gap-1.5">
+                      {[1, 2, 3].map((p) => {
+                        const pos =
+                          t.trait_band === 'low'
+                            ? 1
+                            : t.trait_band === 'medium'
+                              ? 2
+                              : 3
+                        return (
+                          <span
+                            key={p}
+                            className={
+                              'h-[3px] flex-1 ' +
+                              (pos >= p ? 'bg-tobacco' : 'bg-border/30')
+                            }
+                          />
+                        )
+                      })}
+                    </div>
+                  </div>
+                  <p className="text-sm text-muted-foreground leading-relaxed flex-1">
+                    {copy}
+                  </p>
+                </div>
+              )
+            })}
           </div>
-        </div>
-        
+        ) : (
+          <p className="text-muted-foreground leading-relaxed text-center max-w-md mx-auto mb-12">
+            Your traits will fill in as listening data accumulates. The
+            identity page updates after every sync.
+          </p>
+        )}
+
         <button
           onClick={onContinue}
           className="w-full py-4 border border-cream/30 text-cream hover:bg-cream/5 transition-all duration-700"
@@ -1187,6 +1269,28 @@ function PortraitRevealStep({ onContinue }: { onContinue: () => void }) {
       </div>
     </div>
   )
+}
+
+// Catalog of archetype descriptions used by the onboarding reveal.
+// Kept inline rather than re-imported from ARCHETYPE_CATALOG to keep
+// this file's dependency graph small — when the catalog changes,
+// update both places (the type checker will catch a missing entry
+// only when the user lands on the new archetype).
+const ONBOARDING_ARCHETYPE_DESCRIPTIONS: Record<string, string> = {
+  'deep-catalog-romantic':
+    'Saves whole albums; returns to a small set of artists over time. Not chasing the new; sits with the canon.',
+  'nocturnal-explorer':
+    'Listens after dark across many artists. The late hours are when the catalog opens up.',
+  'genre-wanderer':
+    'Listens across many genres at comparable depth. No single style dominates the library.',
+  'obsessive-curator':
+    'Concentrates on a narrow genre with high depth. Knows the artists they care about thoroughly.',
+  'midnight-archivist':
+    'Late-night listening biased toward less-popular artists and full albums. Long-tail at unsociable hours.',
+  'recency-driven-listener':
+    'Listens predominantly to what landed recently. The catalog turns over fast; new releases drive the rotation.',
+  'album-loyalist':
+    'Saves whole albums by a stable set of artists. Returns to known records rather than chasing breadth.',
 }
 
 // ============================================

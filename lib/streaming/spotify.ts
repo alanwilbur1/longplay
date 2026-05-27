@@ -164,7 +164,7 @@ export const spotifyProvider: StreamingProvider = {
     }
   },
 
-  async sync({ accessToken }): Promise<SyncResult> {
+  async sync({ accessToken, recentlyPlayedAfter }): Promise<SyncResult> {
     const syncedAt = new Date().toISOString()
 
     // ── Pull all four data streams in parallel. ─────────────────────────
@@ -176,6 +176,20 @@ export const spotifyProvider: StreamingProvider = {
     // SimplifiedArtist (id + name only). To get genres + popularity +
     // image for those artists, we collect their IDs and batch-hydrate
     // via /v1/artists?ids=... below.
+    //
+    // Phase 6A.2B incremental cursor: if `recentlyPlayedAfter` is set,
+    // we ask Spotify for plays AFTER that timestamp via the `after`
+    // query param (milliseconds since epoch). Spotify caps recently-
+    // played at 50 items total, so for high-volume listeners we still
+    // lose plays past 50 — that's an upstream limitation, not a cursor
+    // bug. Without `after`, Spotify returns the 50 most recent plays.
+    const recentlyPlayedAfterMs = recentlyPlayedAfter
+      ? Date.parse(recentlyPlayedAfter)
+      : NaN
+    const recentParams = new URLSearchParams({ limit: '50' })
+    if (Number.isFinite(recentlyPlayedAfterMs)) {
+      recentParams.set('after', String(recentlyPlayedAfterMs))
+    }
     const [recent, topArtists, topTracks, savedAlbums] = await Promise.all([
       spotifyJson<{
         items: Array<{
@@ -190,7 +204,7 @@ export const spotifyProvider: StreamingProvider = {
           played_at: string
           context?: { type?: string }
         }>
-      }>(`${API_BASE}/me/player/recently-played?limit=50`, accessToken),
+      }>(`${API_BASE}/me/player/recently-played?${recentParams.toString()}`, accessToken),
       spotifyJson<{
         items: Array<{ id: string; name: string; genres: string[] }>
       }>(`${API_BASE}/me/top/artists?time_range=medium_term&limit=50`, accessToken),
@@ -311,6 +325,21 @@ export const spotifyProvider: StreamingProvider = {
       0,
     )
 
+    // Phase 6A.2B: report the new cursor (max played_at across this
+    // sync's events). The orchestrator persists it to
+    // listening_connections.recently_played_cursor.
+    let maxPlayedAtMs = recentlyPlayedAfterMs
+    for (const e of events) {
+      if (!e.played_at) continue
+      const t = Date.parse(e.played_at)
+      if (Number.isFinite(t) && (!Number.isFinite(maxPlayedAtMs) || t > maxPlayedAtMs)) {
+        maxPlayedAtMs = t
+      }
+    }
+    const recently_played_cursor = Number.isFinite(maxPlayedAtMs)
+      ? new Date(maxPlayedAtMs).toISOString()
+      : null
+
     return {
       events,
       artists,
@@ -324,6 +353,7 @@ export const spotifyProvider: StreamingProvider = {
         hydration_batches_attempted: hydration.attempted,
         hydration_batches_succeeded: hydration.succeeded,
         hydration_error: hydration.lastError,
+        recently_played_cursor,
       },
     }
   },
@@ -397,11 +427,18 @@ interface HydrationOutcome {
  * (22-char [A-Za-z0-9]); we hard-filter to that shape before joining
  * so a single local-file pseudo-id can't poison a whole batch.
  *
- * Headers: we now explicitly send User-Agent + Accept. Spotify's
- * Cloudflare layer has been observed to 403 catalog endpoints
- * (/v1/artists, /v1/albums, /v1/tracks) when the request comes in
- * with the default undici / node fetch User-Agent, while still
- * letting /me/* through. Doesn't cost anything to be explicit.
+ * Headers: Authorization + Accept only. A custom User-Agent
+ * (`LongPlay/1.0 (+https://longplay.app)`) was added in an earlier
+ * phase to work around a Cloudflare rule that 403'd catalog
+ * endpoints under undici's default User-Agent. As of the Phase 6A
+ * production validation, Spotify's edge now does the opposite: it
+ * 403s catalog endpoints when the request carries a bot-format UA
+ * (`Name/1.0 (+url)` matches CF's bot fingerprint), while still
+ * permitting the same call under undici's default. Removing the
+ * explicit UA puts hydration on the same call posture as the
+ * `/me/*` requests via spotifyJson(), which work in production.
+ * The original workaround comment is preserved here as the rationale
+ * for why we don't reintroduce it.
  *
  * Does NOT throw — every batch failure is captured into the outcome.
  */
@@ -448,7 +485,6 @@ async function hydrateSpotifyArtists(
   const REQUEST_HEADERS: HeadersInit = {
     Authorization: `Bearer ${accessToken}`,
     Accept: 'application/json',
-    'User-Agent': 'LongPlay/1.0 (+https://longplay.app)',
   }
 
   for (let i = 0; i < filtered.length; i += 50) {
