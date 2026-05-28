@@ -4,23 +4,36 @@ import {
   getVisibleReflectionsForCycle,
 } from '@/lib/data/ritual'
 import { getSupabaseAdminClient } from '@/lib/supabase/admin'
+import type { Room } from '@/lib/rooms'
 import { RitualContextPanel } from './ritual-context-panel'
 
 /**
- * Server-rendered shell for the RitualContextPanel. Resolves auth
- * + ritual context + visible reflections + artifact label, then
- * hands a fully-shaped props object to the client component.
+ * Server-rendered shell for the RitualContextPanel. Resolves auth +
+ * ritual context + visible reflections, threads the album artwork +
+ * prompts + streaming links from the already-loaded room object,
+ * then hands a fully-shaped props bag to the client component.
  *
- * Rendered from app/rooms/[slug]/page.tsx (or any room-scoped
- * server component). The room-id-by-slug lookup happens upstream;
- * this component receives the resolved roomId.
+ * The hero composition reads three sources:
+ *   - room (static catalog / DB-hydrated)   : album cover, prompts, streaming
+ *   - ritual_cycles + participation + reflections (DB) : cycle state, user state
+ *   - albums (DB, by ritual.artifact_album_id when it diverges from
+ *     room.currentAlbum) : tightens future-proofing when a ritual
+ *     points at a different album than the room's static current —
+ *     today they agree, but the panel reads from the cycle when
+ *     present.
  */
 export async function RitualContextPanelServer({
   roomSlug,
+  room,
 }: {
   /** Room slug (URL identifier). The component resolves the DB UUID
    *  internally — the app-side Room.id is the slug, not the UUID. */
   roomSlug: string
+  /** Pre-loaded room object from the page route. Carries currentAlbum,
+   *  prompts, streamingLinks, and aesthetics — the hero's visual
+   *  anchors come from here so the panel never re-fetches what the
+   *  page already had. */
+  room: Room
 }) {
   const supabase = await createSupabaseServerClient()
   const { data: { user } } = await supabase.auth.getUser()
@@ -44,11 +57,30 @@ export async function RitualContextPanelServer({
     })
   }
 
-  // Resolve artifact label "Album Title — Artist" if an album is
-  // attached. Best-effort; falls back to null on miss.
-  let artifactLabel: string | null = null
-  if (ctx.active?.artifact_album_id) {
-    artifactLabel = await loadAlbumLabel(ctx.active.artifact_album_id)
+  // Artifact resolution. Prefer the cycle's own artifact_album_id when
+  // it diverges from room.currentAlbum (future-proofs against rituals
+  // that move off the static catalog). Falls back to room.currentAlbum.
+  let artifactCover = room.currentAlbum.cover ?? null
+  let artifactTitle = room.currentAlbum.title ?? null
+  let artifactArtist = room.currentAlbum.artist ?? null
+  let artifactYear = room.currentAlbum.year ?? null
+  if (
+    ctx.active?.artifact_album_id &&
+    // Album ids in the static catalog are slugs (e.g. "for-emma");
+    // ritual_cycles.artifact_album_id is a UUID. They never agree
+    // string-wise — always resolve the ritual's album from the
+    // albums table when an active cycle exists.
+    true
+  ) {
+    const resolved = await loadAlbum(ctx.active.artifact_album_id)
+    if (resolved) {
+      // Override only the fields the cycle's album actually has;
+      // keep the room's defaults for anything missing.
+      artifactCover = resolved.cover_url ?? artifactCover
+      artifactTitle = resolved.title ?? artifactTitle
+      artifactArtist = resolved.artist ?? artifactArtist
+      artifactYear = resolved.year ?? artifactYear
+    }
   }
 
   const participation = ctx.participation
@@ -88,7 +120,23 @@ export async function RitualContextPanelServer({
       participation={participation}
       reflections={reflections}
       isAuthenticated={userId !== null}
-      artifactLabel={artifactLabel}
+      artifact={{
+        cover: artifactCover,
+        title: artifactTitle,
+        artist: artifactArtist,
+        year: artifactYear,
+      }}
+      prompts={room.prompts}
+      streamingLinks={{
+        spotify: room.streamingLinks.spotify ?? null,
+        appleMusic: room.streamingLinks.appleMusic ?? null,
+        tidal: room.streamingLinks.tidal ?? null,
+      }}
+      aesthetics={{
+        borderTint: room.aesthetics.borderTint,
+        primaryAccent: room.aesthetics.primaryAccent,
+      }}
+      roomAtmosphere={room.atmosphere ?? null}
     />
   )
 }
@@ -115,13 +163,23 @@ async function resolveRoomUuid(slug: string): Promise<string | null> {
   return data.id
 }
 
-async function loadAlbumLabel(albumId: string): Promise<string | null> {
+async function loadAlbum(albumId: string): Promise<{
+  cover_url: string | null
+  title: string | null
+  artist: string | null
+  year: string | null
+} | null> {
   const admin = getSupabaseAdminClient()
   type Builder = {
     select: (cols: string) => {
       eq: (col: string, val: string) => {
         maybeSingle: () => Promise<{
-          data: { title: string | null; artist: string | null } | null
+          data: {
+            cover_url: string | null
+            title: string | null
+            artist: string | null
+            year: string | null
+          } | null
           error: { message: string } | null
         }>
       }
@@ -130,14 +188,9 @@ async function loadAlbumLabel(albumId: string): Promise<string | null> {
   const { data, error } = await (
     admin.from('albums') as unknown as Builder
   )
-    .select('title, artist')
+    .select('cover_url, title, artist, year')
     .eq('id', albumId)
     .maybeSingle()
   if (error || !data) return null
-  const title = data.title?.trim() ?? ''
-  const artist = data.artist?.trim() ?? ''
-  if (!title && !artist) return null
-  if (!artist) return title
-  if (!title) return artist
-  return `${title} — ${artist}`
+  return data
 }

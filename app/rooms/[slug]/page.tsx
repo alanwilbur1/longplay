@@ -4,6 +4,7 @@ import { RoomDetailScreen } from '@/components/room-detail-screen'
 import { ProtectedLayout } from '@/components/protected-layout'
 import { RitualContextPanelServer } from '@/components/ritual/ritual-context-panel-server'
 import { getRoomBySlug as getDbRoom } from '@/lib/data/rooms'
+import { getRoomHasActiveRitual } from '@/lib/data/ritual'
 import { isRoomMember } from '@/lib/actions/membership'
 import { getRoomBySlug, ALL_ROOMS } from '@/lib/rooms'
 
@@ -64,12 +65,21 @@ export default async function RoomDetailPage({
     // unauthenticated — stays false
   }
 
-  // Phase 6B.2: ritual panel is composed server-side and threaded
-  // INTO the RoomDetailScreen via the `ritualPanel` slot — placing
-  // it high in the page hierarchy (immediately after WhyThisRoom),
-  // not appended at the bottom. The slot's server component
-  // returns null on DB lookup failure or rooms without cycles, so
-  // the room screen still renders cleanly when no panel is needed.
+  // Phase 6B.2 refinement: when an active ritual exists, the hero
+  // composition surfaces the album + prompts + streaming inline. We
+  // suppress the legacy "Current Album Cycle" + "Listening Prompts"
+  // sections in RoomDetailScreen to avoid redundancy. False on any
+  // lookup failure — defensive: never falsely hide editorial content.
+  let hasActiveRitual = false
+  try {
+    hasActiveRitual = await getRoomHasActiveRitual(slug)
+  } catch {
+    hasActiveRitual = false
+  }
+
+  // The ritual panel server takes the SAME room object so it can
+  // anchor on the album artwork, prompts, and streaming links
+  // already loaded — one source of truth for the artifact.
   return (
     <ProtectedLayout>
       <Navigation />
@@ -77,7 +87,10 @@ export default async function RoomDetailPage({
         <RoomDetailScreen
           room={room}
           initialIsJoined={initialIsJoined}
-          ritualPanel={<RitualContextPanelServer roomSlug={slug} />}
+          hasActiveRitual={hasActiveRitual}
+          ritualPanel={
+            <RitualContextPanelServer roomSlug={slug} room={room} />
+          }
         />
       </main>
     </ProtectedLayout>
