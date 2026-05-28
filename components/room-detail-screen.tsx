@@ -111,57 +111,99 @@ export function RoomDetailScreen({
         {/* ============================================ */}
         {/* ROOM HERO — The Entry Point */}
         {/* ============================================ */}
+        {/* Phase 6B.4: two-column composition. LEFT carries the room
+            identity (badge, name, tagline, description, atmosphere
+            · curator); RIGHT carries the membership threshold panel
+            (status copy + Join/Leave action). The legacy bottom
+            membership block is removed in the same commit — joining
+            now belongs to the entry surface, not the footer. */}
         <section className={cn("px-6 pt-8 pb-12 md:px-12 lg:px-24", spacingClass)}>
-          <div className="max-w-4xl">
-            {/* Room type badge */}
-            <p 
-              className={cn(
-                "text-[10px] uppercase tracking-[0.4em] mb-4",
-                room.aesthetics.primaryAccent
-              )}
-            >
-              {room.type === 'editorial' ? 'Editorial Room' : 
-               room.type === 'genre' ? 'Listening Space' : 
-               room.type === 'creator' ? 'Curator-Led' : 'Private Room'}
-            </p>
-            
-            {/* Room name */}
-            <h1 className="font-serif text-4xl md:text-5xl lg:text-6xl text-cream mb-4 leading-tight">
-              {room.name}
-            </h1>
-            
-            {/* Tagline */}
-            {room.tagline && (
-              <p className={cn(
-                "font-serif text-xl md:text-2xl italic mb-6",
-                room.aesthetics.primaryAccent
-              )}>
-                {room.tagline}
+          <div className="grid grid-cols-1 md:grid-cols-[minmax(0,1.4fr)_minmax(0,1fr)] gap-10 md:gap-16 items-start max-w-6xl">
+            {/* LEFT — Room identity */}
+            <div>
+              {/* Room type badge */}
+              <p
+                className={cn(
+                  "text-[10px] uppercase tracking-[0.4em] mb-4",
+                  room.aesthetics.primaryAccent
+                )}
+              >
+                {room.type === 'editorial' ? 'Editorial Room' :
+                 room.type === 'genre' ? 'Listening Space' :
+                 room.type === 'creator' ? 'Curator-Led' : 'Private Room'}
               </p>
-            )}
-            
-            {/* Description */}
-            <p className="text-lg text-muted-foreground leading-relaxed max-w-2xl mb-8">
-              {room.description}
-            </p>
-            
-            {/* Atmosphere and stats. Phase 6A.13: member count omitted
-                when not backed by a real count — render either the
-                count + atmosphere + curator, or atmosphere + curator,
-                with separators conditional on what's present. */}
-            <div className="flex flex-wrap items-center gap-4 text-sm text-muted-foreground">
-              <span className={room.aesthetics.primaryAccent}>
-                {room.atmosphere}
-              </span>
-              {room.memberCountLabel && (
-                <>
-                  <span className="w-1 h-1 rounded-full bg-muted-foreground/30" />
-                  <span>{room.memberCountLabel}</span>
-                </>
+
+              {/* Room name */}
+              <h1 className="font-serif text-4xl md:text-5xl lg:text-6xl text-cream mb-4 leading-tight">
+                {room.name}
+              </h1>
+
+              {/* Tagline */}
+              {room.tagline && (
+                <p className={cn(
+                  "font-serif text-xl md:text-2xl italic mb-6",
+                  room.aesthetics.primaryAccent
+                )}>
+                  {room.tagline}
+                </p>
               )}
-              <span className="w-1 h-1 rounded-full bg-muted-foreground/30" />
-              <span>Curated by {room.curator.name}</span>
+
+              {/* Description */}
+              <p className="text-lg text-muted-foreground leading-relaxed mb-8">
+                {room.description}
+              </p>
+
+              {/* Atmosphere · Curator line. Phase 6A.13: member count
+                  omitted when not backed by real data. */}
+              <div className="flex flex-wrap items-center gap-4 text-sm text-muted-foreground">
+                <span className={room.aesthetics.primaryAccent}>
+                  {room.atmosphere}
+                </span>
+                {room.memberCountLabel && (
+                  <>
+                    <span className="w-1 h-1 rounded-full bg-muted-foreground/30" />
+                    <span>{room.memberCountLabel}</span>
+                  </>
+                )}
+                <span className="w-1 h-1 rounded-full bg-muted-foreground/30" />
+                <span>Curated by {room.curator.name}</span>
+              </div>
             </div>
+
+            {/* RIGHT — Membership threshold panel */}
+            <MembershipThresholdPanel
+              roomSlug={room.slug}
+              invitationText={room.culture.invitationText}
+              aesthetics={room.aesthetics}
+              isAuthenticated={isAuthenticated}
+              isJoined={isJoined}
+              isPending={isPending}
+              membershipError={membershipError}
+              onJoin={() => {
+                setMembershipError(null)
+                startTransition(async () => {
+                  const result = await joinRoom(room.slug)
+                  if (result.success) {
+                    setIsJoined(true)
+                    router.refresh()
+                  } else {
+                    setMembershipError(result.error ?? 'Join failed')
+                  }
+                })
+              }}
+              onLeave={() => {
+                setMembershipError(null)
+                startTransition(async () => {
+                  const result = await leaveRoom(room.slug)
+                  if (result.success) {
+                    setIsJoined(false)
+                    router.refresh()
+                  } else {
+                    setMembershipError(result.error ?? 'Leave failed')
+                  }
+                })
+              }}
+            />
           </div>
         </section>
 
@@ -839,108 +881,136 @@ export function RoomDetailScreen({
           </section>
         )}
 
-        {/* ============================================ */}
-        {/* JOIN / ENTER CTA */}
-        {/* ============================================ */}
-        <section className={cn(
-          "px-6 py-12 md:px-12 lg:px-24 border-t",
-          room.aesthetics.borderTint
-        )}>
-          <div className="max-w-4xl flex flex-col md:flex-row items-start md:items-center justify-between gap-6">
-            <div>
-              <h3 className="font-serif text-xl text-cream mb-2">
-                {isJoined ? 'You\'re part of this room' : 'Join this room'}
-              </h3>
-              <p className="text-sm text-muted-foreground">
-                {isJoined
-                  // Phase 6B.2: membership and weekly ritual participation
-                  // are now visibly distinct. Membership is durable; the
-                  // ritual lives at the top of the page and is joined
-                  // separately each week.
-                  ? 'Room membership is separate from joining each week’s ritual.'
-                  : room.culture.invitationText}
-              </p>
-            </div>
-
-            <div className="flex flex-col gap-2 items-end">
-              <div className="flex gap-4">
-                {isJoined ? (
-                  // Phase 6B.2: removed the "Enter Listening Room" CTA
-                  // — the ritual panel below renders the active cycle
-                  // in place. Only the Leave control remains.
-                  <button
-                    disabled={isPending}
-                    onClick={() => {
-                      setMembershipError(null)
-                      startTransition(async () => {
-                        const result = await leaveRoom(room.slug)
-                        if (result.success) {
-                          setIsJoined(false)
-                          router.refresh()
-                        } else {
-                          setMembershipError(result.error ?? 'Leave failed')
-                        }
-                      })
-                    }}
-                    className={cn(
-                      'px-6 py-4 border text-muted-foreground text-sm transition-all',
-                      room.aesthetics.borderTint,
-                      'hover:text-cream hover:border-border/50 disabled:opacity-50',
-                    )}
-                    style={{ transitionDuration: 'var(--room-transition, 500ms)' }}
-                  >
-                    {isPending ? 'Leaving…' : 'Leave'}
-                  </button>
-                ) : isAuthenticated ? (
-                  <button
-                    disabled={isPending}
-                    onClick={() => {
-                      setMembershipError(null)
-                      startTransition(async () => {
-                        const result = await joinRoom(room.slug)
-                        if (result.success) {
-                          setIsJoined(true)
-                          router.refresh()
-                        } else {
-                          setMembershipError(result.error ?? 'Join failed')
-                        }
-                      })
-                    }}
-                    className={cn(
-                      "px-8 py-4 text-cream text-sm tracking-wide transition-all",
-                      room.aesthetics.primaryAccent.replace('text-', 'bg-').replace('/70', '/80').replace('/80', '/90'),
-                      "hover:opacity-90 disabled:opacity-50"
-                    )}
-                    style={{ transitionDuration: 'var(--room-transition, 500ms)' }}
-                  >
-                    {isPending ? 'Joining…' : 'Join Room'}
-                  </button>
-                ) : (
-                  <Link
-                    href="/onboarding"
-                    className={cn(
-                      "px-8 py-4 text-cream text-sm tracking-wide transition-all",
-                      "border",
-                      room.aesthetics.borderTint,
-                      "hover:bg-card/20"
-                    )}
-                    style={{ transitionDuration: 'var(--room-transition, 500ms)' }}
-                  >
-                    Sign in to join
-                  </Link>
-                )}
-              </div>
-
-              {/* Dev-only: surface action errors so auth/DB issues are visible */}
-              {DEV_MODE && membershipError && (
-                <p className="text-[10px] text-red-400/80 font-mono max-w-xs text-right">
-                  ⚠ {membershipError}
-                </p>
-              )}
-            </div>
-          </div>
-        </section>
       </div>
     </>
   )
 }
+
+// ── Membership threshold panel ─────────────────────────────────────
+//
+// Right-column hero composition introduced in Phase 6B.4. Renders
+// the room's membership state as a ceremonial threshold:
+//
+//   Joined (authenticated):
+//     "You are part of this room."
+//     "Membership is separate from joining each week's ritual."
+//     [Leave Room]
+//
+//   Not joined (authenticated):
+//     "You are outside this room."
+//     <invitationText from the room's culture>
+//     [Join Room]
+//
+//   Unauthenticated:
+//     "You are outside this room."
+//     <invitationText>
+//     [Sign in to join → /onboarding]
+//
+// No card chrome, no shadow. A faint left border anchors the panel
+// to the room's tinting; padding gives it ceremonial space. The
+// action button uses the room's primaryAccent at slightly elevated
+// opacity for the primary path (Join) and a quiet outline for the
+// secondary path (Leave).
+
+function MembershipThresholdPanel({
+  roomSlug,
+  invitationText,
+  aesthetics,
+  isAuthenticated,
+  isJoined,
+  isPending,
+  membershipError,
+  onJoin,
+  onLeave,
+}: {
+  roomSlug: string
+  invitationText: string
+  aesthetics: Room['aesthetics']
+  isAuthenticated: boolean
+  isJoined: boolean
+  isPending: boolean
+  membershipError: string | null
+  onJoin: () => void
+  onLeave: () => void
+}) {
+  void roomSlug // present for future debug logging; intentionally unused
+
+  return (
+    <aside
+      className={cn(
+        'border-l pl-6 md:pl-8 py-2 max-w-md md:justify-self-end',
+        aesthetics.borderTint,
+      )}
+      aria-label="Room membership"
+    >
+      <p className="text-[10px] uppercase tracking-[0.3em] text-muted-foreground/60 mb-4">
+        Membership
+      </p>
+
+      <p className="font-serif text-xl md:text-2xl text-cream/90 leading-snug mb-3">
+        {isJoined
+          ? 'You are part of this room.'
+          : 'You are outside this room.'}
+      </p>
+
+      <p className="text-sm text-muted-foreground/80 leading-relaxed mb-6 max-w-prose">
+        {isJoined
+          ? "Membership is separate from joining each week's ritual."
+          : invitationText}
+      </p>
+
+      {isJoined ? (
+        <button
+          type="button"
+          disabled={isPending}
+          onClick={onLeave}
+          className={cn(
+            'inline-block text-sm tracking-wide px-5 py-2 border transition-colors',
+            aesthetics.borderTint,
+            'text-muted-foreground hover:text-cream hover:border-border/50',
+            'disabled:opacity-50',
+          )}
+          style={{ transitionDuration: 'var(--room-transition, 500ms)' }}
+        >
+          {isPending ? 'Leaving…' : 'Leave Room'}
+        </button>
+      ) : isAuthenticated ? (
+        <button
+          type="button"
+          disabled={isPending}
+          onClick={onJoin}
+          className={cn(
+            'inline-block text-sm tracking-wide px-6 py-2.5 transition-all',
+            aesthetics.primaryAccent
+              .replace('text-', 'bg-')
+              .replace('/70', '/80')
+              .replace('/80', '/85'),
+            'text-cream hover:opacity-90 disabled:opacity-50',
+          )}
+          style={{ transitionDuration: 'var(--room-transition, 500ms)' }}
+        >
+          {isPending ? 'Joining…' : 'Join Room'}
+        </button>
+      ) : (
+        <a
+          href="/onboarding"
+          className={cn(
+            'inline-block text-sm tracking-wide px-5 py-2 border transition-colors',
+            aesthetics.borderTint,
+            'text-cream hover:bg-card/20',
+          )}
+          style={{ transitionDuration: 'var(--room-transition, 500ms)' }}
+        >
+          Sign in to join
+        </a>
+      )}
+
+      {DEV_MODE && membershipError && (
+        <p className="text-[10px] text-red-400/80 font-mono mt-3 max-w-xs">
+          ⚠ {membershipError}
+        </p>
+      )}
+    </aside>
+  )
+}
+
