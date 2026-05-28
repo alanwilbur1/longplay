@@ -64,16 +64,21 @@ export default async function RoomDetailPage({
     // unauthenticated — stays false
   }
 
+  // Phase 6B.2: ritual panel is composed server-side and threaded
+  // INTO the RoomDetailScreen via the `ritualPanel` slot — placing
+  // it high in the page hierarchy (immediately after WhyThisRoom),
+  // not appended at the bottom. The slot's server component
+  // returns null on DB lookup failure or rooms without cycles, so
+  // the room screen still renders cleanly when no panel is needed.
   return (
     <ProtectedLayout>
       <Navigation />
       <main className="min-h-screen pb-20 md:pb-0 md:pt-16">
-        <RoomDetailScreen room={room} initialIsJoined={initialIsJoined} />
-        {/* Phase 6B.2: live ritual context for this room. Rendered as
-            a separate server boundary so the room screen retains its
-            static fallback path and any DB lookup failure on the
-            ritual side degrades to "no panel" rather than 404. */}
-        <RitualContextPanelServer roomSlug={slug} />
+        <RoomDetailScreen
+          room={room}
+          initialIsJoined={initialIsJoined}
+          ritualPanel={<RitualContextPanelServer roomSlug={slug} />}
+        />
       </main>
     </ProtectedLayout>
   )
