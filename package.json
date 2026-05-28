@@ -28,6 +28,7 @@
     "test:archetype-stability": "npx tsx scripts/test-archetype-stability.ts",
     "test:ritual-lifecycle": "npx tsx scripts/test-ritual-lifecycle.ts",
     "test:ritual-seed-windows": "npx tsx scripts/test-ritual-seed-windows.ts",
+    "test:ritual-observations": "npx tsx scripts/test-ritual-observations.ts",
     "seed:ritual-cycles": "npx tsx scripts/seed-ritual-cycles.ts",
     "test:affinity-cache": "npx tsx scripts/test-affinity-cache.ts",
     "test:identity": "npx tsx scripts/test-identity.ts",

@@ -178,7 +178,16 @@ export async function getRoomHasActiveRitual(roomSlug: string): Promise<boolean>
 // ── Reflection list reader for the active cycle ────────────────────
 
 import { getSupabaseAdminClient } from '@/lib/supabase/admin'
-import type { RitualReflectionRow } from '@/lib/ritual/types'
+import type {
+  RitualParticipantRow,
+  RitualParticipantState,
+  RitualReflectionRow,
+} from '@/lib/ritual/types'
+import {
+  deriveCycleObservations,
+  participationCounts,
+  type ParticipationCounts,
+} from '@/lib/ritual/observations'
 
 export interface VisibleReflection {
   id: string
@@ -276,4 +285,121 @@ export async function getVisibleReflectionsForCycle(input: {
     })
   }
   return out
+}
+
+// ── Cycle ecology — counts + observational lines ──────────────────
+
+export interface CycleEcology {
+  /** Per-state participant counts for the cycle. */
+  counts: ParticipationCounts
+  /** Number of non-deleted, published reflections for the cycle. */
+  published_reflections: number
+  /** Ordered list of editorial observation sentences. Length 0 means
+   *  the cycle is empty (no participation) — the UI should suppress
+   *  the entire ecology section in that case. */
+  observations: string[]
+}
+
+const EMPTY_ECOLOGY: CycleEcology = {
+  counts: {
+    joined: 0,
+    listening: 0,
+    completed: 0,
+    reflected: 0,
+    withdrawn: 0,
+  },
+  published_reflections: 0,
+  observations: [],
+}
+
+/**
+ * Loads the data required to render "This Week in the Room" and
+ * runs the pure observation derivation in lib/ritual/observations.ts.
+ *
+ * Two server-side reads:
+ *   1. ritual_participants  (state + joined/completed/reflected timestamps)
+ *   2. ritual_reflections   (created_at of published, non-deleted rows)
+ *
+ * Pure derivation pass on the result. Returns an empty shape on any
+ * read failure — defensive: the panel should NEVER render fake
+ * observations when the data layer hiccups.
+ */
+export async function getCycleEcology(input: {
+  cycleId: string
+  cycleNumber: number
+}): Promise<CycleEcology> {
+  const admin = getSupabaseAdminClient()
+
+  type ParticipantBuilder = {
+    select: (cols: string) => {
+      eq: (col: string, val: string) => Promise<{
+        data: RitualParticipantRow[] | null
+        error: { message: string } | null
+      }>
+    }
+  }
+  type ReflectionBuilder = {
+    select: (cols: string) => {
+      eq: (col: string, val: string) => {
+        eq: (col: string, val: string) => {
+          is: (col: string, val: null) => Promise<{
+            data: { created_at: string }[] | null
+            error: { message: string } | null
+          }>
+        }
+      }
+    }
+  }
+
+  const [participantsRes, reflectionsRes] = await Promise.allSettled([
+    (admin.from('ritual_participants') as unknown as ParticipantBuilder)
+      .select(
+        'ritual_cycle_id, user_id, joined_at, completed_at, reflected_at, last_activity_at, participation_state, completion_percent, created_at, updated_at',
+      )
+      .eq('ritual_cycle_id', input.cycleId),
+    (admin.from('ritual_reflections') as unknown as ReflectionBuilder)
+      .select('created_at')
+      .eq('ritual_cycle_id', input.cycleId)
+      .eq('reflection_state', 'published')
+      .is('deleted_at', null),
+  ])
+
+  if (participantsRes.status === 'rejected') {
+    console.warn('[data/ritual] cycle ecology participants load failed', {
+      cycle_id: input.cycleId,
+      reason: String(participantsRes.reason),
+    })
+    return EMPTY_ECOLOGY
+  }
+  if (reflectionsRes.status === 'rejected') {
+    console.warn('[data/ritual] cycle ecology reflections load failed', {
+      cycle_id: input.cycleId,
+      reason: String(reflectionsRes.reason),
+    })
+    return EMPTY_ECOLOGY
+  }
+
+  const participants = (participantsRes.value.data ?? []) as RitualParticipantRow[]
+  const publishedReflections =
+    (reflectionsRes.value.data ?? []) as { created_at: string }[]
+
+  // Project participants down to the shape the pure derivation
+  // expects. Strips columns we don't need to reason over.
+  const projected = participants.map((p) => ({
+    joined_at: p.joined_at,
+    completed_at: p.completed_at,
+    reflected_at: p.reflected_at,
+    state: p.participation_state as RitualParticipantState,
+  }))
+
+  const observations = deriveCycleObservations({
+    cycle_number: input.cycleNumber,
+    participants: projected,
+    publishedReflections,
+  })
+  return {
+    counts: participationCounts(projected),
+    published_reflections: publishedReflections.length,
+    observations,
+  }
 }

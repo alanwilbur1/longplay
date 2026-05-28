@@ -1,11 +1,13 @@
 import { createSupabaseServerClient } from '@/lib/supabase/server'
 import {
+  getCycleEcology,
   getRoomRitualContext,
   getVisibleReflectionsForCycle,
 } from '@/lib/data/ritual'
 import { getSupabaseAdminClient } from '@/lib/supabase/admin'
 import type { Room } from '@/lib/rooms'
 import { RitualContextPanel } from './ritual-context-panel'
+import { RitualEcologySection } from './ritual-ecology-section'
 
 /**
  * Server-rendered shell for the RitualContextPanel. Resolves auth +
@@ -92,52 +94,82 @@ export async function RitualContextPanelServer({
       }
     : null
 
+  // Cycle ecology — counts + observational lines for "This Week in
+  // the Room". Cheap (2 admin reads + pure derivation); returns an
+  // empty shape on lookup failure so the ecology section can decide
+  // to suppress itself rather than render fake observations.
+  const ecology = ctx.active
+    ? await getCycleEcology({
+        cycleId: ctx.active.id,
+        cycleNumber: ctx.active.cycle_number,
+      })
+    : null
+
+  const aesthetics = {
+    borderTint: room.aesthetics.borderTint,
+    primaryAccent: room.aesthetics.primaryAccent,
+  }
+
+  // Return a Fragment so the page's `ritualPanel` slot receives BOTH
+  // the hero composition AND the "This Week in the Room" ecology
+  // section as one unit. Keeps the slot contract minimal and lets
+  // the room screen treat ritual content as a single block.
   return (
-    <RitualContextPanel
-      active={
-        ctx.active
-          ? {
-              id: ctx.active.id,
-              cycle_status: ctx.active.cycle_status,
-              cycle_number: ctx.active.cycle_number,
-              starts_at: ctx.active.starts_at,
-              lock_at: ctx.active.lock_at,
-              reflection_opens_at: ctx.active.reflection_opens_at,
-              reflection_closes_at: ctx.active.reflection_closes_at,
-              artifact_album_id: ctx.active.artifact_album_id,
-            }
-          : null
-      }
-      upcoming={
-        ctx.upcoming
-          ? {
-              id: ctx.upcoming.id,
-              cycle_number: ctx.upcoming.cycle_number,
-              starts_at: ctx.upcoming.starts_at,
-            }
-          : null
-      }
-      participation={participation}
-      reflections={reflections}
-      isAuthenticated={userId !== null}
-      artifact={{
-        cover: artifactCover,
-        title: artifactTitle,
-        artist: artifactArtist,
-        year: artifactYear,
-      }}
-      prompts={room.prompts}
-      streamingLinks={{
-        spotify: room.streamingLinks.spotify ?? null,
-        appleMusic: room.streamingLinks.appleMusic ?? null,
-        tidal: room.streamingLinks.tidal ?? null,
-      }}
-      aesthetics={{
-        borderTint: room.aesthetics.borderTint,
-        primaryAccent: room.aesthetics.primaryAccent,
-      }}
-      roomAtmosphere={room.atmosphere ?? null}
-    />
+    <>
+      <RitualContextPanel
+        active={
+          ctx.active
+            ? {
+                id: ctx.active.id,
+                cycle_status: ctx.active.cycle_status,
+                cycle_number: ctx.active.cycle_number,
+                starts_at: ctx.active.starts_at,
+                lock_at: ctx.active.lock_at,
+                reflection_opens_at: ctx.active.reflection_opens_at,
+                reflection_closes_at: ctx.active.reflection_closes_at,
+                artifact_album_id: ctx.active.artifact_album_id,
+              }
+            : null
+        }
+        upcoming={
+          ctx.upcoming
+            ? {
+                id: ctx.upcoming.id,
+                cycle_number: ctx.upcoming.cycle_number,
+                starts_at: ctx.upcoming.starts_at,
+              }
+            : null
+        }
+        participation={participation}
+        reflections={reflections}
+        isAuthenticated={userId !== null}
+        artifact={{
+          cover: artifactCover,
+          title: artifactTitle,
+          artist: artifactArtist,
+          year: artifactYear,
+        }}
+        prompts={room.prompts}
+        streamingLinks={{
+          spotify: room.streamingLinks.spotify ?? null,
+          appleMusic: room.streamingLinks.appleMusic ?? null,
+          tidal: room.streamingLinks.tidal ?? null,
+        }}
+        aesthetics={aesthetics}
+        roomAtmosphere={room.atmosphere ?? null}
+      />
+      {ctx.active && ecology && (
+        <RitualEcologySection
+          ecology={ecology}
+          reflections={reflections}
+          aesthetics={aesthetics}
+          reflectionWindowOpen={
+            ctx.active.cycle_status === 'reflection' ||
+            ctx.active.cycle_status === 'archived'
+          }
+        />
+      )}
+    </>
   )
 }
 
