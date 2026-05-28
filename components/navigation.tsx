@@ -175,27 +175,41 @@ export function Navigation() {
                   "Listening Room"; when a last-visited room is known,
                   render a quiet contextual subline below it that reads
                   e.g. "Return to The Nocturnal Room". */}
-              <Link
-                href={listeningRoomHref}
-                className={cn(
-                  'group flex flex-col items-start leading-none transition-all duration-500',
-                  isRoomActive
-                    ? 'text-cream'
-                    : 'text-muted-foreground hover:text-cream/80'
-                )}
-              >
-                <span className="text-sm tracking-wide">Listening Room</span>
-                {/* Phase 6B.4 follow-up: "Return to <Room>" sublabel
-                    only when the listener is NOT already on the
-                    canonical /rooms/[slug] for that room. Showing
-                    "Return to The Nocturnal Room" while you ARE in
-                    the Nocturnal Room reads as broken. */}
-                {lastRoom && !isInsideRoom && (
-                  <span className="mt-1 text-[10px] italic text-muted-foreground/50 group-hover:text-muted-foreground/70 tracking-wide transition-colors duration-500">
-                    Return to {lastRoom.name}
-                  </span>
-                )}
-              </Link>
+              {/* Phase 6B.5 follow-up: when the listener is already
+                  inside the canonical /rooms/[slug], render the
+                  "Listening Room" item as an inert <span> with
+                  aria-current="page" rather than a Link. Removes the
+                  "clicked and nothing happened" confusion the brief
+                  flagged. The visual highlight (text-cream) still
+                  communicates active state. */}
+              {isInsideRoom ? (
+                <span
+                  aria-current="page"
+                  className={cn(
+                    'group flex flex-col items-start leading-none text-cream',
+                    'cursor-default select-none',
+                  )}
+                >
+                  <span className="text-sm tracking-wide">Listening Room</span>
+                </span>
+              ) : (
+                <Link
+                  href={listeningRoomHref}
+                  className={cn(
+                    'group flex flex-col items-start leading-none transition-all duration-500',
+                    isRoomActive
+                      ? 'text-cream'
+                      : 'text-muted-foreground hover:text-cream/80',
+                  )}
+                >
+                  <span className="text-sm tracking-wide">Listening Room</span>
+                  {lastRoom && (
+                    <span className="mt-1 text-[10px] italic text-muted-foreground/50 group-hover:text-muted-foreground/70 tracking-wide transition-colors duration-500">
+                      Return to {lastRoom.name}
+                    </span>
+                  )}
+                </Link>
+              )}
               
               {/* Identity - Primary CTA styling */}
               <Link

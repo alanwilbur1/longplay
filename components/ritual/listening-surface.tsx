@@ -117,9 +117,13 @@ export function ListeningSurface({
   if (!spotifyAlbumId) return null
 
   // Path 2: Spotify embed.
-  // Compact size (height 152) — gives one row of player chrome plus
-  // the cover thumbnail. Larger sizes feel like a player widget; the
-  // compact size feels like a record sleeve placed on a shelf.
+  // Phase 6B.5 follow-up: height bumped to 352 (Spotify's default
+  // "standard" embed). At 352px the iframe exposes the FULL
+  // tracklist + per-track play affordances inside Spotify's own
+  // chrome — making the embed the actual listening surface, not
+  // just a player chip. The brief calls this out: "make it large
+  // enough and prominent enough to function as the track/player
+  // surface."
   const embedSrc = `https://open.spotify.com/embed/album/${spotifyAlbumId}?utm_source=longplay`
   return (
     <div className={cn('border-t pt-6 mt-6', aesthetics.borderTint)}>
@@ -143,7 +147,7 @@ export function ListeningSurface({
           title="Album player"
           src={embedSrc}
           width="100%"
-          height={152}
+          height={352}
           frameBorder={0}
           loading="lazy"
           allow="autoplay; clipboard-write; encrypted-media; fullscreen; picture-in-picture"

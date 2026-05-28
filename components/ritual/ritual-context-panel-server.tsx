@@ -79,23 +79,51 @@ export async function RitualContextPanelServer({
   let artifactTitle = room.currentAlbum?.title ?? null
   let artifactArtist = room.currentAlbum?.artist ?? null
   let artifactYear = room.currentAlbum?.year ?? null
-  if (
-    ctx.active?.artifact_album_id &&
-    // Album ids in the static catalog are slugs (e.g. "for-emma");
-    // ritual_cycles.artifact_album_id is a UUID. They never agree
-    // string-wise — always resolve the ritual's album from the
-    // albums table when an active cycle exists.
-    true
-  ) {
+  // Phase 6B.5 follow-up: multi-source Spotify album ID resolution.
+  // The original implementation only consulted the room's static
+  // `streamingLinks.spotify` URL, which is empty for the majority
+  // of rooms in the catalog — leading to the production regression
+  // where the embed never rendered. Resolve in priority order:
+  //   1. albums.spotify_id from the ritual cycle's artifact_album_id
+  //   2. albums.streaming_urls.spotify URL from the same row
+  //   3. room.currentAlbum.spotifyId from the static catalog
+  //   4. room.streamingLinks.spotify URL parse (legacy fallback)
+  let resolvedSpotifyAlbumId: string | null = null
+  let resolvedAppleMusicUrl: string | null = room.streamingLinks?.appleMusic ?? null
+  if (ctx.active?.artifact_album_id) {
     const resolved = await loadAlbum(ctx.active.artifact_album_id)
     if (resolved) {
-      // Override only the fields the cycle's album actually has;
-      // keep the room's defaults for anything missing.
       artifactCover = resolved.cover_url ?? artifactCover
       artifactTitle = resolved.title ?? artifactTitle
       artifactArtist = resolved.artist ?? artifactArtist
       artifactYear = resolved.year ?? artifactYear
+      // Source 1 — direct column on the album row (most reliable;
+      // backfilled by the artwork/refresh scripts).
+      if (resolved.spotify_id) {
+        resolvedSpotifyAlbumId = resolved.spotify_id
+      }
+      // Source 2 — URL embedded inside the streaming_urls jsonb.
+      if (!resolvedSpotifyAlbumId && resolved.streaming_urls?.spotify) {
+        resolvedSpotifyAlbumId = extractSpotifyAlbumId(
+          resolved.streaming_urls.spotify,
+        )
+      }
+      // Apple Music: prefer the album row's value over the room's
+      // static when present (same precedence logic).
+      if (resolved.streaming_urls?.appleMusic) {
+        resolvedAppleMusicUrl = resolved.streaming_urls.appleMusic
+      }
     }
+  }
+  // Source 3 — static catalog (Album.spotifyId on lib/albums.ts).
+  if (!resolvedSpotifyAlbumId && room.currentAlbum?.spotifyId) {
+    resolvedSpotifyAlbumId = room.currentAlbum.spotifyId
+  }
+  // Source 4 — URL parse on the room's static streamingLinks.
+  if (!resolvedSpotifyAlbumId) {
+    resolvedSpotifyAlbumId = extractSpotifyAlbumId(
+      room.streamingLinks?.spotify ?? null,
+    )
   }
 
   const participation = ctx.participation
@@ -181,20 +209,19 @@ export async function RitualContextPanelServer({
         }}
         prompts={room.prompts ?? []}
         streamingLinks={{
-          // Phase 6B.4 hotfix: defensive against rooms whose
-          // streamingLinks were never populated (DB rooms with
-          // missing column, malformed seed). Reading `.spotify`
-          // off undefined throws at SSR.
+          // Phase 6B.4 hotfix + 6B.5 follow-up: defensive nulls AND
+          // prefer the album row's Apple Music URL when present.
           spotify: room.streamingLinks?.spotify ?? null,
-          appleMusic: room.streamingLinks?.appleMusic ?? null,
+          appleMusic: resolvedAppleMusicUrl,
           tidal: room.streamingLinks?.tidal ?? null,
         }}
         aesthetics={aesthetics}
         roomAtmosphere={room.atmosphere ?? null}
         roomSlug={roomSlug}
-        spotifyAlbumId={extractSpotifyAlbumId(
-          room.streamingLinks?.spotify ?? null,
-        )}
+        // Phase 6B.5 follow-up: resolved upstream via the
+        // multi-source chain rather than only the room's static
+        // streamingLinks URL.
+        spotifyAlbumId={resolvedSpotifyAlbumId}
         tracklist={tracklist}
       />
       {ctx.active && ecology && (
@@ -239,6 +266,8 @@ async function loadAlbum(albumId: string): Promise<{
   title: string | null
   artist: string | null
   year: string | null
+  spotify_id: string | null
+  streaming_urls: Record<string, string> | null
 } | null> {
   const admin = getSupabaseAdminClient()
   type Builder = {
@@ -250,6 +279,8 @@ async function loadAlbum(albumId: string): Promise<{
             title: string | null
             artist: string | null
             year: string | null
+            spotify_id: string | null
+            streaming_urls: Record<string, string> | null
           } | null
           error: { message: string } | null
         }>
@@ -259,7 +290,7 @@ async function loadAlbum(albumId: string): Promise<{
   const { data, error } = await (
     admin.from('albums') as unknown as Builder
   )
-    .select('cover_url, title, artist, year')
+    .select('cover_url, title, artist, year, spotify_id, streaming_urls')
     .eq('id', albumId)
     .maybeSingle()
   if (error || !data) return null

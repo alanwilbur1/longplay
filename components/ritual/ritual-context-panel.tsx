@@ -292,6 +292,13 @@ function LeftColumn({
           itself contains the empty-vs-populated branching. */}
       <TracklistSurface
         tracks={tracklist.length > 0 ? tracklist : null}
+        // Phase 6B.5 follow-up: tell the surface whether the
+        // embedded Spotify player is rendering above it. When
+        // present, the empty-tracks state suppresses entirely (the
+        // embed already exposes the tracklist + playback inline).
+        // When absent, the original "Tracklist unavailable" line
+        // reads as primary.
+        embedPresent={spotifyAlbumId !== null}
         aesthetics={aesthetics}
       />
 
