@@ -8,7 +8,13 @@ import { getSupabaseAdminClient } from '@/lib/supabase/admin'
 import type { Room } from '@/lib/rooms'
 import { RitualContextPanel } from './ritual-context-panel'
 import { RitualEcologySection } from './ritual-ecology-section'
-import { extractSpotifyAlbumId } from './listening-surface'
+// Phase 6B.4 hotfix: import from the pure module, not from the
+// 'use client'-tagged listening-surface re-export. Crossing the
+// 'use client' boundary for a NAMED non-component export is a
+// runtime trap in Next.js App Router — the build passes static
+// analysis but the route hard-crashes on first SSR call. See
+// lib/spotify-url.ts for the background note.
+import { extractSpotifyAlbumId } from '@/lib/spotify-url'
 
 /**
  * Server-rendered shell for the RitualContextPanel. Resolves auth +
@@ -63,10 +69,13 @@ export async function RitualContextPanelServer({
   // Artifact resolution. Prefer the cycle's own artifact_album_id when
   // it diverges from room.currentAlbum (future-proofs against rituals
   // that move off the static catalog). Falls back to room.currentAlbum.
-  let artifactCover = room.currentAlbum.cover ?? null
-  let artifactTitle = room.currentAlbum.title ?? null
-  let artifactArtist = room.currentAlbum.artist ?? null
-  let artifactYear = room.currentAlbum.year ?? null
+  // Phase 6B.4 hotfix: rooms loaded from the DB may have a missing
+  // or partially-populated currentAlbum block. Guard each read so a
+  // bad row degrades gracefully (no album cover) rather than 500s.
+  let artifactCover = room.currentAlbum?.cover ?? null
+  let artifactTitle = room.currentAlbum?.title ?? null
+  let artifactArtist = room.currentAlbum?.artist ?? null
+  let artifactYear = room.currentAlbum?.year ?? null
   if (
     ctx.active?.artifact_album_id &&
     // Album ids in the static catalog are slugs (e.g. "for-emma");
@@ -106,9 +115,12 @@ export async function RitualContextPanelServer({
       })
     : null
 
+  // Phase 6B.4 hotfix: guard against a room loaded without an
+  // aesthetics block. Fall back to neutral border-tint + a quiet
+  // muted accent so the panel still composes.
   const aesthetics = {
-    borderTint: room.aesthetics.borderTint,
-    primaryAccent: room.aesthetics.primaryAccent,
+    borderTint: room.aesthetics?.borderTint ?? 'border-border/20',
+    primaryAccent: room.aesthetics?.primaryAccent ?? 'text-muted-foreground',
   }
 
   // Return a Fragment so the page's `ritualPanel` slot receives BOTH
@@ -150,17 +162,21 @@ export async function RitualContextPanelServer({
           artist: artifactArtist,
           year: artifactYear,
         }}
-        prompts={room.prompts}
+        prompts={room.prompts ?? []}
         streamingLinks={{
-          spotify: room.streamingLinks.spotify ?? null,
-          appleMusic: room.streamingLinks.appleMusic ?? null,
-          tidal: room.streamingLinks.tidal ?? null,
+          // Phase 6B.4 hotfix: defensive against rooms whose
+          // streamingLinks were never populated (DB rooms with
+          // missing column, malformed seed). Reading `.spotify`
+          // off undefined throws at SSR.
+          spotify: room.streamingLinks?.spotify ?? null,
+          appleMusic: room.streamingLinks?.appleMusic ?? null,
+          tidal: room.streamingLinks?.tidal ?? null,
         }}
         aesthetics={aesthetics}
         roomAtmosphere={room.atmosphere ?? null}
         roomSlug={roomSlug}
         spotifyAlbumId={extractSpotifyAlbumId(
-          room.streamingLinks.spotify ?? null,
+          room.streamingLinks?.spotify ?? null,
         )}
       />
       {ctx.active && ecology && (

@@ -7,6 +7,11 @@ import {
   setListeningMark,
   type ListeningMark,
 } from '@/lib/listening-continuity'
+// Phase 6B.4 hotfix: re-export from the pure module rather than
+// owning the implementation here. A server component imports
+// extractSpotifyAlbumId; importing it across the 'use client'
+// boundary on THIS file is a runtime trap in Next.js App Router.
+export { extractSpotifyAlbumId } from '@/lib/spotify-url'
 
 /**
  * components/ritual/listening-surface.tsx — Phase 6B.4
@@ -193,24 +198,7 @@ function formatDate(iso: string): string {
     return iso.slice(0, 10)
   }
 }
-
-/**
- * Extract the Spotify album ID from a streaming URL.
- *
- *   https://open.spotify.com/album/5vkqYmiPBYLaalcmjujWxK?si=...
- *     → '5vkqYmiPBYLaalcmjujWxK'
- *
- * Returns null for non-album URLs, missing input, or unparseable
- * shapes. Caller (the server panel) uses this to derive the
- * `spotifyAlbumId` prop. Spotify IDs are 22-character base62; we
- * accept the broader [A-Za-z0-9]+ regex because the URL won't ever
- * contain other characters in the album-id slot anyway.
- */
-export function extractSpotifyAlbumId(
-  url: string | null | undefined,
-): string | null {
-  if (!url) return null
-  const m = url.match(/spotify\.com\/(?:embed\/)?album\/([A-Za-z0-9]+)/i)
-  if (!m) return null
-  return m[1]
-}
+// extractSpotifyAlbumId is re-exported from @/lib/spotify-url at the
+// top of this file; its implementation now lives in a pure module so
+// server components can import it without crossing the 'use client'
+// boundary. See the hotfix note there.
