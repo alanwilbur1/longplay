@@ -1,12 +1,14 @@
 /**
  * scripts/test-listening-surface.ts — Phase 6B.4
  *
- * Pure-function tests for extractSpotifyAlbumId. The function is the
- * one piece of logic in components/ritual/listening-surface.tsx that
- * runs without React, so we test it in isolation.
+ * Pure-function tests for extractSpotifyAlbumId. After the 6B.4
+ * hotfix the function lives in lib/spotify-url.ts (extracted out of
+ * the 'use client'-tagged listening-surface module so server
+ * components can import it without crossing the boundary). The test
+ * imports from the new location.
  */
 
-import { extractSpotifyAlbumId } from '../components/ritual/listening-surface'
+import { extractSpotifyAlbumId } from '../lib/spotify-url'
 
 let pass = 0
 let fail = 0
