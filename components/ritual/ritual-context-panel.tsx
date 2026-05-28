@@ -91,6 +91,15 @@ export interface RitualContextPanelProps {
    *  server panel. Null when no Spotify URL is available — the
    *  ListeningSurface falls back to an Apple Music line. */
   spotifyAlbumId: string | null
+  /** Phase 6B.5: real per-album track rows pre-fetched server-side
+   *  from album_tracks (migration 0023). Empty array when no rows
+   *  are hydrated yet — the TracklistSurface renders its restrained
+   *  fallback line in that case. */
+  tracklist: ReadonlyArray<{
+    number: number
+    title: string
+    duration: string | null
+  }>
 }
 
 export function RitualContextPanel(props: RitualContextPanelProps) {
@@ -142,6 +151,7 @@ export function RitualContextPanel(props: RitualContextPanelProps) {
           roomAtmosphere={props.roomAtmosphere}
           roomSlug={props.roomSlug}
           spotifyAlbumId={props.spotifyAlbumId}
+          tracklist={props.tracklist}
         />
         <RightColumn
           ritualCycleId={active.id}
@@ -169,6 +179,7 @@ function LeftColumn({
   roomAtmosphere,
   roomSlug,
   spotifyAlbumId,
+  tracklist,
 }: {
   active: NonNullable<RitualContextPanelProps['active']>
   artifact: RitualContextPanelProps['artifact']
@@ -177,6 +188,7 @@ function LeftColumn({
   roomAtmosphere: string | null
   roomSlug: string
   spotifyAlbumId: string | null
+  tracklist: RitualContextPanelProps['tracklist']
 }) {
   const statusLabel = (() => {
     switch (active.cycle_status) {
@@ -274,7 +286,14 @@ function LeftColumn({
           resolution lands (Spotify API at sync time, cached on the
           albums table), pass a non-null `tracks` array here and the
           surface renders an editorial list automatically. */}
-      <TracklistSurface tracks={null} aesthetics={aesthetics} />
+      {/* Phase 6B.5: real tracklist when album_tracks rows have been
+          hydrated for the cycle's artifact_album_id; empty array
+          triggers the restrained fallback line. The TracklistSurface
+          itself contains the empty-vs-populated branching. */}
+      <TracklistSurface
+        tracks={tracklist.length > 0 ? tracklist : null}
+        aesthetics={aesthetics}
+      />
 
       {/* Any other streaming destinations (e.g. TIDAL) — kept as a
           single quiet line below the surface for completeness. */}
