@@ -849,8 +849,13 @@ export const ALBUMS = {
     // Lets the ritual hero's ListeningSurface render the embedded
     // album player + tracklist for /rooms/southern-listening even
     // when the DB's albums.spotify_id column hasn't been backfilled.
-    spotifyId: '4xnq8WAJBhmaW6sBjcsh1U',
-    spotifyUrl: 'https://open.spotify.com/album/4xnq8WAJBhmaW6sBjcsh1U',
+    //
+    // Phase 6B continuation fix: the prior ID (4xnq8WAJBhmaW6sBjcsh1U)
+    // resolved to a "Page not found" in the embed — it is not a live
+    // Spotify album. Replaced with the verified canonical original
+    // 2013 release (12 tracks, matching the description above).
+    spotifyId: '1bg476ZQn7hmcXaU05SHV4',
+    spotifyUrl: 'https://open.spotify.com/album/1bg476ZQn7hmcXaU05SHV4',
   },
 
   // ============================================

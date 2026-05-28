@@ -145,6 +145,16 @@ export function ListeningSurface({
   // enough and prominent enough to function as the track/player
   // surface."
   const embedSrc = `https://open.spotify.com/embed/album/${spotifyAlbumId}?utm_source=longplay`
+
+  // TEMPORARY DIAGNOSTIC (Phase 6B continuation). Logs the exact
+  // iframe src to the browser console so a "Page not found" embed can
+  // be traced back to the resolved album ID. Mirrors the server-side
+  // [ritual-spotify-debug] line. Remove once the embed is confirmed
+  // playable in production.
+  if (typeof window !== 'undefined') {
+    console.log('[listening-surface-embed]', { roomSlug, spotifyAlbumId, embedSrc })
+  }
+
   return (
     <div className={cn('border-t pt-6 mt-6', aesthetics.borderTint)}>
       <p className="text-[10px] uppercase tracking-[0.3em] text-muted-foreground/60 mb-3">
