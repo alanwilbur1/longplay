@@ -8,6 +8,7 @@ import { getSupabaseAdminClient } from '@/lib/supabase/admin'
 import type { Room } from '@/lib/rooms'
 import { RitualContextPanel } from './ritual-context-panel'
 import { RitualEcologySection } from './ritual-ecology-section'
+import { extractSpotifyAlbumId } from './listening-surface'
 
 /**
  * Server-rendered shell for the RitualContextPanel. Resolves auth +
@@ -157,6 +158,10 @@ export async function RitualContextPanelServer({
         }}
         aesthetics={aesthetics}
         roomAtmosphere={room.atmosphere ?? null}
+        roomSlug={roomSlug}
+        spotifyAlbumId={extractSpotifyAlbumId(
+          room.streamingLinks.spotify ?? null,
+        )}
       />
       {ctx.active && ecology && (
         <RitualEcologySection

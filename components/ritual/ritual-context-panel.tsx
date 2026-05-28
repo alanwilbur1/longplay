@@ -16,6 +16,7 @@ import type {
   RitualParticipantState,
 } from '@/lib/ritual/types'
 import type { VisibleReflection } from '@/lib/data/ritual'
+import { ListeningSurface } from './listening-surface'
 
 /**
  * components/ritual/ritual-context-panel.tsx — Phase 6B.2 (refined)
@@ -82,6 +83,13 @@ export interface RitualContextPanelProps {
   /** Short room atmosphere line (single phrase). Rendered as a small
    *  ceremonial subtitle below the artist line. */
   roomAtmosphere: string | null
+  /** Room slug, used by the embedded ListeningSurface for continuity
+   *  state (localStorage keyed by room). */
+  roomSlug: string
+  /** Spotify album ID parsed from streamingLinks.spotify URL by the
+   *  server panel. Null when no Spotify URL is available — the
+   *  ListeningSurface falls back to an Apple Music line. */
+  spotifyAlbumId: string | null
 }
 
 export function RitualContextPanel(props: RitualContextPanelProps) {
@@ -131,6 +139,8 @@ export function RitualContextPanel(props: RitualContextPanelProps) {
           streamingLinks={props.streamingLinks}
           aesthetics={aesthetics}
           roomAtmosphere={props.roomAtmosphere}
+          roomSlug={props.roomSlug}
+          spotifyAlbumId={props.spotifyAlbumId}
         />
         <RightColumn
           ritualCycleId={active.id}
@@ -156,12 +166,16 @@ function LeftColumn({
   streamingLinks,
   aesthetics,
   roomAtmosphere,
+  roomSlug,
+  spotifyAlbumId,
 }: {
   active: NonNullable<RitualContextPanelProps['active']>
   artifact: RitualContextPanelProps['artifact']
   streamingLinks: RitualContextPanelProps['streamingLinks']
   aesthetics: RitualContextPanelProps['aesthetics']
   roomAtmosphere: string | null
+  roomSlug: string
+  spotifyAlbumId: string | null
 }) {
   const statusLabel = (() => {
     switch (active.cycle_status) {
@@ -241,43 +255,42 @@ function LeftColumn({
         </p>
       )}
 
-      {/* Streaming destinations — text-only, no chips. */}
-      <StreamingRow links={streamingLinks} aesthetics={aesthetics} />
+      {/* Phase 6B.4: embedded ritual listening. ListeningSurface
+          handles Spotify embed + Apple Music micro-link + continuity
+          state ("Begin when you're ready" / "Continue listening").
+          Renders nothing when no streaming link is available. */}
+      <ListeningSurface
+        roomSlug={roomSlug}
+        spotifyAlbumId={spotifyAlbumId}
+        appleMusicUrl={streamingLinks.appleMusic ?? null}
+        albumKey={active.artifact_album_id ?? roomSlug}
+        aesthetics={aesthetics}
+      />
+
+      {/* Any other streaming destinations (e.g. TIDAL) — kept as a
+          single quiet line below the surface for completeness. */}
+      {streamingLinks.tidal && (
+        <div className="mt-3">
+          <a
+            href={streamingLinks.tidal}
+            target="_blank"
+            rel="noopener noreferrer"
+            className={cn(
+              'text-[11px] text-muted-foreground/40 hover:text-muted-foreground/70 transition-colors',
+            )}
+          >
+            TIDAL
+          </a>
+        </div>
+      )}
     </div>
   )
 }
 
-function StreamingRow({
-  links,
-  aesthetics,
-}: {
-  links: RitualContextPanelProps['streamingLinks']
-  aesthetics: RitualContextPanelProps['aesthetics']
-}) {
-  const items: Array<{ label: string; href: string }> = []
-  if (links.spotify) items.push({ label: 'Spotify', href: links.spotify })
-  if (links.appleMusic) items.push({ label: 'Apple Music', href: links.appleMusic })
-  if (links.tidal) items.push({ label: 'TIDAL', href: links.tidal })
-  if (items.length === 0) return null
-  return (
-    <div className="flex flex-wrap items-center gap-x-5 gap-y-2 mt-4">
-      {items.map((it) => (
-        <a
-          key={it.label}
-          href={it.href}
-          target="_blank"
-          rel="noopener noreferrer"
-          className={cn(
-            'text-xs text-muted-foreground/70 transition-colors',
-            'hover:' + aesthetics.primaryAccent,
-          )}
-        >
-          {it.label}
-        </a>
-      ))}
-    </div>
-  )
-}
+// Phase 6B.4: the legacy StreamingRow has been folded into the
+// ListeningSurface (Spotify embed + Apple Music micro-link) plus a
+// single TIDAL anchor below it. The standalone row component is no
+// longer needed.
 
 // ── Right column: ceremony ─────────────────────────────────────────
 
