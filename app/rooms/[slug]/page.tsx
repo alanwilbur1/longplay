@@ -2,6 +2,7 @@ import { notFound } from 'next/navigation'
 import { Navigation } from '@/components/navigation'
 import { RoomDetailScreen } from '@/components/room-detail-screen'
 import { ProtectedLayout } from '@/components/protected-layout'
+import { RitualContextPanelServer } from '@/components/ritual/ritual-context-panel-server'
 import { getRoomBySlug as getDbRoom } from '@/lib/data/rooms'
 import { isRoomMember } from '@/lib/actions/membership'
 import { getRoomBySlug, ALL_ROOMS } from '@/lib/rooms'
@@ -68,6 +69,11 @@ export default async function RoomDetailPage({
       <Navigation />
       <main className="min-h-screen pb-20 md:pb-0 md:pt-16">
         <RoomDetailScreen room={room} initialIsJoined={initialIsJoined} />
+        {/* Phase 6B.2: live ritual context for this room. Rendered as
+            a separate server boundary so the room screen retains its
+            static fallback path and any DB lookup failure on the
+            ritual side degrades to "no panel" rather than 404. */}
+        <RitualContextPanelServer roomSlug={slug} />
       </main>
     </ProtectedLayout>
   )
