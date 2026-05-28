@@ -6,8 +6,11 @@ import {
 } from '@/lib/data/ritual'
 import { getSupabaseAdminClient } from '@/lib/supabase/admin'
 import type { Room } from '@/lib/rooms'
+import { getAlbumTracksByAlbumId } from '@/lib/data/album-tracks'
+import { formatTrackDuration } from '@/lib/album-tracks-format'
 import { RitualContextPanel } from './ritual-context-panel'
 import { RitualEcologySection } from './ritual-ecology-section'
+import type { Track as TracklistTrack } from './tracklist-surface'
 // Phase 6B.4 hotfix: import from the pure module, not from the
 // 'use client'-tagged listening-surface re-export. Crossing the
 // 'use client' boundary for a NAMED non-component export is a
@@ -115,6 +118,20 @@ export async function RitualContextPanelServer({
       })
     : null
 
+  // Phase 6B.5: pre-fetch the album tracklist. Reads from the
+  // album_tracks substrate (migration 0023). Empty array when the
+  // album hasn't been hydrated yet — the TracklistSurface UI shows
+  // its restrained fallback line. Never throws; getter returns []
+  // on any DB hiccup.
+  const tracklistRows = ctx.active?.artifact_album_id
+    ? await getAlbumTracksByAlbumId(ctx.active.artifact_album_id)
+    : []
+  const tracklist: TracklistTrack[] = tracklistRows.map((r) => ({
+    number: r.track_number,
+    title: r.name,
+    duration: formatTrackDuration(r.duration_ms),
+  }))
+
   // Phase 6B.4 hotfix: guard against a room loaded without an
   // aesthetics block. Fall back to neutral border-tint + a quiet
   // muted accent so the panel still composes.
@@ -178,6 +195,7 @@ export async function RitualContextPanelServer({
         spotifyAlbumId={extractSpotifyAlbumId(
           room.streamingLinks?.spotify ?? null,
         )}
+        tracklist={tracklist}
       />
       {ctx.active && ecology && (
         <RitualEcologySection

@@ -17,6 +17,7 @@ import type {
 } from '@/lib/ritual/types'
 import type { VisibleReflection } from '@/lib/data/ritual'
 import { ListeningSurface } from './listening-surface'
+import { TracklistSurface } from './tracklist-surface'
 
 /**
  * components/ritual/ritual-context-panel.tsx — Phase 6B.2 (refined)
@@ -90,6 +91,15 @@ export interface RitualContextPanelProps {
    *  server panel. Null when no Spotify URL is available — the
    *  ListeningSurface falls back to an Apple Music line. */
   spotifyAlbumId: string | null
+  /** Phase 6B.5: real per-album track rows pre-fetched server-side
+   *  from album_tracks (migration 0023). Empty array when no rows
+   *  are hydrated yet — the TracklistSurface renders its restrained
+   *  fallback line in that case. */
+  tracklist: ReadonlyArray<{
+    number: number
+    title: string
+    duration: string | null
+  }>
 }
 
 export function RitualContextPanel(props: RitualContextPanelProps) {
@@ -141,6 +151,7 @@ export function RitualContextPanel(props: RitualContextPanelProps) {
           roomAtmosphere={props.roomAtmosphere}
           roomSlug={props.roomSlug}
           spotifyAlbumId={props.spotifyAlbumId}
+          tracklist={props.tracklist}
         />
         <RightColumn
           ritualCycleId={active.id}
@@ -168,6 +179,7 @@ function LeftColumn({
   roomAtmosphere,
   roomSlug,
   spotifyAlbumId,
+  tracklist,
 }: {
   active: NonNullable<RitualContextPanelProps['active']>
   artifact: RitualContextPanelProps['artifact']
@@ -176,6 +188,7 @@ function LeftColumn({
   roomAtmosphere: string | null
   roomSlug: string
   spotifyAlbumId: string | null
+  tracklist: RitualContextPanelProps['tracklist']
 }) {
   const statusLabel = (() => {
     switch (active.cycle_status) {
@@ -264,6 +277,21 @@ function LeftColumn({
         spotifyAlbumId={spotifyAlbumId}
         appleMusicUrl={streamingLinks.appleMusic ?? null}
         albumKey={active.artifact_album_id ?? roomSlug}
+        aesthetics={aesthetics}
+      />
+
+      {/* Phase 6B.4 follow-up: tracklist surface. Renders the
+          restrained "Tracklist unavailable" caption today because
+          LongPlay has no real per-album track data. When track
+          resolution lands (Spotify API at sync time, cached on the
+          albums table), pass a non-null `tracks` array here and the
+          surface renders an editorial list automatically. */}
+      {/* Phase 6B.5: real tracklist when album_tracks rows have been
+          hydrated for the cycle's artifact_album_id; empty array
+          triggers the restrained fallback line. The TracklistSurface
+          itself contains the empty-vs-populated branching. */}
+      <TracklistSurface
+        tracks={tracklist.length > 0 ? tracklist : null}
         aesthetics={aesthetics}
       />
 
