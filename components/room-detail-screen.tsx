@@ -449,25 +449,11 @@ export function RoomDetailScreen({ room, initialIsJoined = false }: RoomDetailSc
                   )}
                 </div>
                 
-                {/* Enter / Join CTA — direct navigation, no interstitial.
-                    Joined members go straight to the active room; non-members
-                    see the full Join flow in the section below. */}
-                {isJoined && (
-                  <Link
-                    href={`/room/${room.slug}`}
-                    className={cn(
-                      "inline-flex items-center gap-3 px-8 py-4 text-cream text-sm tracking-wide transition-all",
-                      room.aesthetics.primaryAccent.replace('text-', 'bg-').replace('/70', '/80').replace('/80', '/90'),
-                      "hover:opacity-90"
-                    )}
-                    style={{ transitionDuration: 'var(--room-transition, 500ms)' }}
-                  >
-                    <span>Enter Listening Room</span>
-                    <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="1.5">
-                      <path strokeLinecap="round" strokeLinejoin="round" d="M13.5 4.5L21 12m0 0l-7.5 7.5M21 12H3" />
-                    </svg>
-                  </Link>
-                )}
+                {/* Phase 6B.2: removed the "Enter Listening Room"
+                    CTA. The user is already on the canonical room
+                    page; the ritual context panel below renders the
+                    active cycle inline. There is no separate
+                    listening-room destination anymore. */}
               </div>
             </div>
           </div>
@@ -819,51 +805,41 @@ export function RoomDetailScreen({ room, initialIsJoined = false }: RoomDetailSc
                 {isJoined ? 'You\'re part of this room' : 'Join this room'}
               </h3>
               <p className="text-sm text-muted-foreground">
-                {isJoined 
-                  ? 'Access the full listening experience, annotations, and community reflections.'
+                {isJoined
+                  ? 'This week\'s ritual is shown below.'
                   : room.culture.invitationText}
               </p>
             </div>
-            
+
             <div className="flex flex-col gap-2 items-end">
               <div className="flex gap-4">
                 {isJoined ? (
-                  <>
-                    <Link
-                      href={`/room/${room.slug}`}
-                      className={cn(
-                        "px-8 py-4 text-cream text-sm tracking-wide transition-all",
-                        room.aesthetics.primaryAccent.replace('text-', 'bg-').replace('/70', '/80').replace('/80', '/90'),
-                        "hover:opacity-90"
-                      )}
-                      style={{ transitionDuration: 'var(--room-transition, 500ms)' }}
-                    >
-                      Enter Listening Room
-                    </Link>
-                    <button
-                      disabled={isPending}
-                      onClick={() => {
-                        setMembershipError(null)
-                        startTransition(async () => {
-                          const result = await leaveRoom(room.slug)
-                          if (result.success) {
-                            setIsJoined(false)
-                            router.refresh()
-                          } else {
-                            setMembershipError(result.error ?? 'Leave failed')
-                          }
-                        })
-                      }}
-                      className={cn(
-                        "px-6 py-4 border text-muted-foreground text-sm transition-all",
-                        room.aesthetics.borderTint,
-                        "hover:text-cream hover:border-border/50 disabled:opacity-50"
-                      )}
-                      style={{ transitionDuration: 'var(--room-transition, 500ms)' }}
-                    >
-                      {isPending ? 'Leaving…' : 'Leave'}
-                    </button>
-                  </>
+                  // Phase 6B.2: removed the "Enter Listening Room" CTA
+                  // — the ritual panel below renders the active cycle
+                  // in place. Only the Leave control remains.
+                  <button
+                    disabled={isPending}
+                    onClick={() => {
+                      setMembershipError(null)
+                      startTransition(async () => {
+                        const result = await leaveRoom(room.slug)
+                        if (result.success) {
+                          setIsJoined(false)
+                          router.refresh()
+                        } else {
+                          setMembershipError(result.error ?? 'Leave failed')
+                        }
+                      })
+                    }}
+                    className={cn(
+                      'px-6 py-4 border text-muted-foreground text-sm transition-all',
+                      room.aesthetics.borderTint,
+                      'hover:text-cream hover:border-border/50 disabled:opacity-50',
+                    )}
+                    style={{ transitionDuration: 'var(--room-transition, 500ms)' }}
+                  >
+                    {isPending ? 'Leaving…' : 'Leave'}
+                  </button>
                 ) : isAuthenticated ? (
                   <button
                     disabled={isPending}

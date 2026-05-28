@@ -61,11 +61,12 @@ export function HomeScreen({ joinedRooms }: HomeScreenProps) {
 
   // Primary CTA: resume the last visited room when known; otherwise the
   // first joined room; otherwise send the user to discovery.
+  // Phase 6B.2: /room/[slug] is gone — single canonical route is /rooms/[slug].
   const primaryHref =
     lastRoom?.slug
-      ? `/room/${lastRoom.slug}`
+      ? `/rooms/${lastRoom.slug}`
       : joinedRooms.length > 0
-        ? `/room/${joinedRooms[0].slug}`
+        ? `/rooms/${joinedRooms[0].slug}`
         : '/rooms'
 
   const primaryLabel =
@@ -129,7 +130,7 @@ export function HomeScreen({ joinedRooms }: HomeScreenProps) {
               {joinedRooms.slice(0, 4).map(room => (
                 <Link
                   key={room.id}
-                  href={`/room/${room.slug}`}
+                  href={`/rooms/${room.slug}`}
                   className="group flex items-center gap-5 p-4 border border-border/20 bg-card/10 hover:border-border/40 hover:bg-card/20 transition-all duration-500"
                 >
                   <div className="relative w-16 h-16 md:w-20 md:h-20 shrink-0 overflow-hidden bg-muted">

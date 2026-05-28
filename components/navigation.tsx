@@ -54,7 +54,9 @@ export function Navigation() {
   // /rooms (a safe public surface); client-mount may upgrade to the
   // user's last active room. Falling back to /rooms when no last room
   // exists keeps the item useful even for new sessions.
-  const listeningRoomHref = lastRoom?.slug ? `/room/${lastRoom.slug}` : '/rooms'
+  // Phase 6B.2: /room/[slug] is gone — single canonical route is
+  // /rooms/[slug]. Last-room return links resolve there directly.
+  const listeningRoomHref = lastRoom?.slug ? `/rooms/${lastRoom.slug}` : '/rooms'
 
   return (
     <>
