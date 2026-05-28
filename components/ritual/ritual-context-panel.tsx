@@ -17,6 +17,7 @@ import type {
 } from '@/lib/ritual/types'
 import type { VisibleReflection } from '@/lib/data/ritual'
 import { ListeningSurface } from './listening-surface'
+import { TracklistSurface } from './tracklist-surface'
 
 /**
  * components/ritual/ritual-context-panel.tsx — Phase 6B.2 (refined)
@@ -266,6 +267,14 @@ function LeftColumn({
         albumKey={active.artifact_album_id ?? roomSlug}
         aesthetics={aesthetics}
       />
+
+      {/* Phase 6B.4 follow-up: tracklist surface. Renders the
+          restrained "Tracklist unavailable" caption today because
+          LongPlay has no real per-album track data. When track
+          resolution lands (Spotify API at sync time, cached on the
+          albums table), pass a non-null `tracks` array here and the
+          surface renders an editorial list automatically. */}
+      <TracklistSurface tracks={null} aesthetics={aesthetics} />
 
       {/* Any other streaming destinations (e.g. TIDAL) — kept as a
           single quiet line below the surface for completeness. */}

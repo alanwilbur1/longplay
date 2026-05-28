@@ -18,10 +18,18 @@ import { getLastRoom, type LastRoom } from '@/lib/last-room'
  * 5. Profile - Account/membership layer
  */
 
+// Phase 6B.4 follow-up: the "Listening Room" item is intentionally
+// a sentinel — its `href` is a label, not a route. The resolver
+// below maps it to listeningRoomHref (the user's current/last room
+// when known, or /rooms otherwise). Static href `/rooms` keeps the
+// SSR Link pointed at a real, working URL so any pre-hydration
+// click lands somewhere valid.
+const LISTENING_ROOM_SENTINEL = '__listening_room__'
+
 const primaryNavItems = [
   { href: '/', label: 'Home', mobileLabel: 'Home', icon: HomeIcon },
   { href: '/rooms', label: 'Rooms', mobileLabel: 'Rooms', icon: RoomsIcon },
-  { href: '/room', label: 'Room', mobileLabel: 'Room', icon: RoomIcon },
+  { href: LISTENING_ROOM_SENTINEL, label: 'Listening Room', mobileLabel: 'Room', icon: RoomIcon },
   { href: '/identity', label: 'Identity', mobileLabel: 'Identity', icon: IdentityIcon },
   { href: '/profile', label: 'Profile', mobileLabel: 'Profile', icon: ProfileIcon },
 ]
@@ -45,18 +53,36 @@ export function Navigation() {
   }
 
   // Determine active states for room-related pages.
-  // "Rooms" tab is active on discovery (/rooms, /rooms/[slug]) and on
-  // the legacy /clubs alias that still renders the same surface.
-  const isRoomsActive = pathname === '/rooms' || pathname.startsWith('/rooms/') || pathname === '/clubs' || pathname.startsWith('/clubs/')
-  const isRoomActive = pathname === '/room' || pathname.startsWith('/room/')
+  // Phase 6B.4 follow-up: the canonical single-room route is
+  // /rooms/[slug]. We split it from the directory route /rooms so the
+  // two nav items don't both highlight simultaneously:
+  //   /rooms                    → "Rooms" tab active
+  //   /rooms/<slug>             → "Listening Room" tab active (the
+  //                                listener IS in a room)
+  //   /clubs (legacy alias)     → "Rooms" tab active
+  const isOnRoomsDirectory =
+    pathname === '/rooms' ||
+    pathname === '/clubs' ||
+    pathname.startsWith('/clubs/')
+  const isInsideRoom =
+    pathname.startsWith('/rooms/') && pathname !== '/rooms'
+  const isRoomsActive = isOnRoomsDirectory
+  const isRoomActive = isInsideRoom
 
-  // Resolve the destination for the "Listening Room" nav item. SSR uses
-  // /rooms (a safe public surface); client-mount may upgrade to the
-  // user's last active room. Falling back to /rooms when no last room
-  // exists keeps the item useful even for new sessions.
-  // Phase 6B.2: /room/[slug] is gone — single canonical route is
-  // /rooms/[slug]. Last-room return links resolve there directly.
-  const listeningRoomHref = lastRoom?.slug ? `/rooms/${lastRoom.slug}` : '/rooms'
+  // Resolve the destination for the "Listening Room" nav item.
+  //   1. Currently inside a room (/rooms/<current>) → link to that
+  //      same canonical route. The brief calls this out: when the
+  //      listener is already in a room, the nav item should not
+  //      redirect them elsewhere.
+  //   2. Last visited room known (lib/last-room.ts)  → link to it.
+  //   3. Neither                                     → link to the
+  //      directory /rooms so the listener can pick.
+  let listeningRoomHref = '/rooms'
+  if (isInsideRoom) {
+    listeningRoomHref = pathname
+  } else if (lastRoom?.slug) {
+    listeningRoomHref = `/rooms/${lastRoom.slug}`
+  }
 
   return (
     <>
@@ -68,7 +94,7 @@ export function Navigation() {
             let isActive: boolean
             if (item.href === '/rooms') {
               isActive = isRoomsActive
-            } else if (item.href === '/room') {
+            } else if (item.href === LISTENING_ROOM_SENTINEL) {
               isActive = isRoomActive
             } else if (item.href === '/') {
               isActive = pathname === '/'
@@ -80,7 +106,8 @@ export function Navigation() {
             
             // Resume-listening: the Room tab routes to the last visited
             // active room when known. Falls back to /rooms.
-            const resolvedHref = item.href === '/room' ? listeningRoomHref : item.href
+            const resolvedHref =
+              item.href === LISTENING_ROOM_SENTINEL ? listeningRoomHref : item.href
 
             return (
               <Link
@@ -158,7 +185,12 @@ export function Navigation() {
                 )}
               >
                 <span className="text-sm tracking-wide">Listening Room</span>
-                {lastRoom && (
+                {/* Phase 6B.4 follow-up: "Return to <Room>" sublabel
+                    only when the listener is NOT already on the
+                    canonical /rooms/[slug] for that room. Showing
+                    "Return to The Nocturnal Room" while you ARE in
+                    the Nocturnal Room reads as broken. */}
+                {lastRoom && !isInsideRoom && (
                   <span className="mt-1 text-[10px] italic text-muted-foreground/50 group-hover:text-muted-foreground/70 tracking-wide transition-colors duration-500">
                     Return to {lastRoom.name}
                   </span>
