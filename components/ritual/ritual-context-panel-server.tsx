@@ -18,6 +18,7 @@ import type { Track as TracklistTrack } from './tracklist-surface'
 // analysis but the route hard-crashes on first SSR call. See
 // lib/spotify-url.ts for the background note.
 import { extractSpotifyAlbumId } from '@/lib/spotify-url'
+import { ALBUMS } from '@/lib/albums'
 
 /**
  * Server-rendered shell for the RitualContextPanel. Resolves auth +
@@ -79,17 +80,52 @@ export async function RitualContextPanelServer({
   let artifactTitle = room.currentAlbum?.title ?? null
   let artifactArtist = room.currentAlbum?.artist ?? null
   let artifactYear = room.currentAlbum?.year ?? null
-  // Phase 6B.5 follow-up: multi-source Spotify album ID resolution.
-  // The original implementation only consulted the room's static
-  // `streamingLinks.spotify` URL, which is empty for the majority
-  // of rooms in the catalog — leading to the production regression
-  // where the embed never rendered. Resolve in priority order:
+  // Phase 6B.5 follow-up #2: multi-source Spotify album ID
+  // resolution + temporary diagnostic logging. The prior chain
+  // (sources 1-4) STILL failed in production for southern-listening
+  // because:
+  //   · DB album row has spotify_id = NULL (seed never set it)
+  //   · DB streaming_urls.spotify is empty
+  //   · room.currentAlbum.spotifyId is undefined (assembleAlbum
+  //     reads from the DB column, which is null)
+  //   · room.streamingLinks.spotify is undefined ({})
+  //
+  // → all four sources returned null → embed never rendered.
+  //
+  // Added source 5: direct lookup against the STATIC ALBUMS
+  // catalog by slug. This bypasses the DB-load gap entirely when
+  // the static catalog (lib/albums.ts) has a spotifyId set for the
+  // album, even when the DB doesn't. The "minimal safe fallback
+  // patch" the audit brief asked for.
+  //
+  // Resolution priority:
   //   1. albums.spotify_id from the ritual cycle's artifact_album_id
   //   2. albums.streaming_urls.spotify URL from the same row
-  //   3. room.currentAlbum.spotifyId from the static catalog
-  //   4. room.streamingLinks.spotify URL parse (legacy fallback)
+  //   3. room.currentAlbum.spotifyId from the DB-assembled Album
+  //   4. ★ STATIC catalog ALBUMS[slug].spotifyId — bypasses DB ★
+  //   5. room.streamingLinks.spotify URL parse (legacy fallback)
+  //
+  // The console.log lines are TEMPORARY DIAGNOSTIC — remove once
+  // the production trace confirms which source is winning.
   let resolvedSpotifyAlbumId: string | null = null
   let resolvedAppleMusicUrl: string | null = room.streamingLinks?.appleMusic ?? null
+  const debugSources: {
+    artifact_album_id: string | null
+    db_spotify_id: string | null
+    db_streaming_urls_spotify: string | null
+    room_currentAlbum_spotifyId: string | null
+    static_catalog_spotifyId: string | null
+    room_streamingLinks_spotify: string | null
+    winner: 'db_column' | 'db_streaming_urls' | 'room_currentAlbum' | 'static_catalog' | 'room_streamingLinks_url' | 'none'
+  } = {
+    artifact_album_id: ctx.active?.artifact_album_id ?? null,
+    db_spotify_id: null,
+    db_streaming_urls_spotify: null,
+    room_currentAlbum_spotifyId: room.currentAlbum?.spotifyId ?? null,
+    static_catalog_spotifyId: null,
+    room_streamingLinks_spotify: room.streamingLinks?.spotify ?? null,
+    winner: 'none',
+  }
   if (ctx.active?.artifact_album_id) {
     const resolved = await loadAlbum(ctx.active.artifact_album_id)
     if (resolved) {
@@ -97,34 +133,67 @@ export async function RitualContextPanelServer({
       artifactTitle = resolved.title ?? artifactTitle
       artifactArtist = resolved.artist ?? artifactArtist
       artifactYear = resolved.year ?? artifactYear
-      // Source 1 — direct column on the album row (most reliable;
-      // backfilled by the artwork/refresh scripts).
+      debugSources.db_spotify_id = resolved.spotify_id
+      debugSources.db_streaming_urls_spotify =
+        resolved.streaming_urls?.spotify ?? null
+      // Source 1
       if (resolved.spotify_id) {
         resolvedSpotifyAlbumId = resolved.spotify_id
+        debugSources.winner = 'db_column'
       }
       // Source 2 — URL embedded inside the streaming_urls jsonb.
       if (!resolvedSpotifyAlbumId && resolved.streaming_urls?.spotify) {
         resolvedSpotifyAlbumId = extractSpotifyAlbumId(
           resolved.streaming_urls.spotify,
         )
+        if (resolvedSpotifyAlbumId) debugSources.winner = 'db_streaming_urls'
       }
-      // Apple Music: prefer the album row's value over the room's
-      // static when present (same precedence logic).
       if (resolved.streaming_urls?.appleMusic) {
         resolvedAppleMusicUrl = resolved.streaming_urls.appleMusic
       }
     }
   }
-  // Source 3 — static catalog (Album.spotifyId on lib/albums.ts).
+  // Source 3 — DB-assembled room.currentAlbum.spotifyId. Usually
+  // undefined when the underlying DB row has spotify_id = NULL,
+  // because assembleAlbum in lib/data/albums.ts only reads from
+  // the column (no static-catalog fallback at that layer).
   if (!resolvedSpotifyAlbumId && room.currentAlbum?.spotifyId) {
     resolvedSpotifyAlbumId = room.currentAlbum.spotifyId
+    debugSources.winner = 'room_currentAlbum'
   }
-  // Source 4 — URL parse on the room's static streamingLinks.
+  // ★ Source 4 (NEW) — direct lookup against the STATIC ALBUMS
+  // catalog by slug. room.currentAlbum.id is the slug (via the
+  // assembleAlbum convention `id: row.slug ?? row.id`); we find
+  // the matching static entry by iterating values. This is the
+  // safety net for the production state where the DB hasn't been
+  // backfilled with spotify_id but the static catalog has been.
+  const slugForStatic = room.currentAlbum?.id ?? null
+  if (slugForStatic) {
+    const staticEntry = Object.values(ALBUMS).find(
+      (a) => (a as { id?: string }).id === slugForStatic,
+    ) as { spotifyId?: string } | undefined
+    debugSources.static_catalog_spotifyId = staticEntry?.spotifyId ?? null
+    if (!resolvedSpotifyAlbumId && staticEntry?.spotifyId) {
+      resolvedSpotifyAlbumId = staticEntry.spotifyId
+      debugSources.winner = 'static_catalog'
+    }
+  }
+  // Source 5 — URL parse on the room's static streamingLinks.
   if (!resolvedSpotifyAlbumId) {
     resolvedSpotifyAlbumId = extractSpotifyAlbumId(
       room.streamingLinks?.spotify ?? null,
     )
+    if (resolvedSpotifyAlbumId) debugSources.winner = 'room_streamingLinks_url'
   }
+
+  // TEMPORARY DIAGNOSTIC. Surfaces in Vercel function logs as a
+  // single JSON line per ritual-panel render. Remove once the
+  // production trace confirms the chain is working as designed.
+  console.log('[ritual-spotify-debug]', {
+    roomSlug,
+    final: resolvedSpotifyAlbumId,
+    sources: debugSources,
+  })
 
   const participation = ctx.participation
     ? {
