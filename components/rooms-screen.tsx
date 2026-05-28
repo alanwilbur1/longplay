@@ -14,11 +14,12 @@ interface RoomsScreenProps {
 /**
  * Routing rule (Phase 3B navigation simplification):
  *   - Joined rooms always deep-link to /room/[slug] (active listening room).
- *   - Non-joined rooms link to /rooms/[slug] (editorial profile / join flow).
- * This applies to every card on this surface, not just the "Your Rooms" row.
+ *   - All rooms link to /rooms/[slug] (Phase 6B.2 consolidated the
+ *     legacy /room/[slug] active-listening view into the canonical
+ *     /rooms/[slug] page; ritual context renders inline there).
  */
-function roomHref(slug: string, joined: boolean): string {
-  return joined ? `/room/${slug}` : `/rooms/${slug}`
+function roomHref(slug: string, _joined: boolean): string {
+  return `/rooms/${slug}`
 }
 
 export function RoomsScreen({
@@ -58,7 +59,7 @@ export function RoomsScreen({
             {joinedRooms.slice(0, 3).map((room) => (
               <Link
                 key={room.id}
-                href={`/room/${room.slug}`}
+                href={`/rooms/${room.slug}`}
                 className="group shrink-0 w-32 md:w-40"
               >
                 <div className="relative aspect-square mb-3 overflow-hidden rounded">

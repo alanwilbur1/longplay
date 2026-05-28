@@ -175,18 +175,21 @@ export function AlbumDetailScreen() {
         </div>
       </section>
 
-      {/* Enter Listening Room CTA */}
+      {/* Phase 6B.2: the previous "Enter the Listening Room" CTA
+          pointed at the now-removed singular /room route. The album
+          page no longer claims a room — listeners discover rooms via
+          /rooms. This section now surfaces room discovery directly. */}
       <section className="px-6 py-16 md:px-12 lg:px-24 border-t border-border/20">
         <div className="text-center max-w-md mx-auto">
-          <h2 className="font-serif text-2xl md:text-3xl text-cream mb-4">Ready to listen together?</h2>
+          <h2 className="font-serif text-2xl md:text-3xl text-cream mb-4">Find a room listening to this</h2>
           <p className="text-muted-foreground mb-8 leading-relaxed">
-            Join the conversation in the listening room.
+            Albums live inside rooms here. Browse the rooms to see which one is sitting with this record.
           </p>
-          <Link 
-            href="/room"
+          <Link
+            href="/rooms"
             className="inline-flex items-center justify-center gap-3 bg-burgundy/80 hover:bg-burgundy px-8 py-4 text-cream transition-all duration-500 w-full md:w-auto"
           >
-            <span className="font-medium tracking-wide">Enter the Listening Room</span>
+            <span className="font-medium tracking-wide">Browse rooms</span>
             <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="1.5">
               <path strokeLinecap="round" strokeLinejoin="round" d="M17.25 8.25L21 12m0 0l-3.75 3.75M21 12H3" />
             </svg>
