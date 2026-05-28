@@ -37,6 +37,22 @@ export interface TracklistSurfaceProps {
    *  restrained fallback line. We never accept a falsy array silently
    *  — the caller is responsible for choosing tracks vs null. */
   tracks: ReadonlyArray<Track> | null
+  /** Phase 6B.5 follow-up: whether the embedded Spotify player is
+   *  currently rendered above this surface. Controls the empty-state
+   *  copy:
+   *    embedPresent=true  → "Track details are available in the
+   *                         player above." (quiet secondary line,
+   *                         since the user CAN already see + play
+   *                         tracks via the embed)
+   *    embedPresent=false → "Tracklist unavailable. Listen through
+   *                         the embedded album player above." (the
+   *                         original 6B.4 line; reads as primary)
+   *  Production regression — most rooms have no Spotify URL so the
+   *  embed never rendered and the "unavailable" line dominated.
+   *  The fix sources the Spotify ID more carefully (server panel)
+   *  AND, when the embed is up, lets the tracklist section yield
+   *  primacy to the player. */
+  embedPresent?: boolean
   /** Room aesthetic tokens — composed with the surrounding hero. */
   aesthetics: {
     borderTint: string
@@ -44,8 +60,19 @@ export interface TracklistSurfaceProps {
   }
 }
 
-export function TracklistSurface({ tracks, aesthetics }: TracklistSurfaceProps) {
+export function TracklistSurface({
+  tracks,
+  embedPresent = false,
+  aesthetics,
+}: TracklistSurfaceProps) {
   if (!tracks || tracks.length === 0) {
+    // When the player IS rendered above, suppress this surface
+    // entirely. The 352px embed already shows the tracklist inline
+    // and a "Tracklist unavailable" caption beneath it would be
+    // both redundant and contradictory.
+    if (embedPresent) return null
+    // Player not present — show the original fallback as the
+    // primary listening cue.
     return (
       <div className={cn('border-t pt-6 mt-6', aesthetics.borderTint)}>
         <p className="text-[10px] uppercase tracking-[0.3em] text-muted-foreground/60 mb-3">
