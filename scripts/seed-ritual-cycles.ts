@@ -33,9 +33,17 @@
  *   SUPABASE_SERVICE_ROLE_KEY
  */
 
-import { createClient } from '@supabase/supabase-js'
+import { createClient, type SupabaseClient } from '@supabase/supabase-js'
 import WS from 'ws'
 import { seedWeekWindows } from '../lib/ritual/seed-windows'
+import {
+  computeCycleStatusForTime,
+  shouldRefreshCycleStatus,
+} from '../lib/ritual/lifecycle'
+import type {
+  RitualCycleRow,
+  RitualCycleStatus,
+} from '../lib/ritual/types'
 
 interface RoomRow {
   id: string
@@ -134,10 +142,16 @@ async function main() {
       continue
     }
 
-    // Insert three rows in one batch. The DB-level UNIQUE
-    // (room_id, cycle_number) plus the partial unique index
-    // accept all three as 'upcoming' on insert — the sweep
-    // promotes the middle one to 'active' on the next tick.
+    // Insert three rows in one batch. Status is REALIZED at insert
+    // via computeCycleStatusForTime so the rooms render correctly
+    // without waiting for the cron sweep to tick — that's the bug
+    // the previous "always insert as upcoming" pattern hit when the
+    // sweep cron was disabled or capped. The trailing
+    // transitionRitualCycles() sweep below also fixes any rooms
+    // that were skipped here for already having cycles.
+    const now = new Date()
+    const realize = (w: typeof windows.archived): RitualCycleStatus =>
+      computeCycleStatusForTime(w, now)
     const rows = [
       {
         room_id: room.id,
@@ -149,7 +163,7 @@ async function main() {
         lock_at: windows.archived.lock_at,
         reflection_opens_at: windows.archived.reflection_opens_at,
         reflection_closes_at: windows.archived.reflection_closes_at,
-        cycle_status: 'upcoming',
+        cycle_status: realize(windows.archived),
       },
       {
         room_id: room.id,
@@ -161,7 +175,7 @@ async function main() {
         lock_at: windows.active.lock_at,
         reflection_opens_at: windows.active.reflection_opens_at,
         reflection_closes_at: windows.active.reflection_closes_at,
-        cycle_status: 'upcoming',
+        cycle_status: realize(windows.active),
       },
       {
         room_id: room.id,
@@ -173,7 +187,7 @@ async function main() {
         lock_at: windows.upcoming.lock_at,
         reflection_opens_at: windows.upcoming.reflection_opens_at,
         reflection_closes_at: windows.upcoming.reflection_closes_at,
-        cycle_status: 'upcoming',
+        cycle_status: realize(windows.upcoming),
       },
     ]
 
@@ -191,14 +205,104 @@ async function main() {
 
   console.log('')
   console.log(`── result: ${seeded} seeded · ${skipped} skipped · ${errored} errored ──`)
+
+  // Trailing sweep. Idempotent. Two important jobs:
+  //   1. For rooms inserted ABOVE with realized statuses, this is a
+  //      no-op (the persisted status already matches the clock).
+  //   2. For rooms SKIPPED above (already had cycles from an older
+  //      seed that wrote everything as 'upcoming'), this is the only
+  //      thing that brings them up to date — without it, the
+  //      operator would have to hit /api/cron/ritual-transitions
+  //      manually, and if their plan can't enable that cron entry,
+  //      the rooms would render the "No ritual" empty state
+  //      indefinitely. The sweep fixes them in-band here.
+  //
+  // Logic is duplicated from lib/ritual/cycles.ts:transitionRitualCycles
+  // because that module imports 'server-only' (a Next.js boundary
+  // package that isn't resolvable from tsx scripts). Keep the
+  // two implementations in lock-step — both consult the same
+  // lib/ritual/lifecycle.ts pure helpers.
   console.log('')
-  console.log(
-    'Next step: invoke the transition sweep (manually or wait for cron) to promote',
-  )
-  console.log('the active cycle from upcoming → active:')
-  console.log('  curl -H "Authorization: Bearer $CRON_SECRET" \\')
-  console.log('       https://<host>/api/cron/ritual-transitions')
+  console.log('Running lifecycle sweep to align statuses on existing rooms…')
+  await sweepCycleStatuses(db, new Date())
+  console.log('')
   process.exit(0)
+}
+
+async function sweepCycleStatuses(
+  db: SupabaseClient,
+  now: Date,
+): Promise<void> {
+  const { data, error } = await db
+    .from('ritual_cycles')
+    .select(
+      'id, room_id, artifact_album_id, legacy_cycle_id, ritual_type, cycle_number, starts_at, lock_at, reflection_opens_at, reflection_closes_at, archived_at, cycle_status, created_at, updated_at',
+    )
+    .in('cycle_status', ['upcoming', 'active', 'reflection'])
+    .order('room_id', { ascending: true })
+  if (error) {
+    console.warn(`  sweep select failed: ${error.message}`)
+    return
+  }
+  const cycles = (data ?? []) as unknown as RitualCycleRow[]
+
+  // Two-pass: archive first, then promote — the partial unique
+  // index uq_ritual_cycles_room_live rejects two live cycles in the
+  // same room.
+  const toArchive: RitualCycleRow[] = []
+  const toAdvance: Array<{ cycle: RitualCycleRow; target: RitualCycleStatus }> = []
+  for (const cycle of cycles) {
+    if (
+      !shouldRefreshCycleStatus(
+        cycle.cycle_status,
+        cycle.archived_at,
+        cycle,
+        now,
+      )
+    )
+      continue
+    const derived = computeCycleStatusForTime(cycle, now)
+    if (derived === 'archived') toArchive.push(cycle)
+    else toAdvance.push({ cycle, target: derived })
+  }
+
+  let archived = 0
+  let advanced = 0
+  let errors = 0
+  for (const cycle of toArchive) {
+    const { error: archErr } = await db
+      .from('ritual_cycles')
+      .update({
+        cycle_status: 'archived',
+        archived_at: cycle.archived_at ?? now.toISOString(),
+      })
+      .eq('id', cycle.id)
+    if (archErr) {
+      console.warn(
+        `  ✗ archive ${cycle.id} failed: code=${archErr.code} ${archErr.message}`,
+      )
+      errors += 1
+      continue
+    }
+    archived += 1
+  }
+  for (const { cycle, target } of toAdvance) {
+    const { error: advErr } = await db
+      .from('ritual_cycles')
+      .update({ cycle_status: target })
+      .eq('id', cycle.id)
+    if (advErr) {
+      console.warn(
+        `  ✗ advance ${cycle.id} → ${target} failed: code=${advErr.code} ${advErr.message}`,
+      )
+      errors += 1
+      continue
+    }
+    advanced += 1
+  }
+  console.log(
+    `  swept ${cycles.length} cycles · ${advanced} advanced · ${archived} archived · ${errors} errors`,
+  )
 }
 
 main().catch((err) => {

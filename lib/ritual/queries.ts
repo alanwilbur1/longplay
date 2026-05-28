@@ -82,22 +82,35 @@ export async function getActiveRitualForRoom(
 /**
  * Returns the next upcoming cycle for a room, or null when none is
  * scheduled.
+ *
+ * Guards against the case where a cycle is persisted with
+ * cycle_status='upcoming' but its starts_at is in the PAST (this
+ * happens when the lifecycle sweep hasn't run since the seed, or
+ * when the operator manually wrote an upcoming row in a backfill).
+ * Without the starts_at filter, that stale row would be rendered
+ * by the panel as "Next cycle begins <last week>" — observed bug
+ * during 6B.2 rollout. The starts_at>=now floor makes the result
+ * honest regardless of sweep timing.
  */
 export async function getUpcomingRitualForRoom(
   roomId: string,
+  options: { now?: Date } = {},
 ): Promise<RitualCycleRow | null> {
   const admin = getSupabaseAdminClient()
+  const nowIso = (options.now ?? new Date()).toISOString()
   const { data, error } = await (
     admin.from('ritual_cycles') as unknown as {
       select: (cols: string) => {
         eq: (col: string, val: string) => {
           eq: (col: string, val: string) => {
-            order: (col: string, opts: { ascending: boolean }) => {
-              limit: (n: number) => {
-                maybeSingle: () => Promise<{
-                  data: RitualCycleRow | null
-                  error: { code?: string; message: string } | null
-                }>
+            gte: (col: string, val: string) => {
+              order: (col: string, opts: { ascending: boolean }) => {
+                limit: (n: number) => {
+                  maybeSingle: () => Promise<{
+                    data: RitualCycleRow | null
+                    error: { code?: string; message: string } | null
+                  }>
+                }
               }
             }
           }
@@ -108,6 +121,7 @@ export async function getUpcomingRitualForRoom(
     .select(CYCLE_COLS)
     .eq('room_id', roomId)
     .eq('cycle_status', 'upcoming')
+    .gte('starts_at', nowIso)
     .order('starts_at', { ascending: true })
     .limit(1)
     .maybeSingle()
