@@ -140,6 +140,41 @@ export async function getRoomRitualContext(
   }
 }
 
+/**
+ * Page-side helper: does the room currently have an active or
+ * reflection-window cycle? Used by /rooms/[slug]/page.tsx to suppress
+ * the legacy "Current Album Cycle" + "Listening Prompts" sections in
+ * RoomDetailScreen when the ritual hero is going to surface the same
+ * content in a more orchestrated composition. Returns false on any
+ * lookup failure (defensive — never falsely hides editorial content).
+ */
+export async function getRoomHasActiveRitual(roomSlug: string): Promise<boolean> {
+  const admin = getSupabaseAdminClient()
+  type SlugBuilder = {
+    select: (cols: string) => {
+      eq: (col: string, val: string) => {
+        maybeSingle: () => Promise<{
+          data: { id: string } | null
+          error: { message: string } | null
+        }>
+      }
+    }
+  }
+  const { data: roomRow, error: roomErr } = await (
+    admin.from('rooms') as unknown as SlugBuilder
+  )
+    .select('id')
+    .eq('slug', roomSlug)
+    .maybeSingle()
+  if (roomErr || !roomRow) return false
+  try {
+    const active = await getActiveRitualForRoom(roomRow.id)
+    return active !== null
+  } catch {
+    return false
+  }
+}
+
 // ── Reflection list reader for the active cycle ────────────────────
 
 import { getSupabaseAdminClient } from '@/lib/supabase/admin'

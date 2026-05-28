@@ -26,6 +26,13 @@ interface RoomDetailScreenProps {
    *  unauthenticated browsing where the panel chose to render
    *  nothing). */
   ritualPanel?: React.ReactNode
+  /** Phase 6B.2 refinement: true when the room has an active ritual
+   *  cycle. The hero composition (rendered via `ritualPanel`) now
+   *  surfaces the album artifact + prompts + streaming inline, so the
+   *  legacy "Current Album Cycle" + "Listening Prompts" sections are
+   *  suppressed to remove redundancy. False (default) preserves the
+   *  full legacy layout for rooms without seeded cycles. */
+  hasActiveRitual?: boolean
 }
 
 /**
@@ -42,6 +49,7 @@ export function RoomDetailScreen({
   room,
   initialIsJoined = false,
   ritualPanel,
+  hasActiveRitual = false,
 }: RoomDetailScreenProps) {
   const router = useRouter()
   const { isAuthenticated } = useAuth()
@@ -371,6 +379,13 @@ export function RoomDetailScreen({
         {/* ============================================ */}
         {/* CURRENT ALBUM CYCLE */}
         {/* ============================================ */}
+        {/* Phase 6B.2: suppressed when the room has an active ritual.
+            The hero composition (ritualPanel above) surfaces the
+            album + cycle metadata + streaming links inline, so
+            re-rendering them here is redundant. Falls back to the
+            legacy section for rooms without seeded cycles so nothing
+            disappears mid-rollout. */}
+        {!hasActiveRitual && (
         <section className={cn(
           "px-6 py-12 md:px-12 lg:px-24 border-t",
           room.aesthetics.borderTint
@@ -483,6 +498,7 @@ export function RoomDetailScreen({
             </div>
           </div>
         </section>
+        )}
 
         {/* ============================================ */}
         {/* CURATOR'S NOTE */}
@@ -535,6 +551,11 @@ export function RoomDetailScreen({
         {/* ============================================ */}
         {/* LISTENING PROMPTS */}
         {/* ============================================ */}
+        {/* Phase 6B.2: suppressed when the room has an active ritual
+            cycle — the hero composition above carries the prompts
+            inline (PromptsBlock). Falls back to this section for
+            rooms without seeded cycles. */}
+        {!hasActiveRitual && (
         <section className={cn(
           "px-6 py-12 md:px-12 lg:px-24 border-t",
           room.aesthetics.borderTint
@@ -571,6 +592,7 @@ export function RoomDetailScreen({
             </div>
           </div>
         </section>
+        )}
 
         {/* ============================================ */}
         {/* LISTENING RITUAL */}

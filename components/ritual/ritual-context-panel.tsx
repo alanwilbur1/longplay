@@ -2,6 +2,8 @@
 
 import { useState, useTransition } from 'react'
 import { Textarea } from '@/components/ui/textarea'
+import { AlbumCover } from '@/components/album-cover'
+import { cn } from '@/lib/utils'
 import {
   joinRitualAction,
   markRitualCompletedAction,
@@ -15,19 +17,16 @@ import type {
 import type { VisibleReflection } from '@/lib/data/ritual'
 
 /**
- * components/ritual/ritual-context-panel.tsx — Phase 6B.2
+ * components/ritual/ritual-context-panel.tsx — Phase 6B.2 (refined)
  *
- * The calm editorial "This Week" surface. Rendered by the room
- * detail page from a server-loaded RoomRitualContext.
+ * The weekly ritual hero. Two-column composition centered on the
+ * album as the visual anchor; participation, reflection, and
+ * prompts compose on the right. Designed to be the emotional
+ * centerpiece of the room page, not a widget appended to it.
  *
- * Tone target: cinematic, contemplative, club-like. Avoids:
- *   - badges, streaks, counters with social weight
- *   - dopamine affordances (no "like", no "👏")
- *   - dashboard chrome (no progress bars, no metrics row)
- *
- * If the room has no active cycle, the panel returns a single
- * quiet line — "No ritual in this room yet." — and renders the
- * upcoming cycle preview when one exists. Sparsity over richness.
+ * Tone target: boutique listening ceremony, restrained editorial,
+ * Criterion Channel composition. No badges, no progress bars, no
+ * cards, no SaaS chrome. Negative space used as a pause, not a void.
  */
 
 export interface RitualContextPanelProps {
@@ -46,28 +45,59 @@ export interface RitualContextPanelProps {
     cycle_number: number
     starts_at: string
   } | null
-  /** Caller participation in the ACTIVE cycle. */
   participation: {
     state: RitualParticipantState
     joined_at: string
     completed_at: string | null
     reflected_at: string | null
   } | null
-  /** Reflections visible to the caller per the RLS-equivalent rules. */
   reflections: VisibleReflection[]
-  /** Whether the caller is signed in. Drives whether write affordances render. */
   isAuthenticated: boolean
-  /** Display label for the artifact this cycle revolves around.
-   *  Server-side resolved to "Album Title — Artist". */
-  artifactLabel: string | null
+  /** Album artifact for the active cycle. The hero anchors visually
+   *  on `cover`; the text columns flow from `title`/`artist`/`year`. */
+  artifact: {
+    cover: string | null
+    title: string | null
+    artist: string | null
+    year: string | null
+  }
+  /** Room prompts for the active cycle. Rendered inline in the hero
+   *  rather than as a separate "Listening Prompts" section. */
+  prompts: ReadonlyArray<{ question: string; hint: string }>
+  /** Streaming destinations for the artifact. Rendered as restrained
+   *  text pills in the hero, below the album metadata. */
+  streamingLinks: {
+    spotify: string | null
+    appleMusic: string | null
+    tidal: string | null
+  }
+  /** Room visual treatment. Carries through the borderTint /
+   *  primaryAccent classes the rest of the room screen uses, so the
+   *  hero composes with — rather than against — the room's identity. */
+  aesthetics: {
+    borderTint: string
+    primaryAccent: string
+  }
+  /** Short room atmosphere line (single phrase). Rendered as a small
+   *  ceremonial subtitle below the artist line. */
+  roomAtmosphere: string | null
 }
 
 export function RitualContextPanel(props: RitualContextPanelProps) {
-  const { active, upcoming, isAuthenticated } = props
+  const { active, upcoming, isAuthenticated, artifact, aesthetics } = props
 
+  // No active cycle → quiet single-line state. We do NOT render a
+  // bulky empty section; the room screen still has plenty of editorial
+  // content. Just an honest one-line state plus the upcoming hint
+  // when there's a real future cycle.
   if (!active) {
     return (
-      <section className="px-6 py-12 md:px-12 lg:px-24 border-t border-border/10">
+      <section
+        className={cn(
+          'px-6 py-12 md:px-12 lg:px-24 border-t',
+          aesthetics.borderTint,
+        )}
+      >
         <p className="text-[10px] uppercase tracking-[0.3em] text-muted-foreground/60 mb-3">
           This Week
         </p>
@@ -84,101 +114,268 @@ export function RitualContextPanel(props: RitualContextPanelProps) {
   }
 
   return (
-    <section className="px-6 py-12 md:px-12 lg:px-24 border-t border-border/10">
-      <div className="max-w-3xl mx-auto">
-        <CycleHeader
+    <section
+      className={cn(
+        'px-6 py-14 md:px-12 lg:px-24 md:py-20 border-t',
+        aesthetics.borderTint,
+      )}
+    >
+      {/* Hero composition. Symmetric column gap, generous on desktop,
+          stacks on mobile. No card wrapper — uses the room's own
+          ambient background. */}
+      <div className="grid grid-cols-1 md:grid-cols-[minmax(0,1fr)_minmax(0,1.05fr)] gap-12 md:gap-16 items-start max-w-6xl">
+        <LeftColumn
+          active={active}
+          artifact={artifact}
+          streamingLinks={props.streamingLinks}
+          aesthetics={aesthetics}
+          roomAtmosphere={props.roomAtmosphere}
+        />
+        <RightColumn
+          ritualCycleId={active.id}
           status={active.cycle_status}
-          cycleNumber={active.cycle_number}
-          startsAt={active.starts_at}
           reflectionOpensAt={active.reflection_opens_at}
           reflectionClosesAt={active.reflection_closes_at}
-          artifactLabel={props.artifactLabel}
-        />
-        <ParticipationLine
-          ritualCycleId={active.id}
-          status={active.cycle_status}
           participation={props.participation}
-          isAuthenticated={isAuthenticated}
-        />
-        <ReflectionSurface
-          ritualCycleId={active.id}
-          status={active.cycle_status}
           reflections={props.reflections}
+          prompts={props.prompts}
           isAuthenticated={isAuthenticated}
-          participantState={props.participation?.state ?? null}
+          aesthetics={aesthetics}
         />
       </div>
     </section>
   )
 }
 
-// ── Header ──────────────────────────────────────────────────────────
+// ── Left column: artifact anchor ───────────────────────────────────
 
-function CycleHeader({
+function LeftColumn({
+  active,
+  artifact,
+  streamingLinks,
+  aesthetics,
+  roomAtmosphere,
+}: {
+  active: NonNullable<RitualContextPanelProps['active']>
+  artifact: RitualContextPanelProps['artifact']
+  streamingLinks: RitualContextPanelProps['streamingLinks']
+  aesthetics: RitualContextPanelProps['aesthetics']
+  roomAtmosphere: string | null
+}) {
+  const statusLabel = (() => {
+    switch (active.cycle_status) {
+      case 'upcoming':
+        return 'Upcoming'
+      case 'active':
+        return 'In session'
+      case 'reflection':
+        return 'Reflection window'
+      case 'archived':
+        return 'Archived'
+    }
+  })()
+
+  return (
+    <div>
+      {/* Cycle line — tiny, mono, sets the editorial register. */}
+      <p className="text-[10px] uppercase tracking-[0.3em] text-muted-foreground/60 mb-6">
+        Cycle {active.cycle_number}
+        <span className="mx-2 text-muted-foreground/30">·</span>
+        <span className={aesthetics.primaryAccent}>{statusLabel}</span>
+      </p>
+
+      {/* Album artifact — the visual anchor. Square, generous max
+          width, faint ambient glow to lift it from the page. */}
+      {artifact.cover && (
+        <div className="relative w-full max-w-md mb-8">
+          <div
+            className={cn(
+              'absolute inset-0 blur-3xl -z-10 opacity-30',
+              aesthetics.primaryAccent
+                .replace('text-', 'bg-')
+                .replace('/70', '/20')
+                .replace('/80', '/20'),
+            )}
+          />
+          <AlbumCover
+            src={artifact.cover}
+            alt={artifact.title ?? 'Album cover'}
+            title={artifact.title ?? ''}
+            artist={artifact.artist ?? ''}
+            className="w-full aspect-square shadow-2xl"
+          />
+        </div>
+      )}
+
+      {/* Title — generous serif. */}
+      {artifact.title && (
+        <h2 className="font-serif text-3xl md:text-4xl text-cream leading-[1.15] tracking-tight mb-3">
+          {artifact.title}
+        </h2>
+      )}
+
+      {/* Artist + year — single understated line. */}
+      {artifact.artist && (
+        <p className="text-base text-muted-foreground mb-2">
+          {artifact.artist}
+          {artifact.year && (
+            <>
+              <span className="mx-2 text-muted-foreground/30">·</span>
+              <span className="text-muted-foreground/60">{artifact.year}</span>
+            </>
+          )}
+        </p>
+      )}
+
+      {/* Atmosphere — short ceremonial phrase. */}
+      {roomAtmosphere && (
+        <p
+          className={cn(
+            'text-xs italic mt-1 mb-6',
+            aesthetics.primaryAccent,
+            'opacity-80',
+          )}
+        >
+          {roomAtmosphere}
+        </p>
+      )}
+
+      {/* Streaming destinations — text-only, no chips. */}
+      <StreamingRow links={streamingLinks} aesthetics={aesthetics} />
+    </div>
+  )
+}
+
+function StreamingRow({
+  links,
+  aesthetics,
+}: {
+  links: RitualContextPanelProps['streamingLinks']
+  aesthetics: RitualContextPanelProps['aesthetics']
+}) {
+  const items: Array<{ label: string; href: string }> = []
+  if (links.spotify) items.push({ label: 'Spotify', href: links.spotify })
+  if (links.appleMusic) items.push({ label: 'Apple Music', href: links.appleMusic })
+  if (links.tidal) items.push({ label: 'TIDAL', href: links.tidal })
+  if (items.length === 0) return null
+  return (
+    <div className="flex flex-wrap items-center gap-x-5 gap-y-2 mt-4">
+      {items.map((it) => (
+        <a
+          key={it.label}
+          href={it.href}
+          target="_blank"
+          rel="noopener noreferrer"
+          className={cn(
+            'text-xs text-muted-foreground/70 transition-colors',
+            'hover:' + aesthetics.primaryAccent,
+          )}
+        >
+          {it.label}
+        </a>
+      ))}
+    </div>
+  )
+}
+
+// ── Right column: ceremony ─────────────────────────────────────────
+
+function RightColumn({
+  ritualCycleId,
   status,
-  cycleNumber,
-  startsAt,
   reflectionOpensAt,
   reflectionClosesAt,
-  artifactLabel,
+  participation,
+  reflections,
+  prompts,
+  isAuthenticated,
+  aesthetics,
 }: {
+  ritualCycleId: string
   status: RitualCycleStatus
-  cycleNumber: number
-  startsAt: string
   reflectionOpensAt: string
   reflectionClosesAt: string
-  artifactLabel: string | null
+  participation: RitualContextPanelProps['participation']
+  reflections: RitualContextPanelProps['reflections']
+  prompts: RitualContextPanelProps['prompts']
+  isAuthenticated: boolean
+  aesthetics: RitualContextPanelProps['aesthetics']
 }) {
-  const subline = (() => {
+  const windowLine = (() => {
     switch (status) {
       case 'upcoming':
-        return `Begins ${formatDate(startsAt)}.`
+        return null
       case 'active':
         return `Reflection window opens ${formatDate(reflectionOpensAt)}.`
       case 'reflection':
         return `Reflections close ${formatDate(reflectionClosesAt)}.`
       case 'archived':
-        return 'Archived.'
+        return 'This cycle is archived.'
     }
   })()
 
   return (
-    <header className="mb-10">
+    <div>
+      {/* Ceremonial title — small uppercase, sets the right column
+          register. Mirrors the left column's eyebrow line. */}
       <p className="text-[10px] uppercase tracking-[0.3em] text-muted-foreground/60 mb-3">
-        This Week · Cycle {cycleNumber}
+        This Week’s Ritual
       </p>
-      {artifactLabel && (
-        <h2 className="font-serif text-2xl md:text-3xl text-cream/90 leading-tight mb-3">
-          {artifactLabel}
-        </h2>
+
+      {/* Window timing — one-line, no countdown. Editorial, not
+          urgent. */}
+      {windowLine && (
+        <p className={cn('text-sm mb-10', aesthetics.primaryAccent)}>
+          {windowLine}
+        </p>
       )}
-      <p className="text-sm text-tobacco/80">{subline}</p>
-    </header>
+
+      <ParticipationBlock
+        ritualCycleId={ritualCycleId}
+        status={status}
+        participation={participation}
+        isAuthenticated={isAuthenticated}
+        aesthetics={aesthetics}
+      />
+
+      <ReflectionBlock
+        ritualCycleId={ritualCycleId}
+        status={status}
+        reflections={reflections}
+        isAuthenticated={isAuthenticated}
+        participantState={participation?.state ?? null}
+        aesthetics={aesthetics}
+      />
+
+      <PromptsBlock prompts={prompts} aesthetics={aesthetics} />
+    </div>
   )
 }
 
-// ── Participation line ──────────────────────────────────────────────
+// ── Participation block ────────────────────────────────────────────
 
-function ParticipationLine({
+function ParticipationBlock({
   ritualCycleId,
   status,
   participation,
   isAuthenticated,
+  aesthetics,
 }: {
   ritualCycleId: string
   status: RitualCycleStatus
   participation: RitualContextPanelProps['participation']
   isAuthenticated: boolean
+  aesthetics: RitualContextPanelProps['aesthetics']
 }) {
   const [isPending, startTransition] = useTransition()
   const [error, setError] = useState<string | null>(null)
 
   if (!isAuthenticated) {
-    // Quiet — no CTA shouting. Sign-in is available from nav.
     return null
   }
 
-  const canJoin = !participation && (status === 'upcoming' || status === 'active')
+  const canJoin =
+    !participation && (status === 'upcoming' || status === 'active')
   const canComplete =
     participation &&
     (participation.state === 'joined' || participation.state === 'listening') &&
@@ -199,41 +396,62 @@ function ParticipationLine({
     })
   }
 
+  const stateCopy = (() => {
+    if (!participation) return 'You haven’t joined this week’s ritual yet.'
+    switch (participation.state) {
+      case 'joined':
+        return 'Joined. Listen at your own pace this week.'
+      case 'listening':
+        return 'Listening.'
+      case 'completed':
+        return 'Completed. Reflect when you’re ready.'
+      case 'reflected':
+        return 'You’ve reflected.'
+      case 'withdrawn':
+        return 'Withdrawn from this cycle.'
+    }
+  })()
+
   return (
-    <div className="mb-10 border-l border-tobacco/20 pl-5 py-1">
-      <p className="text-[10px] uppercase tracking-[0.3em] text-tobacco/60 mb-2">
+    <div
+      className={cn(
+        'border-l pl-5 py-1 mb-10',
+        aesthetics.borderTint.replace('border-', 'border-'),
+      )}
+    >
+      <p className="text-[10px] uppercase tracking-[0.3em] text-muted-foreground/60 mb-2">
         Your participation
       </p>
-      <p className="text-sm text-cream/70 mb-3">
-        {!participation &&
-          'You haven’t joined this week’s ritual yet.'}
-        {participation?.state === 'joined' && 'Joined — listen this week.'}
-        {participation?.state === 'listening' && 'Listening.'}
-        {participation?.state === 'completed' &&
-          'Completed. Reflect when you’re ready.'}
-        {participation?.state === 'reflected' && 'You’ve reflected.'}
-        {participation?.state === 'withdrawn' && 'Withdrawn from this cycle.'}
+      <p className="font-serif text-base text-cream/80 leading-relaxed mb-4">
+        {stateCopy}
       </p>
 
-      {canJoin && (
-        <button
-          type="button"
-          onClick={handleJoin}
-          disabled={isPending}
-          className="text-xs text-tobacco hover:text-cream transition-colors disabled:opacity-50"
-        >
-          {isPending ? 'Joining…' : 'Join this week'}
-        </button>
-      )}
-      {canComplete && (
-        <button
-          type="button"
-          onClick={handleComplete}
-          disabled={isPending}
-          className="text-xs text-tobacco hover:text-cream transition-colors disabled:opacity-50 ml-1"
-        >
-          {isPending ? 'Marking…' : 'Mark complete'}
-        </button>
+      {(canJoin || canComplete) && (
+        <div className="flex flex-wrap items-center gap-x-5 gap-y-2">
+          {canJoin && (
+            <button
+              type="button"
+              onClick={handleJoin}
+              disabled={isPending}
+              className={cn(
+                'text-sm transition-colors disabled:opacity-50',
+                'text-cream hover:opacity-80',
+              )}
+            >
+              {isPending ? 'Joining…' : 'Join this week'}
+            </button>
+          )}
+          {canComplete && (
+            <button
+              type="button"
+              onClick={handleComplete}
+              disabled={isPending}
+              className="text-sm text-muted-foreground hover:text-cream transition-colors disabled:opacity-50"
+            >
+              {isPending ? 'Marking…' : 'Mark complete'}
+            </button>
+          )}
+        </div>
       )}
 
       {error && (
@@ -243,57 +461,65 @@ function ParticipationLine({
   )
 }
 
-// ── Reflection surface ──────────────────────────────────────────────
+// ── Reflection block ───────────────────────────────────────────────
 
-function ReflectionSurface({
+function ReflectionBlock({
   ritualCycleId,
   status,
   reflections,
   isAuthenticated,
   participantState,
+  aesthetics,
 }: {
   ritualCycleId: string
   status: RitualCycleStatus
   reflections: VisibleReflection[]
   isAuthenticated: boolean
   participantState: RitualParticipantState | null
+  aesthetics: RitualContextPanelProps['aesthetics']
 }) {
-  const ownReflections = reflections.filter((r) => r.is_own)
-  const ownDraft = ownReflections.find((r) => r.reflection_state === 'draft')
-  const ownPublished = ownReflections.find(
-    (r) => r.reflection_state === 'published',
-  )
-  const peerReflections = reflections.filter((r) => !r.is_own)
+  const own = reflections.filter((r) => r.is_own)
+  const draft = own.find((r) => r.reflection_state === 'draft')
+  const published = own.find((r) => r.reflection_state === 'published')
+  const peer = reflections.filter((r) => !r.is_own)
 
-  // Composer / read view selection
   const isReflectionWindow = status === 'reflection'
   const isArchived = status === 'archived'
   const showComposer =
     isAuthenticated && (status === 'active' || isReflectionWindow)
 
+  // Suppress entirely when nothing to say (upcoming, no composer
+  // affordance, no reflections to read).
+  if (status === 'upcoming') return null
+
   return (
-    <div>
-      <p className="text-[10px] uppercase tracking-[0.3em] text-tobacco/60 mb-3">
-        Reflections
+    <div className="mb-10">
+      <p className="text-[10px] uppercase tracking-[0.3em] text-muted-foreground/60 mb-4">
+        Reflection
       </p>
 
       {showComposer && (
         <ReflectionComposer
           ritualCycleId={ritualCycleId}
-          existingDraft={ownDraft ?? null}
-          existingPublished={ownPublished ?? null}
+          existingDraft={draft ?? null}
+          existingPublished={published ?? null}
           canPublish={isReflectionWindow}
           participantState={participantState}
+          aesthetics={aesthetics}
         />
       )}
 
-      {/* Peer reflections — only visible during reflection or archived */}
-      {(isReflectionWindow || isArchived) && peerReflections.length > 0 && (
+      {(isReflectionWindow || isArchived) && peer.length > 0 && (
         <div className="mt-8 space-y-6">
-          {peerReflections.map((r) => (
+          {peer.map((r) => (
             <article
               key={r.id}
-              className="border-l border-cream/10 pl-5 py-1"
+              className={cn(
+                'border-l pl-5 py-1',
+                aesthetics.borderTint
+                  .replace('border-', 'border-')
+                  .replace('/30', '/20'),
+              )}
             >
               <p className="text-[10px] text-muted-foreground/40 font-mono mb-1">
                 {formatDate(r.created_at)}
@@ -307,23 +533,17 @@ function ReflectionSurface({
       )}
 
       {(isReflectionWindow || isArchived) &&
-        peerReflections.length === 0 &&
-        !ownPublished && (
+        peer.length === 0 &&
+        !published && (
           <p className="text-sm text-muted-foreground/40 italic mt-3">
             No reflections yet.
           </p>
         )}
-
-      {status === 'upcoming' && (
-        <p className="text-sm text-muted-foreground/40 italic">
-          The ritual hasn’t started yet.
-        </p>
-      )}
     </div>
   )
 }
 
-// ── Composer ────────────────────────────────────────────────────────
+// ── Composer ───────────────────────────────────────────────────────
 
 function ReflectionComposer({
   ritualCycleId,
@@ -331,20 +551,19 @@ function ReflectionComposer({
   existingPublished,
   canPublish,
   participantState,
+  aesthetics,
 }: {
   ritualCycleId: string
   existingDraft: VisibleReflection | null
   existingPublished: VisibleReflection | null
   canPublish: boolean
   participantState: RitualParticipantState | null
+  aesthetics: RitualContextPanelProps['aesthetics']
 }) {
-  // If user has a published reflection, render the published view
-  // (read-only here; un-publish is a separate flow we don't expose
-  // in this minimal first pass).
   if (existingPublished) {
     return (
-      <article className="border-l border-tobacco/30 pl-5 py-1">
-        <p className="text-[10px] uppercase tracking-[0.3em] text-tobacco/60 mb-2">
+      <article className={cn('border-l pl-5 py-1', aesthetics.borderTint)}>
+        <p className="text-[10px] uppercase tracking-[0.3em] text-muted-foreground/60 mb-2">
           Your reflection
         </p>
         <p className="font-serif text-base text-cream/80 leading-relaxed whitespace-pre-wrap">
@@ -354,14 +573,13 @@ function ReflectionComposer({
     )
   }
 
-  // Otherwise show the composer, seeded with an existing draft if
-  // there is one.
   return (
     <ComposerForm
       ritualCycleId={ritualCycleId}
       existingDraft={existingDraft}
       canPublish={canPublish}
       participantState={participantState}
+      aesthetics={aesthetics}
     />
   )
 }
@@ -371,11 +589,13 @@ function ComposerForm({
   existingDraft,
   canPublish,
   participantState,
+  aesthetics,
 }: {
   ritualCycleId: string
   existingDraft: VisibleReflection | null
   canPublish: boolean
   participantState: RitualParticipantState | null
+  aesthetics: RitualContextPanelProps['aesthetics']
 }) {
   const [body, setBody] = useState(existingDraft?.body ?? '')
   const [isPending, startTransition] = useTransition()
@@ -390,7 +610,6 @@ function ComposerForm({
     setError(null)
     startTransition(async () => {
       if (existingDraft) {
-        // Update existing draft
         const r = await updateReflectionAction({
           reflectionId: existingDraft.id,
           body,
@@ -414,8 +633,7 @@ function ComposerForm({
     ? 'What did this listening leave you with?'
     : 'Draft your reflection. Shared with the room when the reflection window opens.'
 
-  const cantPublishYet =
-    !canPublish && participantState !== 'reflected'
+  const cantPublishYet = !canPublish && participantState !== 'reflected'
 
   return (
     <div>
@@ -425,19 +643,19 @@ function ComposerForm({
         placeholder={placeholder}
         rows={6}
         maxLength={8000}
-        className="bg-card/30 border-border/20 font-serif text-base text-cream/90 placeholder:text-muted-foreground/30"
+        className="bg-card/30 border-border/20 font-serif text-base text-cream/90 placeholder:text-muted-foreground/30 focus-visible:ring-0 focus-visible:border-border/40"
       />
       <div className="flex items-center justify-between mt-3">
         <p className="text-[10px] text-muted-foreground/40">
           {body.length} / 8000
           {savedAt && <span className="ml-3 text-olive/70">Saved.</span>}
         </p>
-        <div className="flex gap-3">
+        <div className="flex gap-4">
           <button
             type="button"
             onClick={() => handleSave(false)}
             disabled={isPending || body.trim().length === 0}
-            className="text-xs text-tobacco hover:text-cream transition-colors disabled:opacity-40"
+            className="text-sm text-muted-foreground hover:text-cream transition-colors disabled:opacity-40"
           >
             {isPending ? 'Saving…' : 'Save draft'}
           </button>
@@ -446,7 +664,10 @@ function ComposerForm({
               type="button"
               onClick={() => handleSave(true)}
               disabled={isPending || body.trim().length === 0}
-              className="text-xs text-cream hover:text-burgundy transition-colors disabled:opacity-40"
+              className={cn(
+                'text-sm transition-colors disabled:opacity-40',
+                'text-cream hover:opacity-80',
+              )}
             >
               {isPending ? 'Publishing…' : 'Publish'}
             </button>
@@ -460,11 +681,58 @@ function ComposerForm({
           opens.
         </p>
       )}
+      {/* Keep the aesthetics reference live for the linter when none
+          of the conditional branches above consumed it. */}
+      <span className="hidden" aria-hidden data-tint={aesthetics.borderTint} />
     </div>
   )
 }
 
-// ── Helpers ─────────────────────────────────────────────────────────
+// ── Prompts block ──────────────────────────────────────────────────
+
+function PromptsBlock({
+  prompts,
+  aesthetics,
+}: {
+  prompts: RitualContextPanelProps['prompts']
+  aesthetics: RitualContextPanelProps['aesthetics']
+}) {
+  if (!prompts || prompts.length === 0) return null
+  return (
+    <div className={cn('border-t pt-8 mt-2', aesthetics.borderTint)}>
+      <p className="text-[10px] uppercase tracking-[0.3em] text-muted-foreground/60 mb-6">
+        Listening prompts
+      </p>
+      <ol className="space-y-6">
+        {prompts.map((prompt, i) => (
+          <li key={i} className="flex items-start gap-4">
+            <span
+              className={cn(
+                'font-serif text-lg leading-snug shrink-0',
+                aesthetics.primaryAccent,
+                'opacity-50',
+              )}
+            >
+              {i + 1}
+            </span>
+            <div>
+              <p className="font-serif text-lg text-cream/85 leading-snug">
+                {prompt.question}
+              </p>
+              {prompt.hint && (
+                <p className="text-xs text-muted-foreground/50 italic mt-1.5">
+                  {prompt.hint}
+                </p>
+              )}
+            </div>
+          </li>
+        ))}
+      </ol>
+    </div>
+  )
+}
+
+// ── Helpers ────────────────────────────────────────────────────────
 
 function formatDate(iso: string): string {
   try {
