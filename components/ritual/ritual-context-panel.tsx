@@ -205,7 +205,8 @@ function ParticipationLine({
         Your participation
       </p>
       <p className="text-sm text-cream/70 mb-3">
-        {!participation && 'Not yet joined.'}
+        {!participation &&
+          'You haven’t joined this week’s ritual yet.'}
         {participation?.state === 'joined' && 'Joined — listen this week.'}
         {participation?.state === 'listening' && 'Listening.'}
         {participation?.state === 'completed' &&
@@ -221,7 +222,7 @@ function ParticipationLine({
           disabled={isPending}
           className="text-xs text-tobacco hover:text-cream transition-colors disabled:opacity-50"
         >
-          {isPending ? 'Joining…' : 'Join this ritual'}
+          {isPending ? 'Joining…' : 'Join this week'}
         </button>
       )}
       {canComplete && (

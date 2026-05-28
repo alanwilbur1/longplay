@@ -16,20 +16,33 @@ const DEV_MODE = process.env.NODE_ENV === 'development'
 interface RoomDetailScreenProps {
   room: Room
   initialIsJoined?: boolean
+  /** Phase 6B.2: the live ritual context for this room. Rendered as
+   *  a slot immediately after the WhyThisRoom section so the weekly
+   *  ritual sits at the top of the page hierarchy — the canonical
+   *  product loop — rather than buried at the bottom. The page route
+   *  composes a server-side panel and passes it in here; the
+   *  RoomDetailScreen itself stays presentational and unaware of the
+   *  ritual data shape. Null when no panel is desired (legacy paths,
+   *  unauthenticated browsing where the panel chose to render
+   *  nothing). */
+  ritualPanel?: React.ReactNode
 }
 
 /**
- * Room Detail Screen — Editorial profile / join flow.
+ * Room Detail Screen — Editorial profile + active ritual.
  *
- * Discovery surface only. Members of a room should reach the active
- * listening room (/room/[slug]) directly from "Your Rooms" or any other
- * deep-link surface. This page is for non-members and editorial browsing.
- *
- * There is no entry ritual / interstitial. The Enter CTA navigates
- * directly to the active room; the Join CTA joins, then the same CTA
- * becomes the Enter link.
+ * Phase 6B.2 promoted the ritual context panel from "appended at
+ * the bottom of the page" to a high-hierarchy slot right after the
+ * room's identity header and why-this-room section. Membership and
+ * ritual participation are now visibly distinct: membership controls
+ * remain at the bottom of the page; the weekly ritual sits at the
+ * top.
  */
-export function RoomDetailScreen({ room, initialIsJoined = false }: RoomDetailScreenProps) {
+export function RoomDetailScreen({
+  room,
+  initialIsJoined = false,
+  ritualPanel,
+}: RoomDetailScreenProps) {
   const router = useRouter()
   const { isAuthenticated } = useAuth()
   const [isJoined, setIsJoined] = useState(initialIsJoined)
@@ -161,6 +174,18 @@ export function RoomDetailScreen({ room, initialIsJoined = false }: RoomDetailSc
             <WhyThisRoom roomSlug={room.slug} variant="section" />
           </div>
         </section>
+
+        {/* ============================================ */}
+        {/* THIS WEEK'S RITUAL — Phase 6B.2 */}
+        {/* ============================================ */}
+        {/* The canonical product loop. Sits high in the hierarchy
+            (right after the room identity + why-this-room), above
+            the editorial sections (curator, prompts, atmosphere)
+            and the membership controls at the bottom. The slot
+            renders nothing when the room has no scheduled cycle
+            and no upcoming cycle — the surrounding sections still
+            render cleanly in that case. */}
+        {ritualPanel}
 
         {/* ============================================ */}
         {/* ROOM ECOLOGY — Phase 6A.11 */}
@@ -806,7 +831,11 @@ export function RoomDetailScreen({ room, initialIsJoined = false }: RoomDetailSc
               </h3>
               <p className="text-sm text-muted-foreground">
                 {isJoined
-                  ? 'This week\'s ritual is shown below.'
+                  // Phase 6B.2: membership and weekly ritual participation
+                  // are now visibly distinct. Membership is durable; the
+                  // ritual lives at the top of the page and is joined
+                  // separately each week.
+                  ? 'Room membership is separate from joining each week’s ritual.'
                   : room.culture.invitationText}
               </p>
             </div>
