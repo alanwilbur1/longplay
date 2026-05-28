@@ -844,6 +844,13 @@ export const ALBUMS = {
     description: "Sober, hard-won Americana songwriting — twelve songs that ask listeners to sit close.",
     emotionalTags: ["warm", "songwriter", "reflective"],
     roomAssociations: ["southern-listening"],
+    // Phase 6B.5 follow-up #2: canonical public Spotify album ID
+    // for Jason Isbell — Southeastern (2013, Southeastern Records).
+    // Lets the ritual hero's ListeningSurface render the embedded
+    // album player + tracklist for /rooms/southern-listening even
+    // when the DB's albums.spotify_id column hasn't been backfilled.
+    spotifyId: '4xnq8WAJBhmaW6sBjcsh1U',
+    spotifyUrl: 'https://open.spotify.com/album/4xnq8WAJBhmaW6sBjcsh1U',
   },
 
   // ============================================

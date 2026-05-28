@@ -85,6 +85,26 @@ export function ListeningSurface({
     setMark(getMarkIfFresh(roomSlug, albumKey))
   }, [roomSlug, albumKey])
 
+  // TEMPORARY DIAGNOSTIC (6B.5 follow-up #2): logs to the BROWSER
+  // console on every mount + prop change so we can confirm from
+  // production whether the panel's prop chain delivered a non-null
+  // spotifyAlbumId and what render path the surface chose. Remove
+  // once the trace confirms the chain.
+  useEffect(() => {
+    const path = spotifyAlbumId
+      ? 'spotify-embed'
+      : appleMusicUrl
+        ? 'apple-fallback'
+        : 'null-noop'
+    // eslint-disable-next-line no-console
+    console.log('[listening-surface-debug]', {
+      roomSlug,
+      spotifyAlbumId,
+      appleMusicUrl,
+      render_path: path,
+    })
+  }, [roomSlug, spotifyAlbumId, appleMusicUrl])
+
   const handleBegin = () => {
     const next = setListeningMark(roomSlug, albumKey)
     setMark(next)
