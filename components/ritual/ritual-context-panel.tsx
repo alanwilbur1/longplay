@@ -10,6 +10,7 @@ import {
   submitReflectionAction,
   updateReflectionAction,
 } from '@/lib/actions/ritual'
+import { relativeDaysUntil } from '@/lib/ritual/observations'
 import type {
   RitualCycleStatus,
   RitualParticipantState,
@@ -305,10 +306,20 @@ function RightColumn({
     switch (status) {
       case 'upcoming':
         return null
-      case 'active':
-        return `Reflection window opens ${formatDate(reflectionOpensAt)}.`
-      case 'reflection':
-        return `Reflections close ${formatDate(reflectionClosesAt)}.`
+      case 'active': {
+        const rel = relativeDaysUntil(reflectionOpensAt)
+        const date = formatDate(reflectionOpensAt)
+        return rel
+          ? `Reflection window opens ${rel} · ${date}.`
+          : `Reflection window opens ${date}.`
+      }
+      case 'reflection': {
+        const rel = relativeDaysUntil(reflectionClosesAt)
+        const date = formatDate(reflectionClosesAt)
+        return rel
+          ? `Reflections close ${rel} · ${date}.`
+          : `Reflections close ${date}.`
+      }
       case 'archived':
         return 'This cycle is archived.'
     }
@@ -422,12 +433,21 @@ function ParticipationBlock({
       <p className="text-[10px] uppercase tracking-[0.3em] text-muted-foreground/60 mb-2">
         Your participation
       </p>
-      <p className="font-serif text-base text-cream/80 leading-relaxed mb-4">
+      <p className="font-serif text-base text-cream/80 leading-relaxed mb-3">
         {stateCopy}
       </p>
 
+      {/* Phase 6B.3: typographic progression. NOT a progress bar.
+          A row of small ritual labels — the current one accented,
+          the rest faded. No percentages, no badges, no streaks.
+          The labels themselves ARE the indicator. */}
+      <ParticipationProgression
+        currentState={participation?.state ?? null}
+        aesthetics={aesthetics}
+      />
+
       {(canJoin || canComplete) && (
-        <div className="flex flex-wrap items-center gap-x-5 gap-y-2">
+        <div className="flex flex-wrap items-center gap-x-5 gap-y-2 mt-4">
           {canJoin && (
             <button
               type="button"
@@ -461,6 +481,86 @@ function ParticipationBlock({
   )
 }
 
+const PROGRESSION_STAGES: ReadonlyArray<{
+  state: RitualParticipantState | 'none'
+  label: string
+}> = [
+  { state: 'none', label: 'invited' },
+  { state: 'joined', label: 'joined' },
+  { state: 'listening', label: 'listening' },
+  { state: 'completed', label: 'completed' },
+  { state: 'reflected', label: 'reflected' },
+]
+
+function ParticipationProgression({
+  currentState,
+  aesthetics,
+}: {
+  currentState: RitualParticipantState | null
+  aesthetics: RitualContextPanelProps['aesthetics']
+}) {
+  // Withdrawn is a sink — render as a single quiet line rather than
+  // the progression row, so the ritual labels don't mislead.
+  if (currentState === 'withdrawn') {
+    return (
+      <p className="text-[10px] uppercase tracking-[0.25em] text-muted-foreground/40 mt-2">
+        — withdrawn —
+      </p>
+    )
+  }
+
+  // Index of the listener's current stage in the progression. Stages
+  // before that index are "completed"; stage at index is "current";
+  // stages after are "future".
+  const currentIndex =
+    currentState === null
+      ? 0
+      : PROGRESSION_STAGES.findIndex((s) => s.state === currentState)
+  const safeIndex = currentIndex < 0 ? 0 : currentIndex
+
+  return (
+    <div
+      role="group"
+      aria-label="Ritual participation progression"
+      className="flex flex-wrap items-center gap-x-3 gap-y-1 mt-1 font-mono text-[10px] uppercase tracking-[0.25em]"
+    >
+      {PROGRESSION_STAGES.map((stage, i) => {
+        const isCurrent = i === safeIndex
+        const isPast = i < safeIndex
+        return (
+          <span key={stage.label} className="flex items-center">
+            <span
+              aria-hidden
+              className={cn(
+                'inline-block mr-2 leading-none',
+                isCurrent
+                  ? aesthetics.primaryAccent
+                  : isPast
+                    ? 'text-muted-foreground/50'
+                    : 'text-muted-foreground/20',
+              )}
+            >
+              {isCurrent ? '•' : '·'}
+            </span>
+            <span
+              className={cn(
+                'transition-colors',
+                isCurrent
+                  ? aesthetics.primaryAccent
+                  : isPast
+                    ? 'text-muted-foreground/50'
+                    : 'text-muted-foreground/30',
+              )}
+            >
+              {stage.label}
+            </span>
+          </span>
+        )
+      })}
+    </div>
+  )
+}
+
 // ── Reflection block ───────────────────────────────────────────────
 
 function ReflectionBlock({
@@ -478,27 +578,28 @@ function ReflectionBlock({
   participantState: RitualParticipantState | null
   aesthetics: RitualContextPanelProps['aesthetics']
 }) {
+  // Phase 6B.3: peer reflections moved to <RitualEcologySection>
+  // ("From the Room") below the hero. This block now governs ONLY
+  // the listener's own composer + their published reflection.
   const own = reflections.filter((r) => r.is_own)
   const draft = own.find((r) => r.reflection_state === 'draft')
   const published = own.find((r) => r.reflection_state === 'published')
-  const peer = reflections.filter((r) => !r.is_own)
 
   const isReflectionWindow = status === 'reflection'
-  const isArchived = status === 'archived'
   const showComposer =
     isAuthenticated && (status === 'active' || isReflectionWindow)
 
-  // Suppress entirely when nothing to say (upcoming, no composer
-  // affordance, no reflections to read).
+  // Nothing to render: upcoming cycle, or no composer for non-auth
+  // listeners and no own publication.
   if (status === 'upcoming') return null
+  if (!showComposer && !published) return null
 
   return (
     <div className="mb-10">
       <p className="text-[10px] uppercase tracking-[0.3em] text-muted-foreground/60 mb-4">
-        Reflection
+        Your reflection
       </p>
-
-      {showComposer && (
+      {showComposer ? (
         <ReflectionComposer
           ritualCycleId={ritualCycleId}
           existingDraft={draft ?? null}
@@ -507,38 +608,13 @@ function ReflectionBlock({
           participantState={participantState}
           aesthetics={aesthetics}
         />
-      )}
-
-      {(isReflectionWindow || isArchived) && peer.length > 0 && (
-        <div className="mt-8 space-y-6">
-          {peer.map((r) => (
-            <article
-              key={r.id}
-              className={cn(
-                'border-l pl-5 py-1',
-                aesthetics.borderTint
-                  .replace('border-', 'border-')
-                  .replace('/30', '/20'),
-              )}
-            >
-              <p className="text-[10px] text-muted-foreground/40 font-mono mb-1">
-                {formatDate(r.created_at)}
-              </p>
-              <p className="font-serif text-base text-cream/80 leading-relaxed whitespace-pre-wrap">
-                {r.body}
-              </p>
-            </article>
-          ))}
-        </div>
-      )}
-
-      {(isReflectionWindow || isArchived) &&
-        peer.length === 0 &&
-        !published && (
-          <p className="text-sm text-muted-foreground/40 italic mt-3">
-            No reflections yet.
+      ) : published ? (
+        <article className={cn('border-l pl-5 py-1', aesthetics.borderTint)}>
+          <p className="font-serif text-base text-cream/80 leading-relaxed whitespace-pre-wrap">
+            {published.body}
           </p>
-        )}
+        </article>
+      ) : null}
     </div>
   )
 }
