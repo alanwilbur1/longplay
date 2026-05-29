@@ -18,6 +18,7 @@ import type { Track as TracklistTrack } from './tracklist-surface'
 // analysis but the route hard-crashes on first SSR call. See
 // lib/spotify-url.ts for the background note.
 import { extractSpotifyAlbumId } from '@/lib/spotify-url'
+import { isValidSpotifyAlbumIdShape } from '@/lib/spotify/album-id-resolver'
 import { ALBUMS } from '@/lib/albums'
 
 /**
@@ -117,6 +118,7 @@ export async function RitualContextPanelServer({
     static_catalog_spotifyId: string | null
     room_streamingLinks_spotify: string | null
     winner: 'db_column' | 'db_streaming_urls' | 'room_currentAlbum' | 'static_catalog' | 'room_streamingLinks_url' | 'none'
+    rejected_shape?: string
   } = {
     artifact_album_id: ctx.active?.artifact_album_id ?? null,
     db_spotify_id: null,
@@ -184,6 +186,17 @@ export async function RitualContextPanelServer({
       room.streamingLinks?.spotify ?? null,
     )
     if (resolvedSpotifyAlbumId) debugSources.winner = 'room_streamingLinks_url'
+  }
+
+  // Phase 6B.4D: consume the resolver's shape validation. An id that
+  // isn't 22 base62 chars is impossible — never hand it to the player
+  // (it would only 404 and strand the room on "Loading album…").
+  // Genuinely-wrong-but-shape-valid ids are corrected offline by
+  // `npm run audit:album-spotify-ids`, which backfills albums.spotify_id
+  // (source 1 above) — the runtime simply consumes the resolved value.
+  if (resolvedSpotifyAlbumId && !isValidSpotifyAlbumIdShape(resolvedSpotifyAlbumId)) {
+    debugSources.rejected_shape = resolvedSpotifyAlbumId
+    resolvedSpotifyAlbumId = null
   }
 
   // TEMPORARY DIAGNOSTIC. Surfaces in Vercel function logs as a
