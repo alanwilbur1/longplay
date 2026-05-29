@@ -234,6 +234,17 @@ export async function RitualContextPanelServer({
     title: r.name,
     duration: formatTrackDuration(r.duration_ms),
   }))
+  // Phase 6B.4B: the same rows in the shape the album-first in-room
+  // player needs — raw duration + Spotify track id so it can render
+  // the tracklist, highlight the playing track, and play from any
+  // track. Empty when no DB rows; the player then hydrates from
+  // Spotify with the user token.
+  const playerTracks = tracklistRows.map((r) => ({
+    number: r.track_number,
+    title: r.name,
+    durationMs: r.duration_ms,
+    spotifyTrackId: r.provider_track_id,
+  }))
 
   // Phase 6B.4 hotfix: guard against a room loaded without an
   // aesthetics block. Fall back to neutral border-tint + a quiet
@@ -298,6 +309,7 @@ export async function RitualContextPanelServer({
         // streamingLinks URL.
         spotifyAlbumId={resolvedSpotifyAlbumId}
         tracklist={tracklist}
+        playerTracks={playerTracks}
       />
       {ctx.active && ecology && (
         <RitualEcologySection

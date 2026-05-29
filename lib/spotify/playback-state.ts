@@ -43,6 +43,10 @@ export interface PlaybackSnapshot {
   current: {
     title: string
     artist: string | null
+    /** Full Spotify track URI ('spotify:track:…') of the playing
+     *  track, when the SDK reports it. Used to highlight the matching
+     *  row in the album tracklist. Null when unavailable. */
+    uri: string | null
   } | null
   /** Whether next/previous controls should be enabled. Derived from
    *  the SDK's `disallows` map (true in disallows == NOT allowed). */
@@ -72,7 +76,7 @@ export function summarizeWebPlaybackState(
     positionMs: clampNonNegative(raw.position),
     durationMs: clampNonNegative(raw.duration),
     current: track?.name
-      ? { title: track.name, artist }
+      ? { title: track.name, artist, uri: track.uri ?? null }
       : null,
     // `disallows.skipping_*` true means the action is NOT allowed.
     canSkipNext: !(raw.disallows?.skipping_next ?? false),
@@ -120,6 +124,20 @@ export function isPremiumProduct(
   product: string | null | undefined,
 ): boolean {
   return product === 'premium'
+}
+
+/**
+ * Build a full Spotify track URI from a bare track id. The
+ * album_tracks substrate stores bare ids (provider_track_id); the
+ * Web API play `offset` and the SDK's current_track.uri use the
+ * 'spotify:track:<id>' form. Passing an already-prefixed value
+ * through is a no-op so callers can be careless about the source.
+ */
+export function trackUriFromId(idOrUri: string): string {
+  if (!idOrUri) return idOrUri
+  return idOrUri.startsWith('spotify:track:')
+    ? idOrUri
+    : `spotify:track:${idOrUri}`
 }
 
 function clampNonNegative(n: number | undefined): number {

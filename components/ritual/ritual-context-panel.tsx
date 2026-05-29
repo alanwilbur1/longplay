@@ -100,6 +100,17 @@ export interface RitualContextPanelProps {
     title: string
     duration: string | null
   }>
+  /** Phase 6B.4B: the same album_tracks rows, but carrying the raw
+   *  duration + Spotify track id, so the album-first in-room player
+   *  can render the tracklist, highlight the current track, and play
+   *  from any track (offset). Empty when no rows are hydrated — the
+   *  player then fetches the tracklist itself with the user token. */
+  playerTracks: ReadonlyArray<{
+    number: number
+    title: string
+    durationMs: number | null
+    spotifyTrackId: string
+  }>
 }
 
 export function RitualContextPanel(props: RitualContextPanelProps) {
@@ -152,6 +163,7 @@ export function RitualContextPanel(props: RitualContextPanelProps) {
           roomSlug={props.roomSlug}
           spotifyAlbumId={props.spotifyAlbumId}
           tracklist={props.tracklist}
+          playerTracks={props.playerTracks}
         />
         <RightColumn
           ritualCycleId={active.id}
@@ -180,6 +192,7 @@ function LeftColumn({
   roomSlug,
   spotifyAlbumId,
   tracklist,
+  playerTracks,
 }: {
   active: NonNullable<RitualContextPanelProps['active']>
   artifact: RitualContextPanelProps['artifact']
@@ -189,6 +202,7 @@ function LeftColumn({
   roomSlug: string
   spotifyAlbumId: string | null
   tracklist: RitualContextPanelProps['tracklist']
+  playerTracks: RitualContextPanelProps['playerTracks']
 }) {
   const statusLabel = (() => {
     switch (active.cycle_status) {
@@ -272,36 +286,33 @@ function LeftColumn({
           handles Spotify embed + Apple Music micro-link + continuity
           state ("Begin when you're ready" / "Continue listening").
           Renders nothing when no streaming link is available. */}
+      {/* Phase 6B.4 / 6B.4B: embedded ritual listening. When a Spotify
+          album ID is present, ListeningSurface renders the album-first
+          InRoomSpotifyPlayer, which OWNS the tracklist (renders it,
+          highlights the playing track, plays from any track). We pass
+          the DB album_tracks through as the player's fast path. */}
       <ListeningSurface
         roomSlug={roomSlug}
         spotifyAlbumId={spotifyAlbumId}
         appleMusicUrl={streamingLinks.appleMusic ?? null}
         ritualCycleId={active.id}
         albumKey={active.artifact_album_id ?? roomSlug}
+        playerTracks={playerTracks}
         aesthetics={aesthetics}
       />
 
-      {/* Phase 6B.4 follow-up: tracklist surface. Renders the
-          restrained "Tracklist unavailable" caption today because
-          LongPlay has no real per-album track data. When track
-          resolution lands (Spotify API at sync time, cached on the
-          albums table), pass a non-null `tracks` array here and the
-          surface renders an editorial list automatically. */}
-      {/* Phase 6B.5: real tracklist when album_tracks rows have been
-          hydrated for the cycle's artifact_album_id; empty array
-          triggers the restrained fallback line. The TracklistSurface
-          itself contains the empty-vs-populated branching. */}
-      <TracklistSurface
-        tracks={tracklist.length > 0 ? tracklist : null}
-        // Phase 6B.5 follow-up: tell the surface whether the
-        // embedded Spotify player is rendering above it. When
-        // present, the empty-tracks state suppresses entirely (the
-        // embed already exposes the tracklist + playback inline).
-        // When absent, the original "Tracklist unavailable" line
-        // reads as primary.
-        embedPresent={spotifyAlbumId !== null}
-        aesthetics={aesthetics}
-      />
+      {/* Tracklist surface. Only rendered when there is NO Spotify
+          player (no album ID) — otherwise the album-first player above
+          already shows the full, interactive tracklist and a second
+          static list would be redundant. This remains the restrained
+          fallback for rooms without a Spotify album. */}
+      {spotifyAlbumId === null && (
+        <TracklistSurface
+          tracks={tracklist.length > 0 ? tracklist : null}
+          embedPresent={false}
+          aesthetics={aesthetics}
+        />
+      )}
 
       {/* Any other streaming destinations (e.g. TIDAL) — kept as a
           single quiet line below the surface for completeness. */}
