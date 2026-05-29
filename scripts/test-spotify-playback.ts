@@ -20,6 +20,7 @@ import {
   playbackProgressFraction,
   formatPlaybackPosition,
   isPremiumProduct,
+  trackUriFromId,
 } from '../lib/spotify/playback-state'
 
 let pass = 0
@@ -96,6 +97,7 @@ function main() {
     track_window: {
       current_track: {
         name: 'Cover Me Up',
+        uri: 'spotify:track:abc123',
         artists: [{ name: 'Jason Isbell' }],
       },
     },
@@ -103,7 +105,24 @@ function main() {
   assert('playing → not paused', playing !== null && playing.isPaused === false)
   assert('playing → track title mapped', playing?.current?.title === 'Cover Me Up')
   assert('playing → artist mapped', playing?.current?.artist === 'Jason Isbell')
+  assert('playing → uri mapped (for highlight)', playing?.current?.uri === 'spotify:track:abc123')
   assert('playing → position carried', playing?.positionMs === 65_000)
+
+  const noUri = summarizeWebPlaybackState({
+    track_window: { current_track: { name: 'Untitled' } },
+  })
+  assert('missing uri → current.uri null', noUri?.current?.uri === null)
+
+  console.log('\ntrackUriFromId:')
+  assert(
+    'bare id → prefixed uri',
+    trackUriFromId('4xnq8WAJBhmaW6sBjcsh1U') === 'spotify:track:4xnq8WAJBhmaW6sBjcsh1U',
+  )
+  assert(
+    'already-prefixed → unchanged',
+    trackUriFromId('spotify:track:xyz') === 'spotify:track:xyz',
+  )
+  assert('empty → empty (no crash)', trackUriFromId('') === '')
   assert(
     'disallows.skipping_prev true → canSkipPrev false',
     playing?.canSkipPrev === false,

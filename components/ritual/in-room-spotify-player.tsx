@@ -8,39 +8,51 @@ import {
   summarizeWebPlaybackState,
   playbackProgressFraction,
   formatPlaybackPosition,
+  trackUriFromId,
   type RawWebPlaybackState,
   type PlaybackSnapshot,
 } from '@/lib/spotify/playback-state'
 
 /**
- * components/ritual/in-room-spotify-player.tsx — Phase 6B.4A
+ * components/ritual/in-room-spotify-player.tsx — Phase 6B.4A / 6B.4B
  *
- * Authenticated in-room Spotify playback. Replaces the public embed
- * iframe (preview-only / "Get Spotify") as the PRIMARY listening
- * surface inside the ritual hero.
+ * Authenticated, ALBUM-FIRST in-room Spotify playback. The listening
+ * surface is the album: the full tracklist is rendered, any track is
+ * clickable, and the currently-playing track is highlighted. Playback
+ * always runs from the album context (spotify:album:…) so it plays as
+ * a record, not a single.
  *
- * Architecture:
- *   1. On mount, GET /api/spotify/playback-token. The response gates
- *      everything: not_connected / reauth / non-premium / eligible.
- *      The refresh token never reaches this component — the route
- *      hands back only a short-lived access token.
- *   2. When eligible (connected + scoped + Premium), we load the
- *      Spotify Web Playback SDK, register a "LongPlay" device, and
- *      drive playback from inside the room. The SDK's getOAuthToken
- *      callback re-hits the same route for fresh tokens.
- *   3. "Play album" starts the album context on the LongPlay device
- *      (PUT /me/player/play?device_id=…), which both transfers and
- *      begins playback. Pause/resume/next/previous use the SDK.
- *   4. The first successful play marks ritual participation as
- *      'listening' (never auto-completes) via markListeningAction.
+ * Readiness (6B.4B fix for the "device not ready" race):
+ *   1. GET /api/spotify/playback-token gates everything (connect /
+ *      reconnect / Premium). Refresh token never reaches the client.
+ *   2. The Web Playback SDK registers a "LongPlay" device. The SDK
+ *      'ready' event gives a device_id, but the device is not yet the
+ *      ACTIVE device on Spotify's backend — playing immediately 404s.
+ *   3. So on 'ready' we EXPLICITLY transfer playback to the device
+ *      (PUT /me/player), retrying through the propagation window, and
+ *      only mark `transferReady` once it succeeds. Play / track-clicks
+ *      are disabled until then — no play request can fire early.
+ *   4. Play starts the album context (optionally with a per-track
+ *      `offset` for click-to-play). The first successful play marks
+ *      ritual participation 'listening' (never auto-completes).
  *
- * Every non-eligible state renders quiet, honest copy — no fake
- * player, no broken iframe. Non-Premium / unscoped listeners get a
- * reconnect path or an open-in-Spotify link.
+ * Tracklist source (6B.4B fix for empty tracklists):
+ *   - DB album_tracks, when present, arrive as `initialTracks` (fast
+ *     path; no network).
+ *   - Otherwise we hydrate from Spotify using the listener's USER
+ *     token (/v1/albums/{id}/tracks). Unlike the client-credentials
+ *     catalog token, the user token is not subject to the app-tier
+ *     catalog restriction, so this reliably returns the full list.
+ *   - Never fabricated.
  */
 
 const SDK_SRC = 'https://sdk.scdn.co/spotify-player.js'
 const DEVICE_NAME = 'LongPlay'
+const SPOTIFY_API = 'https://api.spotify.com/v1'
+// Transfer retry envelope — covers the device-registration propagation
+// window without hanging the UI.
+const TRANSFER_MAX_ATTEMPTS = 6
+const TRANSFER_BASE_DELAY_MS = 400
 
 // ── Minimal Spotify Web Playback SDK typings ───────────────────────
 interface SpotifyPlayerInstance {
@@ -91,24 +103,41 @@ type Gate =
   | 'eligible'
   | 'error'
 
+/** Normalized track the album surface renders + plays. */
+interface PlayerTrack {
+  number: number
+  title: string
+  durationMs: number | null
+  /** Full 'spotify:track:…' URI for offset playback + highlight. */
+  uri: string
+}
+
+/** DB-sourced track shape passed in by the server (album_tracks). */
+export interface InitialAlbumTrack {
+  number: number
+  title: string
+  durationMs: number | null
+  spotifyTrackId: string
+}
+
 async function fetchPlaybackToken(): Promise<PlaybackTokenResponse> {
-  const res = await fetch('/api/spotify/playback-token', {
-    cache: 'no-store',
-  })
+  const res = await fetch('/api/spotify/playback-token', { cache: 'no-store' })
   return (await res.json()) as PlaybackTokenResponse
 }
 
+const delay = (ms: number) => new Promise<void>((r) => setTimeout(r, ms))
+
 export interface InRoomSpotifyPlayerProps {
   spotifyAlbumId: string
+  /** DB album_tracks for this album, when already hydrated. Empty/omitted
+   *  → the player hydrates from Spotify with the user token. */
+  initialTracks?: ReadonlyArray<InitialAlbumTrack>
   /** Active ritual cycle id, when there is one. Drives the
-   *  'listening' participation mark on first play. Null → no cycle,
-   *  playback still works, just no participation write. */
+   *  'listening' participation mark on first play. */
   ritualCycleId: string | null
-  /** Room slug — used as the returnTo for the reconnect flow so the
-   *  listener lands back in the room. */
+  /** Room slug — returnTo for the reconnect flow. */
   roomSlug: string
-  /** Fires once when playback first starts, so the surrounding
-   *  surface can set its ceremonial "began listening" continuity mark. */
+  /** Fires once when playback first starts (continuity mark). */
   onPlaybackStarted?: () => void
   aesthetics: {
     borderTint: string
@@ -118,6 +147,7 @@ export interface InRoomSpotifyPlayerProps {
 
 export function InRoomSpotifyPlayer({
   spotifyAlbumId,
+  initialTracks,
   ritualCycleId,
   roomSlug,
   onPlaybackStarted,
@@ -125,14 +155,42 @@ export function InRoomSpotifyPlayer({
 }: InRoomSpotifyPlayerProps) {
   const [gate, setGate] = useState<Gate>('loading')
   const [deviceReady, setDeviceReady] = useState(false)
+  const [transferReady, setTransferReady] = useState(false)
   const [snapshot, setSnapshot] = useState<PlaybackSnapshot | null>(null)
-  const [busy, setBusy] = useState(false)
+  const [tracks, setTracks] = useState<PlayerTrack[] | null>(
+    normalizeInitialTracks(initialTracks),
+  )
+  const [startingUri, setStartingUri] = useState<string | null>(null)
   const [playbackError, setPlaybackError] = useState<string | null>(null)
 
   const playerRef = useRef<SpotifyPlayerInstance | null>(null)
   const deviceIdRef = useRef<string | null>(null)
+  const tokenRef = useRef<string | null>(null)
   const listeningMarkedRef = useRef(false)
   const openInSpotify = `https://open.spotify.com/album/${spotifyAlbumId}`
+
+  // Resolve a fresh token, caching it, and map non-ok statuses onto the
+  // gate so the UI degrades honestly. Returns null when no token.
+  const getToken = useCallback(async (): Promise<string | null> => {
+    try {
+      const r = await fetchPlaybackToken()
+      if (r.status === 'ok') {
+        tokenRef.current = r.accessToken
+        return r.accessToken
+      }
+      setGate(
+        r.status === 'reauth_required' || r.status === 'missing_scopes'
+          ? 'reauth'
+          : r.status === 'not_connected' || r.status === 'not_authenticated'
+            ? 'not_connected'
+            : 'error',
+      )
+      return null
+    } catch {
+      setGate('error')
+      return null
+    }
+  }, [])
 
   // ── 1. Gate on the token route. ──────────────────────────────────
   useEffect(() => {
@@ -140,6 +198,7 @@ export function InRoomSpotifyPlayer({
     fetchPlaybackToken()
       .then((r) => {
         if (cancelled) return
+        if (r.status === 'ok') tokenRef.current = r.accessToken
         switch (r.status) {
           case 'ok':
             setGate(r.premium ? 'eligible' : 'not_premium')
@@ -164,7 +223,66 @@ export function InRoomSpotifyPlayer({
     }
   }, [])
 
-  // ── 2. Load the SDK + register the device when eligible. ─────────
+  // ── 2. Hydrate the tracklist (album-first). ──────────────────────
+  // DB tracks (initialTracks) already populated state synchronously.
+  // When absent, fetch from Spotify with the USER token once eligible.
+  useEffect(() => {
+    if (gate !== 'eligible') return
+    if (tracks && tracks.length > 0) return
+    let cancelled = false
+    ;(async () => {
+      const token = tokenRef.current ?? (await getToken())
+      if (!token || cancelled) return
+      const fetched = await fetchAlbumTracksWithUserToken(spotifyAlbumId, token)
+      if (!cancelled && fetched.length > 0) setTracks(fetched)
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [gate, spotifyAlbumId, tracks, getToken])
+
+  // ── 3. Transfer playback to the LongPlay device, with retry. ─────
+  // The single source of the "device not ready" race: a freshly-ready
+  // device isn't yet active on Spotify's backend. We transfer (play
+  // paused) and retry through the propagation window; only then is
+  // playback allowed.
+  const ensureTransfer = useCallback(
+    async (deviceId: string): Promise<boolean> => {
+      const token = tokenRef.current ?? (await getToken())
+      if (!token) return false
+      for (let attempt = 0; attempt < TRANSFER_MAX_ATTEMPTS; attempt++) {
+        let res: Response
+        try {
+          res = await fetch(`${SPOTIFY_API}/me/player`, {
+            method: 'PUT',
+            headers: {
+              Authorization: `Bearer ${token}`,
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({ device_ids: [deviceId], play: false }),
+          })
+        } catch {
+          await delay(TRANSFER_BASE_DELAY_MS * (attempt + 1))
+          continue
+        }
+        if (res.ok || res.status === 202 || res.status === 204) return true
+        if (res.status === 401) {
+          setGate('reauth')
+          return false
+        }
+        if (res.status === 403) {
+          setGate('not_premium')
+          return false
+        }
+        // 404 (device not registered yet) / 5xx → wait and retry.
+        await delay(TRANSFER_BASE_DELAY_MS * (attempt + 1))
+      }
+      return false
+    },
+    [getToken],
+  )
+
+  // ── 4. Load the SDK + register the device when eligible. ─────────
   useEffect(() => {
     if (gate !== 'eligible') return
     let disposed = false
@@ -177,10 +295,11 @@ export function InRoomSpotifyPlayer({
         name: DEVICE_NAME,
         volume: 0.8,
         getOAuthToken: (cb) => {
-          // The SDK calls this on init and on every token expiry. We
-          // re-mint server-side; the refresh token never comes here.
           fetchPlaybackToken()
-            .then((r) => cb(r.status === 'ok' ? r.accessToken : ''))
+            .then((r) => {
+              if (r.status === 'ok') tokenRef.current = r.accessToken
+              cb(r.status === 'ok' ? r.accessToken : '')
+            })
             .catch(() => cb(''))
         },
       })
@@ -190,26 +309,23 @@ export function InRoomSpotifyPlayer({
         const { device_id } = payload as { device_id: string }
         deviceIdRef.current = device_id
         setDeviceReady(true)
+        // Explicit transfer closes the readiness race before any play.
+        ensureTransfer(device_id).then((ok) => {
+          if (!disposed) setTransferReady(ok)
+        })
       })
       player.addListener('not_ready', () => {
         setDeviceReady(false)
+        setTransferReady(false)
       })
       player.addListener('initialization_error', (payload) => {
-        const { message } = payload as { message: string }
         setGate('error')
-        setPlaybackError(message)
+        setPlaybackError((payload as { message: string }).message)
       })
-      player.addListener('authentication_error', () => {
-        // Token rejected mid-session → the connection needs re-auth.
-        setGate('reauth')
-      })
-      player.addListener('account_error', () => {
-        // SDK refuses to stream for non-Premium accounts.
-        setGate('not_premium')
-      })
+      player.addListener('authentication_error', () => setGate('reauth'))
+      player.addListener('account_error', () => setGate('not_premium'))
       player.addListener('playback_error', (payload) => {
-        const { message } = payload as { message: string }
-        setPlaybackError(message)
+        setPlaybackError((payload as { message: string }).message)
       })
       player.addListener('player_state_changed', (payload) => {
         setSnapshot(
@@ -239,15 +355,15 @@ export function InRoomSpotifyPlayer({
         try {
           p.disconnect()
         } catch {
-          // ignore
+          /* ignore */
         }
       }
       playerRef.current = null
       deviceIdRef.current = null
     }
-  }, [gate])
+  }, [gate, ensureTransfer])
 
-  // ── 3. Poll current state for live progress while a track is loaded.
+  // ── 5. Poll current state for live progress + highlight. ─────────
   useEffect(() => {
     if (gate !== 'eligible') return
     const id = window.setInterval(() => {
@@ -255,78 +371,77 @@ export function InRoomSpotifyPlayer({
       if (!p) return
       p.getCurrentState()
         .then((state) => setSnapshot(summarizeWebPlaybackState(state)))
-        .catch(() => {
-          /* transient; keep last snapshot */
-        })
+        .catch(() => {})
     }, 1000)
     return () => window.clearInterval(id)
   }, [gate])
 
-  // ── Controls ─────────────────────────────────────────────────────
-  const handlePlayAlbum = useCallback(async () => {
-    const deviceId = deviceIdRef.current
-    if (!deviceId) return
-    setBusy(true)
-    setPlaybackError(null)
-    try {
-      const tok = await fetchPlaybackToken()
-      if (tok.status !== 'ok') {
-        setGate(
-          tok.status === 'reauth_required' || tok.status === 'missing_scopes'
-            ? 'reauth'
-            : tok.status === 'not_connected' || tok.status === 'not_authenticated'
-              ? 'not_connected'
-              : 'error',
-        )
-        return
-      }
-      // Start the album context on the LongPlay device. With
-      // device_id set, this transfers playback here AND begins it.
-      const res = await fetch(
-        `https://api.spotify.com/v1/me/player/play?device_id=${encodeURIComponent(deviceId)}`,
-        {
-          method: 'PUT',
-          headers: {
-            Authorization: `Bearer ${tok.accessToken}`,
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({ context_uri: `spotify:album:${spotifyAlbumId}` }),
-        },
-      )
-      if (!res.ok && res.status !== 202 && res.status !== 204) {
-        if (res.status === 403) {
-          setGate('not_premium')
-        } else if (res.status === 401) {
-          setGate('reauth')
-        } else {
-          setPlaybackError(
-            res.status === 404
-              ? 'Playback device not ready yet — try again in a moment.'
-              : `Playback could not start (Spotify ${res.status}).`,
+  // ── Playback ─────────────────────────────────────────────────────
+  // Album-context playback. `offsetUri` set → start from that track;
+  // omitted → start from the top. Disabled until transfer is complete,
+  // so no request fires into the readiness window.
+  const startPlayback = useCallback(
+    async (offsetUri?: string) => {
+      const deviceId = deviceIdRef.current
+      if (!transferReady || !deviceId) return
+      setStartingUri(offsetUri ?? '')
+      setPlaybackError(null)
+      try {
+        const token = tokenRef.current ?? (await getToken())
+        if (!token) return
+        const body: { context_uri: string; offset?: { uri: string } } = {
+          context_uri: `spotify:album:${spotifyAlbumId}`,
+        }
+        if (offsetUri) body.offset = { uri: offsetUri }
+
+        const playPut = (t: string) =>
+          fetch(
+            `${SPOTIFY_API}/me/player/play?device_id=${encodeURIComponent(deviceId)}`,
+            {
+              method: 'PUT',
+              headers: {
+                Authorization: `Bearer ${t}`,
+                'Content-Type': 'application/json',
+              },
+              body: JSON.stringify(body),
+            },
           )
+
+        let res = await playPut(token)
+        // Defensive: if the device dropped active status, re-transfer once.
+        if (res.status === 404) {
+          const ok = await ensureTransfer(deviceId)
+          if (ok) res = await playPut(tokenRef.current ?? token)
         }
-        return
-      }
-      // First successful play → mark ritual presence (never completes).
-      if (!listeningMarkedRef.current) {
-        listeningMarkedRef.current = true
-        onPlaybackStarted?.()
-        if (ritualCycleId) {
-          // Fire-and-forget; presence tracking must not block playback.
-          void markListeningAction(ritualCycleId)
+
+        if (!res.ok && res.status !== 202 && res.status !== 204) {
+          if (res.status === 403) setGate('not_premium')
+          else if (res.status === 401) setGate('reauth')
+          else
+            setPlaybackError(
+              res.status === 404
+                ? 'Playback device not ready yet — try again in a moment.'
+                : `Playback could not start (Spotify ${res.status}).`,
+            )
+          return
         }
+
+        if (!listeningMarkedRef.current) {
+          listeningMarkedRef.current = true
+          onPlaybackStarted?.()
+          if (ritualCycleId) void markListeningAction(ritualCycleId)
+        }
+      } catch {
+        setPlaybackError('Playback could not start. Check your connection.')
+      } finally {
+        setStartingUri(null)
       }
-    } catch {
-      setPlaybackError('Playback could not start. Check your connection.')
-    } finally {
-      setBusy(false)
-    }
-  }, [spotifyAlbumId, ritualCycleId, onPlaybackStarted])
+    },
+    [transferReady, spotifyAlbumId, ritualCycleId, onPlaybackStarted, getToken, ensureTransfer],
+  )
 
   const handleToggle = useCallback(() => {
-    playerRef.current?.togglePlay().catch(() => {
-      /* ignore — state poll will reconcile */
-    })
+    playerRef.current?.togglePlay().catch(() => {})
   }, [])
   const handleNext = useCallback(() => {
     playerRef.current?.nextTrack().catch(() => {})
@@ -335,7 +450,7 @@ export function InRoomSpotifyPlayer({
     playerRef.current?.previousTrack().catch(() => {})
   }, [])
 
-  // ── Render ───────────────────────────────────────────────────────
+  // ── Non-eligible fallbacks (unchanged behavior). ─────────────────
   if (gate === 'loading') {
     return (
       <Frame aesthetics={aesthetics}>
@@ -345,7 +460,6 @@ export function InRoomSpotifyPlayer({
       </Frame>
     )
   }
-
   if (gate === 'not_connected') {
     return (
       <Frame aesthetics={aesthetics}>
@@ -356,7 +470,6 @@ export function InRoomSpotifyPlayer({
       </Frame>
     )
   }
-
   if (gate === 'reauth') {
     return (
       <Frame aesthetics={aesthetics}>
@@ -367,7 +480,6 @@ export function InRoomSpotifyPlayer({
       </Frame>
     )
   }
-
   if (gate === 'not_premium') {
     return (
       <Frame aesthetics={aesthetics}>
@@ -378,7 +490,6 @@ export function InRoomSpotifyPlayer({
       </Frame>
     )
   }
-
   if (gate === 'error') {
     return (
       <Frame aesthetics={aesthetics}>
@@ -390,76 +501,33 @@ export function InRoomSpotifyPlayer({
     )
   }
 
-  // gate === 'eligible'
-  const hasTrack = snapshot?.current != null
+  // ── gate === 'eligible' — album-first surface. ───────────────────
+  const currentUri = snapshot?.current?.uri ?? null
   const isPaused = snapshot?.isPaused ?? true
+  const hasTrack = snapshot?.current != null
   const progress = snapshot
     ? playbackProgressFraction(snapshot.positionMs, snapshot.durationMs)
     : 0
+  const interactionsReady = transferReady
 
   return (
     <Frame aesthetics={aesthetics}>
-      {!deviceReady ? (
-        <p className="text-[11px] text-muted-foreground/50 italic">
-          Connecting the LongPlay player…
-        </p>
-      ) : (
-        <div className="flex flex-col gap-3">
-          {/* Current track / prompt */}
-          <div className="min-h-[2.25rem]">
-            {hasTrack ? (
-              <>
-                <p className="text-sm text-foreground/90 leading-tight">
+      <div className="flex flex-col gap-4">
+        {/* Now-playing + transport (only once something is loaded) */}
+        {hasTrack && (
+          <div className="flex flex-col gap-2">
+            <div className="flex items-center justify-between gap-3">
+              <div className="min-w-0">
+                <p className="text-sm text-foreground/90 leading-tight truncate">
                   {snapshot!.current!.title}
                 </p>
                 {snapshot!.current!.artist && (
-                  <p className="text-[11px] text-muted-foreground/60">
+                  <p className="text-[11px] text-muted-foreground/60 truncate">
                     {snapshot!.current!.artist}
                   </p>
                 )}
-              </>
-            ) : (
-              <p className="text-[12px] text-muted-foreground/60 italic">
-                Ready to play this album, in full, here.
-              </p>
-            )}
-          </div>
-
-          {/* Progress */}
-          {hasTrack && snapshot!.durationMs > 0 && (
-            <div className="flex items-center gap-2">
-              <span className="text-[10px] tabular-nums text-muted-foreground/50 w-9 text-right">
-                {formatPlaybackPosition(snapshot!.positionMs)}
-              </span>
-              <div className="flex-1 h-[3px] rounded-full bg-foreground/10 overflow-hidden">
-                <div
-                  className="h-full bg-foreground/40"
-                  style={{ width: `${Math.round(progress * 100)}%` }}
-                />
               </div>
-              <span className="text-[10px] tabular-nums text-muted-foreground/50 w-9">
-                {formatPlaybackPosition(snapshot!.durationMs)}
-              </span>
-            </div>
-          )}
-
-          {/* Controls */}
-          <div className="flex items-center gap-4">
-            {!hasTrack ? (
-              <button
-                type="button"
-                onClick={handlePlayAlbum}
-                disabled={busy}
-                className={cn(
-                  'text-[12px] tracking-wide italic transition-opacity',
-                  aesthetics.primaryAccent,
-                  busy ? 'opacity-40' : 'opacity-80 hover:opacity-100',
-                )}
-              >
-                {busy ? 'Starting…' : 'Play album'}
-              </button>
-            ) : (
-              <>
+              <div className="flex items-center gap-4 shrink-0">
                 <ControlButton
                   onClick={handlePrev}
                   disabled={!snapshot!.canSkipPrev}
@@ -477,17 +545,185 @@ export function InRoomSpotifyPlayer({
                 >
                   ››
                 </ControlButton>
-              </>
+              </div>
+            </div>
+            {snapshot!.durationMs > 0 && (
+              <div className="flex items-center gap-2">
+                <span className="text-[10px] tabular-nums text-muted-foreground/50 w-9 text-right">
+                  {formatPlaybackPosition(snapshot!.positionMs)}
+                </span>
+                <div className="flex-1 h-[3px] rounded-full bg-foreground/10 overflow-hidden">
+                  <div
+                    className="h-full bg-foreground/40"
+                    style={{ width: `${Math.round(progress * 100)}%` }}
+                  />
+                </div>
+                <span className="text-[10px] tabular-nums text-muted-foreground/50 w-9">
+                  {formatPlaybackPosition(snapshot!.durationMs)}
+                </span>
+              </div>
             )}
           </div>
+        )}
 
-          {playbackError && (
-            <p className="text-[11px] text-muted-foreground/60">{playbackError}</p>
-          )}
-        </div>
-      )}
+        {/* Album tracklist — album-first listening surface. */}
+        {tracks && tracks.length > 0 ? (
+          <div>
+            <div className="flex items-baseline justify-between mb-2">
+              <p className="text-[10px] uppercase tracking-[0.3em] text-muted-foreground/60">
+                Tracklist
+              </p>
+              {!hasTrack && (
+                <button
+                  type="button"
+                  onClick={() => startPlayback()}
+                  disabled={!interactionsReady || startingUri !== null}
+                  className={cn(
+                    'text-[11px] tracking-wide italic transition-opacity',
+                    aesthetics.primaryAccent,
+                    !interactionsReady || startingUri !== null
+                      ? 'opacity-40'
+                      : 'opacity-80 hover:opacity-100',
+                  )}
+                >
+                  {startingUri === '' ? 'Starting…' : 'Play album'}
+                </button>
+              )}
+            </div>
+            <ol className="space-y-0.5">
+              {tracks.map((t) => {
+                const isCurrent = currentUri != null && currentUri === t.uri
+                const isStarting = startingUri === t.uri
+                return (
+                  <li key={t.uri}>
+                    <button
+                      type="button"
+                      onClick={() => startPlayback(t.uri)}
+                      disabled={!interactionsReady || startingUri !== null}
+                      aria-current={isCurrent ? 'true' : undefined}
+                      className={cn(
+                        'group flex w-full items-baseline gap-4 rounded-sm px-2 py-1.5 text-left text-sm leading-snug transition-colors',
+                        interactionsReady && startingUri === null
+                          ? 'hover:bg-foreground/5 cursor-pointer'
+                          : 'cursor-default',
+                        isCurrent ? 'bg-foreground/5' : '',
+                      )}
+                    >
+                      <span
+                        aria-hidden
+                        className={cn(
+                          'shrink-0 w-6 font-mono text-[11px] tabular-nums text-right',
+                          isCurrent
+                            ? aesthetics.primaryAccent
+                            : 'text-muted-foreground/40',
+                        )}
+                      >
+                        {isCurrent ? (isPaused ? '►' : '❚❚') : t.number}
+                      </span>
+                      <span
+                        className={cn(
+                          'flex-1 font-serif',
+                          isCurrent ? 'text-foreground' : 'text-cream/80',
+                        )}
+                      >
+                        {t.title}
+                      </span>
+                      <span className="shrink-0 font-mono text-[11px] tabular-nums text-muted-foreground/40">
+                        {isStarting ? '…' : formatTrackLength(t.durationMs)}
+                      </span>
+                    </button>
+                  </li>
+                )
+              })}
+            </ol>
+            {!interactionsReady && (
+              <p className="mt-2 text-[11px] text-muted-foreground/50 italic">
+                Preparing the LongPlay player…
+              </p>
+            )}
+          </div>
+        ) : (
+          <p className="text-[11px] text-muted-foreground/50 italic">
+            {deviceReady
+              ? 'Loading album…'
+              : 'Connecting the LongPlay player…'}
+          </p>
+        )}
+
+        {playbackError && (
+          <p className="text-[11px] text-muted-foreground/60">{playbackError}</p>
+        )}
+      </div>
     </Frame>
   )
+}
+
+// ── Helpers ────────────────────────────────────────────────────────
+
+function normalizeInitialTracks(
+  initial: ReadonlyArray<InitialAlbumTrack> | undefined,
+): PlayerTrack[] | null {
+  if (!initial || initial.length === 0) return null
+  return initial.map((t) => ({
+    number: t.number,
+    title: t.title,
+    durationMs: t.durationMs,
+    uri: trackUriFromId(t.spotifyTrackId),
+  }))
+}
+
+/** Format a track's millisecond length as "M:SS"; blank when unknown. */
+function formatTrackLength(ms: number | null): string {
+  if (typeof ms !== 'number' || !Number.isFinite(ms) || ms <= 0) return ''
+  return formatPlaybackPosition(ms)
+}
+
+interface SpotifyAlbumTracksPage {
+  items?: Array<{
+    id?: string
+    uri?: string
+    name?: string
+    track_number?: number
+    duration_ms?: number
+  }>
+  next?: string | null
+}
+
+/**
+ * Fetch the full album tracklist with the listener's USER token.
+ * Paginates /v1/albums/{id}/tracks. Returns [] on any failure — the
+ * caller keeps whatever it had (no fabrication).
+ */
+async function fetchAlbumTracksWithUserToken(
+  albumId: string,
+  token: string,
+): Promise<PlayerTrack[]> {
+  const out: PlayerTrack[] = []
+  let url: string | null =
+    `${SPOTIFY_API}/albums/${encodeURIComponent(albumId)}/tracks?limit=50`
+  try {
+    while (url) {
+      const res: Response = await fetch(url, {
+        headers: { Authorization: `Bearer ${token}` },
+        cache: 'no-store',
+      })
+      if (!res.ok) return out.length > 0 ? out : []
+      const page = (await res.json()) as SpotifyAlbumTracksPage
+      for (const item of page.items ?? []) {
+        if (!item?.uri || !item?.name) continue
+        out.push({
+          number: typeof item.track_number === 'number' ? item.track_number : out.length + 1,
+          title: item.name,
+          durationMs: typeof item.duration_ms === 'number' ? item.duration_ms : null,
+          uri: item.uri,
+        })
+      }
+      url = page.next ?? null
+    }
+  } catch {
+    return out
+  }
+  return out
 }
 
 // ── Presentational helpers ─────────────────────────────────────────

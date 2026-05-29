@@ -2,7 +2,10 @@
 
 import { useEffect, useState } from 'react'
 import { cn } from '@/lib/utils'
-import { InRoomSpotifyPlayer } from '@/components/ritual/in-room-spotify-player'
+import {
+  InRoomSpotifyPlayer,
+  type InitialAlbumTrack,
+} from '@/components/ritual/in-room-spotify-player'
 import {
   getMarkIfFresh,
   setListeningMark,
@@ -64,6 +67,10 @@ export interface ListeningSurfaceProps {
    *  Passed through to the player so the first play can mark ritual
    *  participation as 'listening'. Null when there is no cycle. */
   ritualCycleId: string | null
+  /** DB album_tracks (with Spotify track ids) for the artifact album.
+   *  Forwarded to the player as its fast-path tracklist. Empty → the
+   *  player hydrates from Spotify with the user token. */
+  playerTracks?: ReadonlyArray<InitialAlbumTrack>
   /** Stable cross-cycle key for the artifact (so continuity resets
    *  when the room moves to a new album). The page passes the
    *  ritual cycle's artifact_album_id (or the room's currentAlbum
@@ -81,6 +88,7 @@ export function ListeningSurface({
   spotifyAlbumId,
   appleMusicUrl,
   ritualCycleId,
+  playerTracks,
   albumKey,
   aesthetics,
 }: ListeningSurfaceProps) {
@@ -142,6 +150,7 @@ export function ListeningSurface({
 
       <InRoomSpotifyPlayer
         spotifyAlbumId={spotifyAlbumId}
+        initialTracks={playerTracks}
         ritualCycleId={ritualCycleId}
         roomSlug={roomSlug}
         onPlaybackStarted={handleBegin}
