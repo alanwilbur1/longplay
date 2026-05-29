@@ -276,6 +276,7 @@ function LeftColumn({
         roomSlug={roomSlug}
         spotifyAlbumId={spotifyAlbumId}
         appleMusicUrl={streamingLinks.appleMusic ?? null}
+        ritualCycleId={active.id}
         albumKey={active.artifact_album_id ?? roomSlug}
         aesthetics={aesthetics}
       />

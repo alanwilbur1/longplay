@@ -6,7 +6,7 @@ import {
 } from '@/lib/data/ritual'
 import { getSupabaseAdminClient } from '@/lib/supabase/admin'
 import type { Room } from '@/lib/rooms'
-import { getAlbumTracksByAlbumId } from '@/lib/data/album-tracks'
+import { getOrHydrateAlbumTracks } from '@/lib/data/hydrate-album-tracks'
 import { formatTrackDuration } from '@/lib/album-tracks-format'
 import { RitualContextPanel } from './ritual-context-panel'
 import { RitualEcologySection } from './ritual-ecology-section'
@@ -215,13 +215,19 @@ export async function RitualContextPanelServer({
       })
     : null
 
-  // Phase 6B.5: pre-fetch the album tracklist. Reads from the
-  // album_tracks substrate (migration 0023). Empty array when the
-  // album hasn't been hydrated yet — the TracklistSurface UI shows
-  // its restrained fallback line. Never throws; getter returns []
-  // on any DB hiccup.
+  // Phase 6B.5 + 6B.4A: pre-fetch the album tracklist from the
+  // album_tracks substrate (migration 0023). When the album hasn't
+  // been hydrated yet but we resolved a Spotify album ID, attempt a
+  // best-effort in-request hydration (client-credentials catalog
+  // fetch) so the listener sees a real tracklist. Both the read and
+  // the hydration are best-effort — never throw, never fabricate
+  // tracks: an empty array still drives the TracklistSurface's
+  // restrained fallback line.
   const tracklistRows = ctx.active?.artifact_album_id
-    ? await getAlbumTracksByAlbumId(ctx.active.artifact_album_id)
+    ? await getOrHydrateAlbumTracks(
+        ctx.active.artifact_album_id,
+        resolvedSpotifyAlbumId,
+      )
     : []
   const tracklist: TracklistTrack[] = tracklistRows.map((r) => ({
     number: r.track_number,

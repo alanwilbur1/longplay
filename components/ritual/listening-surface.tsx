@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from 'react'
 import { cn } from '@/lib/utils'
+import { InRoomSpotifyPlayer } from '@/components/ritual/in-room-spotify-player'
 import {
   getMarkIfFresh,
   setListeningMark,
@@ -14,7 +15,7 @@ import {
 export { extractSpotifyAlbumId } from '@/lib/spotify-url'
 
 /**
- * components/ritual/listening-surface.tsx — Phase 6B.4
+ * components/ritual/listening-surface.tsx — Phase 6B.4 / 6B.4A
  *
  * Embedded ritual listening. Renders inside the ritual hero's left
  * column, immediately beneath the album metadata. Three states:
@@ -25,24 +26,27 @@ export { extractSpotifyAlbumId } from '@/lib/spotify-url'
  *        player surface when no embed is possible.
  *
  *   2. Spotify ID available
- *      → Compact dark Spotify embed (80px), edge-borderless,
- *        composed with the room's tinting. Below the embed, a
- *        single ceremonial line: "Begin when you're ready" (cold)
- *        or "Continue listening · since Jun 5" (warm).
+ *      → Authenticated in-room playback via <InRoomSpotifyPlayer>
+ *        (Phase 6B.4A). This replaced the old public embed iframe,
+ *        which only ever offered 30s previews and a "Get Spotify"
+ *        wall. The player drives the Spotify Web Playback SDK using
+ *        the listener's own connection and handles all its own
+ *        gating + honest fallbacks (connect / reconnect-for-scopes /
+ *        non-Premium / browser-unsupported). Below it, the ceremonial
+ *        continuity caption ("since Jun 5") when the mark is warm.
  *
  *   3. No Spotify ID but Apple Music URL present
  *      → A single ceremonial line: "Listen via Apple Music." with
  *        the URL as an editorial link. No oversized button.
  *
- * Tone target: a quiet record-shelf affordance, not a player. The
- * embed itself is the player — we just frame it.
+ * Tone target: a quiet record-shelf affordance, not a player clone —
+ * restrained controls, no dashboard chrome.
  *
  * Continuity state: lib/listening-continuity.ts tracks ONLY whether
- * the listener pressed "Begin listening" in this browser for this
- * room + album combination. It is NOT playback state. The Spotify
- * iframe is cross-origin and we cannot read what's playing inside.
- * The mark is a ceremonial threshold — a "I have arrived at this
- * record" signal — not a metric.
+ * the listener began listening in this browser for this room + album
+ * combination. The player calls onPlaybackStarted the first time
+ * audio begins, which sets the mark. It is a ceremonial threshold —
+ * a "I have arrived at this record" signal — not playback telemetry.
  */
 
 export interface ListeningSurfaceProps {
@@ -56,6 +60,10 @@ export interface ListeningSurfaceProps {
   /** Apple Music album URL when present. Fallback when Spotify is
    *  unavailable for this room. */
   appleMusicUrl: string | null
+  /** Active ritual cycle id (active.id) when a cycle is running.
+   *  Passed through to the player so the first play can mark ritual
+   *  participation as 'listening'. Null when there is no cycle. */
+  ritualCycleId: string | null
   /** Stable cross-cycle key for the artifact (so continuity resets
    *  when the room moves to a new album). The page passes the
    *  ritual cycle's artifact_album_id (or the room's currentAlbum
@@ -72,6 +80,7 @@ export function ListeningSurface({
   roomSlug,
   spotifyAlbumId,
   appleMusicUrl,
+  ritualCycleId,
   albumKey,
   aesthetics,
 }: ListeningSurfaceProps) {
@@ -84,26 +93,6 @@ export function ListeningSurface({
   useEffect(() => {
     setMark(getMarkIfFresh(roomSlug, albumKey))
   }, [roomSlug, albumKey])
-
-  // TEMPORARY DIAGNOSTIC (6B.5 follow-up #2): logs to the BROWSER
-  // console on every mount + prop change so we can confirm from
-  // production whether the panel's prop chain delivered a non-null
-  // spotifyAlbumId and what render path the surface chose. Remove
-  // once the trace confirms the chain.
-  useEffect(() => {
-    const path = spotifyAlbumId
-      ? 'spotify-embed'
-      : appleMusicUrl
-        ? 'apple-fallback'
-        : 'null-noop'
-    // eslint-disable-next-line no-console
-    console.log('[listening-surface-debug]', {
-      roomSlug,
-      spotifyAlbumId,
-      appleMusicUrl,
-      render_path: path,
-    })
-  }, [roomSlug, spotifyAlbumId, appleMusicUrl])
 
   const handleBegin = () => {
     const next = setListeningMark(roomSlug, albumKey)
@@ -136,76 +125,34 @@ export function ListeningSurface({
   // Path 1: nothing to render.
   if (!spotifyAlbumId) return null
 
-  // Path 2: Spotify embed.
-  // Phase 6B.5 follow-up: height bumped to 352 (Spotify's default
-  // "standard" embed). At 352px the iframe exposes the FULL
-  // tracklist + per-track play affordances inside Spotify's own
-  // chrome — making the embed the actual listening surface, not
-  // just a player chip. The brief calls this out: "make it large
-  // enough and prominent enough to function as the track/player
-  // surface."
-  const embedSrc = `https://open.spotify.com/embed/album/${spotifyAlbumId}?utm_source=longplay`
-
-  // TEMPORARY DIAGNOSTIC (Phase 6B continuation). Logs the exact
-  // iframe src to the browser console so a "Page not found" embed can
-  // be traced back to the resolved album ID. Mirrors the server-side
-  // [ritual-spotify-debug] line. Remove once the embed is confirmed
-  // playable in production.
-  if (typeof window !== 'undefined') {
-    console.log('[listening-surface-embed]', { roomSlug, spotifyAlbumId, embedSrc })
-  }
-
+  // Path 2: authenticated in-room Spotify playback (Phase 6B.4A).
+  // Replaces the old public embed iframe — which only ever offered
+  // 30s previews + a "Get Spotify" wall — with the Web Playback SDK
+  // driven InRoomSpotifyPlayer. The player handles its own gating
+  // (connect / reconnect-for-scopes / Premium / browser support) and
+  // renders honest fallbacks; we just frame it and keep the
+  // ceremonial continuity caption beneath. The player calls
+  // onPlaybackStarted the first time audio begins, which sets the
+  // "began listening" mark exactly like the old manual button did.
   return (
     <div className={cn('border-t pt-6 mt-6', aesthetics.borderTint)}>
       <p className="text-[10px] uppercase tracking-[0.3em] text-muted-foreground/60 mb-3">
         {mark ? 'Continue listening' : 'Listen'}
       </p>
 
-      <div
-        className={cn(
-          // Subtle ambient frame — no card, no shadow. A faint
-          // border keeps the iframe from sitting raw on the page.
-          'overflow-hidden rounded-sm border',
-          aesthetics.borderTint,
-        )}
-      >
-        <iframe
-          // The Spotify iframe runs cross-origin. We rely entirely
-          // on Spotify's own player chrome inside — no shim, no
-          // overlay. `loading="lazy"` keeps the surface cheap when
-          // the listener hasn't scrolled to it yet.
-          title="Album player"
-          src={embedSrc}
-          width="100%"
-          height={352}
-          frameBorder={0}
-          loading="lazy"
-          allow="autoplay; clipboard-write; encrypted-media; fullscreen; picture-in-picture"
-          // Sandbox is intentionally permissive — Spotify embeds
-          // need scripts + same-origin for their own auth flow.
-          // Restricting further breaks the player.
-          className="bg-card/10"
-        />
-      </div>
+      <InRoomSpotifyPlayer
+        spotifyAlbumId={spotifyAlbumId}
+        ritualCycleId={ritualCycleId}
+        roomSlug={roomSlug}
+        onPlaybackStarted={handleBegin}
+        aesthetics={aesthetics}
+      />
 
       <div className="mt-3 flex flex-wrap items-baseline gap-x-4 gap-y-1">
-        {mark ? (
+        {mark && (
           <p className="text-[11px] text-muted-foreground/50 italic">
             since {formatDate(mark.startedAt)}.
           </p>
-        ) : (
-          <button
-            type="button"
-            onClick={handleBegin}
-            className={cn(
-              'text-[11px] tracking-wide italic transition-colors',
-              aesthetics.primaryAccent,
-              'opacity-70 hover:opacity-100',
-            )}
-            aria-label="Mark the listening ritual as begun"
-          >
-            Begin when you’re ready.
-          </button>
         )}
         {appleMusicUrl && (
           <a
