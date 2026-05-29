@@ -140,6 +140,22 @@ export function trackUriFromId(idOrUri: string): string {
     : `spotify:track:${idOrUri}`
 }
 
+/**
+ * Room-album scoping rule (Phase 6B.4C). Given the Spotify
+ * currently-playing track URI and the set of track URIs that make up
+ * THIS room's album, return the current URI only when it belongs to
+ * the album — otherwise null. This is what keeps a room player from
+ * showing/highlighting another album's playback (e.g. Jason Isbell
+ * playing elsewhere must not surface inside the Illinois room).
+ */
+export function resolveAlbumCurrentUri(
+  currentUri: string | null | undefined,
+  albumTrackUris: ReadonlySet<string>,
+): string | null {
+  if (!currentUri) return null
+  return albumTrackUris.has(currentUri) ? currentUri : null
+}
+
 function clampNonNegative(n: number | undefined): number {
   if (typeof n !== 'number' || !Number.isFinite(n) || n < 0) return 0
   return n

@@ -21,6 +21,7 @@ import {
   formatPlaybackPosition,
   isPremiumProduct,
   trackUriFromId,
+  resolveAlbumCurrentUri,
 } from '../lib/spotify/playback-state'
 
 let pass = 0
@@ -158,6 +159,23 @@ function main() {
   assert('65s → 1:05', formatPlaybackPosition(65_000) === '1:05')
   assert('floors sub-second', formatPlaybackPosition(65_900) === '1:05')
   assert('hour-spanning → 1:02:15', formatPlaybackPosition(3_735_000) === '1:02:15')
+
+  console.log('\nresolveAlbumCurrentUri (room-album scoping):')
+  const album = new Set([
+    'spotify:track:cover-me-up',
+    'spotify:track:elephant',
+  ])
+  assert(
+    'current track in album → returned',
+    resolveAlbumCurrentUri('spotify:track:elephant', album) === 'spotify:track:elephant',
+  )
+  assert(
+    'current track NOT in album (other room) → null',
+    resolveAlbumCurrentUri('spotify:track:isbell-somewhere-else', album) === null,
+  )
+  assert('null current → null', resolveAlbumCurrentUri(null, album) === null)
+  assert('undefined current → null', resolveAlbumCurrentUri(undefined, album) === null)
+  assert('empty album set → null', resolveAlbumCurrentUri('spotify:track:x', new Set()) === null)
 
   console.log('\nisPremiumProduct:')
   assert("'premium' → true", isPremiumProduct('premium') === true)
