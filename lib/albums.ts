@@ -209,7 +209,13 @@ export const ALBUMS = {
     description: "Maximalist Americana at its most ambitious.",
     emotionalTags: ["ambitious", "americana", "orchestral"],
     roomAssociations: ["beautiful-damage"],
-    spotifyId: "7j8K3PV5Mgz8ZNsrNvNBR9",
+    // Phase 6B.4C audit fix: the prior ID (7j8K3PV5Mgz8ZNsrNvNBR9)
+    // matched no real Spotify album — GET /v1/albums/{id}/tracks 404'd,
+    // which is why Pitchfork Deep Cuts (currentAlbum = Illinois) never
+    // produced a tracklist. Replaced with the verified canonical
+    // Sufjan Stevens — Illinois (2005, 22 tracks).
+    spotifyId: "1pOl0KEC1iQnA6F0XxV4To",
+    spotifyUrl: "https://open.spotify.com/album/1pOl0KEC1iQnA6F0XxV4To",
   },
 
   // ============================================
