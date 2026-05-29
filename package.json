@@ -31,6 +31,7 @@
     "test:ritual-observations": "npx tsx scripts/test-ritual-observations.ts",
     "test:listening-surface": "npx tsx scripts/test-listening-surface.ts",
     "test:album-tracks": "npx tsx scripts/test-album-tracks.ts",
+    "test:spotify-playback": "npx tsx scripts/test-spotify-playback.ts",
     "hydrate:album-tracks": "npx tsx scripts/hydrate-album-tracks.ts",
     "seed:ritual-cycles": "npx tsx scripts/seed-ritual-cycles.ts",
     "test:affinity-cache": "npx tsx scripts/test-affinity-cache.ts",

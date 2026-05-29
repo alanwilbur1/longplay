@@ -134,6 +134,64 @@ export async function markRitualCompletedAction(
   }
 }
 
+// ── Mark listening ────────────────────────────────────────────────
+
+/**
+ * Phase 6B.4A — called when the listener actually starts in-room
+ * Spotify playback. Marks participation as 'listening' and bumps
+ * last_activity_at. Auto-joins first if the listener hadn't joined.
+ *
+ * Deliberately conservative:
+ *   - NEVER auto-completes. Starting playback is presence, not
+ *     completion — the listener still completes the ritual explicitly.
+ *   - Idempotent. Re-firing on an already-listening / completed /
+ *     reflected participant just refreshes last_activity_at via the
+ *     idempotent start_listening transition.
+ *   - Never throws into the playback path. A withdrawn participant (or
+ *     any illegal transition) resolves to a clean ok:false the caller
+ *     can ignore — playback must not break because presence tracking
+ *     hit an edge.
+ */
+export async function markListeningAction(
+  ritualCycleId: string,
+): Promise<RitualActionResult<RitualParticipantRow>> {
+  const supabase = await createSupabaseServerClient()
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) return notAuthed()
+
+  try {
+    try {
+      const result = await advanceParticipation({
+        ritual_cycle_id: ritualCycleId,
+        user_id: user.id,
+        transition: 'start_listening',
+      })
+      try {
+        revalidatePath('/rooms', 'layout')
+      } catch {}
+      return { ok: true, data: result }
+    } catch {
+      // Not yet a participant — auto-join, then advance to listening.
+      await joinRitual({
+        ritual_cycle_id: ritualCycleId,
+        user_id: user.id,
+        via: 'manual',
+      })
+      const result = await advanceParticipation({
+        ritual_cycle_id: ritualCycleId,
+        user_id: user.id,
+        transition: 'start_listening',
+      })
+      try {
+        revalidatePath('/rooms', 'layout')
+      } catch {}
+      return { ok: true, data: result }
+    }
+  } catch (err) {
+    return unexpected(err)
+  }
+}
+
 // ── Withdraw ──────────────────────────────────────────────────────
 
 export async function withdrawFromRitualAction(

@@ -36,10 +36,21 @@ const TOKEN_URL = 'https://accounts.spotify.com/api/token'
 const API_BASE = 'https://api.spotify.com/v1'
 
 const SCOPES = [
+  // Identity / sync (original Phase 4.1 cohort).
   'user-read-email',
   'user-top-read',
   'user-read-recently-played',
   'user-library-read',
+  // Phase 6B.4A — authenticated in-room playback via the Web Playback
+  // SDK + Web API player endpoints. Kept in sync with
+  // lib/streaming/playback-scopes.ts (PLAYBACK_SCOPES), which is the
+  // source of truth the player surface uses to detect a scope gap on
+  // accounts connected before this phase.
+  'streaming',
+  'user-read-playback-state',
+  'user-modify-playback-state',
+  'user-read-currently-playing',
+  'user-read-private',
 ] as const
 
 function getClientId(): string {
